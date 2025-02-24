@@ -8,7 +8,7 @@ pub mod memo_token {
     use super::*;
 
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
-        // 铸造代币奖励
+        // Mint 1 token (1_000_000_000 represents 1 token with 9 decimals)
         token::mint_to(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -18,10 +18,10 @@ pub mod memo_token {
                     authority: ctx.accounts.mint_authority.to_account_info(),
                 },
             ),
-            1,  // 铸造1个代币
+            1_000_000_000,  // Changed from 1 to 1_000_000_000
         )?;
         
-        msg!("Congratulations! You got a token!");
+        msg!("Congratulations! You got 1 token!");
         Ok(())
     }
 }

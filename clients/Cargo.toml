@@ -4,12 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "deploy"
-path = "src/deploy.rs"
+name = "init"
+path = "src/init.rs"
+
+[[bin]]
+name = "mint"
+path = "src/mint.rs"
 
 [dependencies]
 solana-client = "1.17.4"
 solana-sdk = "1.17.4"
 spl-token = "4.0.0"
 spl-associated-token-account = "2.2.0"
-shellexpand = "3.1.0" 
+shellexpand = "3.1.0"
+sha2 = "0.10.8" 
