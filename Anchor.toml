@@ -1,0 +1,17 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+memo_token = "68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "https://rpc.testnet.x1.xyz"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+deploy = "yarn deploy"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
