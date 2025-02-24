@@ -10,7 +10,7 @@ use solana_sdk::{
 
 #[tokio::test]
 async fn test_memo_token() {
-    // 初始化程序测试环境
+    // Initialize program test environment
     let program_id = memo_token::id();
     let mut program_test = ProgramTest::new(
         "memo_token",
@@ -18,37 +18,16 @@ async fn test_memo_token() {
         processor!(memo_token::entry),
     );
 
-    // 开始测试
+    // Start the test
     let (mut banks_client, payer, recent_blockhash) = program_test.start().await;
 
-    // 创建测试用户
+    // Create test user
     let user = Keypair::new();
     
-    // 计算 PDA
-    let (mint_pda, bump) = Pubkey::find_program_address(
-        &[b"memo_mint"],
-        &program_id,
-    );
+    // Get mint address (from deploy script output)
+    let mint = Pubkey::from_str("your_mint_address_here").unwrap();
 
-    // 测试初始化 mint
-    {
-        let mut transaction = Transaction::new_with_payer(
-            &[memo_token::instruction::initialize_mint(
-                program_id,
-                payer.pubkey(),
-                mint_pda,
-            )],
-            Some(&payer.pubkey()),
-        );
-        transaction.sign(&[&payer], recent_blockhash);
-
-        banks_client
-            .process_transaction(transaction)
-            .await
-            .expect("初始化 mint 失败");
-    }
-
-    // 创建用户的代币账户
+    // Create user's token account
     let user_token_account = Keypair::new();
     {
         let rent = banks_client.get_rent().await.unwrap();
@@ -66,7 +45,7 @@ async fn test_memo_token() {
                 token::instruction::initialize_account(
                     &token::ID,
                     &user_token_account.pubkey(),
-                    &mint_pda,
+                    &mint,
                     &user.pubkey(),
                 )
                 .unwrap(),
@@ -78,15 +57,15 @@ async fn test_memo_token() {
         banks_client
             .process_transaction(transaction)
             .await
-            .expect("创建代币账户失败");
+            .expect("Failed to create token account");
     }
 
-    // 测试 mint 代币
+    // Test minting
     {
         let mut transaction = Transaction::new_with_payer(
-            &[memo_token::instruction::mint_token(
+            &[memo_token::instruction::process_transfer(
                 program_id,
-                mint_pda,
+                mint,
                 user_token_account.pubkey(),
                 user.pubkey(),
             )],
@@ -97,18 +76,18 @@ async fn test_memo_token() {
         banks_client
             .process_transaction(transaction)
             .await
-            .expect("Mint 代币失败");
+            .expect("Failed to mint token");
     }
 
-    // 验证代币余额
+    // Verify token balance
     let token_account = banks_client
         .get_account(user_token_account.pubkey())
         .await
-        .expect("获取代币账户失败")
-        .expect("代币账户不存在");
+        .expect("Failed to get token account")
+        .expect("Token account does not exist");
 
     let token_account = TokenAccount::unpack(&token_account.data)
-        .expect("解析代币账户失败");
+        .expect("Failed to parse token account");
 
     assert_eq!(token_account.amount, 1);
 }
