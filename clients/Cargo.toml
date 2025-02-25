@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
+name = "create_token"
+path = "src/create_token.rs"
+
+[[bin]]
 name = "init"
 path = "src/init.rs"
 

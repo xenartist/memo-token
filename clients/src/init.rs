@@ -2,6 +2,7 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
+    transaction::Transaction,
 };
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
@@ -16,63 +17,61 @@ fn main() {
         shellexpand::tilde("~/.config/solana/id.json").to_string()
     ).expect("Failed to read keypair file");
 
-    // Use fixed mint address
-    let mint = Pubkey::from_str("9AkxbAh31apMdjbG467VymHWJXtX92LCUz29nvtRYURS").expect("Invalid mint address");
+    // Fixed addresses
+    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
+        .expect("Invalid program ID");
+    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+        .expect("Invalid mint address");
 
-    // Get user's token account address
+    // Calculate PDA (for information only)
+    let (mint_authority_pda, _bump) = Pubkey::find_program_address(
+        &[b"mint_authority"],
+        &program_id,
+    );
+
+    // Get user's token account
     let token_account = get_associated_token_address(
         &payer.pubkey(),
         &mint,
     );
 
-    // Check if token account exists
-    match client.get_account(&token_account) {
-        Ok(_) => {
-            println!("Token account already exists");
-        }
-        Err(_) => {
-            // Create instruction for token account
-            let create_token_account_ix = spl_associated_token_account::instruction::create_associated_token_account(
+    // Create token account if it doesn't exist
+    if client.get_account(&token_account).is_err() {
+        println!("Creating token account...");
+        
+        let create_token_account_ix = 
+            spl_associated_token_account::instruction::create_associated_token_account(
                 &payer.pubkey(),
                 &payer.pubkey(),
                 &mint,
                 &spl_token::id(),
             );
 
-            // Get latest blockhash
-            let recent_blockhash = client
-                .get_latest_blockhash()
-                .expect("Failed to get recent blockhash");
+        let recent_blockhash = client
+            .get_latest_blockhash()
+            .expect("Failed to get recent blockhash");
 
-            // Create and send transaction
-            let transaction = solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[create_token_account_ix],
-                Some(&payer.pubkey()),
-                &[&payer],
-                recent_blockhash,
-            );
+        let transaction = Transaction::new_signed_with_payer(
+            &[create_token_account_ix],
+            Some(&payer.pubkey()),
+            &[&payer],
+            recent_blockhash,
+        );
 
-            let signature = client
-                .send_and_confirm_transaction(&transaction)
-                .expect("Failed to create token account");
+        client
+            .send_and_confirm_transaction(&transaction)
+            .expect("Failed to create token account");
 
-            println!("Created token account: {}", signature);
-        }
+        println!("Token account created successfully");
+    } else {
+        println!("Token account already exists");
     }
 
-    println!("\nDeployment Info:");
-    println!("Program ID: {}", "68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap");
-    println!("Mint address: {}", mint);
+    // Print account info
+    println!("\nAccount Info:");
+    println!("Program ID: {}", program_id);
+    println!("Mint: {}", mint);
+    println!("Mint Authority (PDA): {}", mint_authority_pda);
     println!("Your wallet: {}", payer.pubkey());
     println!("Your token account: {}", token_account);
-
-    // Print token balance
-    match client.get_token_account_balance(&token_account) {
-        Ok(balance) => {
-            println!("Token balance: {}", balance.ui_amount.unwrap());
-        }
-        Err(_) => {
-            println!("Failed to get token balance");
-        }
-    }
 } 

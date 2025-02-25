@@ -6,22 +6,39 @@ declare_id!("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap");
 #[program]
 pub mod memo_token {
     use super::*;
-
+    
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
-        // Mint 1 token (1_000_000_000 represents 1 token with 9 decimals)
+        // Get PDA and bump
+        let (mint_authority, bump) = Pubkey::find_program_address(
+            &[b"mint_authority"],
+            ctx.program_id
+        );
+        
+        // Verify PDA
+        if mint_authority != ctx.accounts.mint_authority.key() {
+            return Err(ProgramError::InvalidSeeds.into());
+        }
+
+        // Mint tokens (fixed amount of 1)
+        let amount = 1_000_000_000; // 1 token (9 decimals)
+        let mint_authority_seeds = &[
+            b"mint_authority".as_ref(),
+            &[bump],
+        ];
+        
         token::mint_to(
-            CpiContext::new(
+            CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 token::MintTo {
                     mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.token_account.to_account_info(),
                     authority: ctx.accounts.mint_authority.to_account_info(),
                 },
+                &[mint_authority_seeds]
             ),
-            1_000_000_000,  // Changed from 1 to 1_000_000_000
+            amount
         )?;
-        
-        msg!("Congratulations! You got 1 token!");
+
         Ok(())
     }
 }
@@ -29,20 +46,16 @@ pub mod memo_token {
 #[derive(Accounts)]
 pub struct ProcessTransfer<'info> {
     #[account(mut)]
-    pub from: Signer<'info>,
-
+    pub user: Signer<'info>,
+    
     #[account(mut)]
     pub mint: Account<'info, Mint>,
-
+    
+    /// CHECK: PDA as mint authority
+    pub mint_authority: AccountInfo<'info>,
+    
     #[account(mut)]
-    pub mint_authority: Signer<'info>,
-
-    #[account(
-        mut,
-        token::mint = mint,
-        token::authority = from,
-    )]
     pub token_account: Account<'info, TokenAccount>,
-
+    
     pub token_program: Program<'info, Token>,
 }

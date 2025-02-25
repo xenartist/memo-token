@@ -20,8 +20,16 @@ fn main() {
     ).expect("Failed to read keypair file");
 
     // Program and mint addresses
-    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap").expect("Invalid program ID");
-    let mint = Pubkey::from_str("9AkxbAh31apMdjbG467VymHWJXtX92LCUz29nvtRYURS").expect("Invalid mint address");
+    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
+        .expect("Invalid program ID");
+    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+        .expect("Invalid mint address");
+
+    // Calculate PDA for mint authority
+    let (mint_authority_pda, _bump) = Pubkey::find_program_address(
+        &[b"mint_authority"],
+        &program_id,
+    );
 
     // Get user's token account
     let token_account = get_associated_token_address(
@@ -40,9 +48,9 @@ fn main() {
         program_id,
         &instruction_data,
         vec![
-            AccountMeta::new(payer.pubkey(), true),         // from
+            AccountMeta::new(payer.pubkey(), true),         // user
             AccountMeta::new(mint, false),                  // mint
-            AccountMeta::new(payer.pubkey(), true),         // mint_authority
+            AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
         ],
@@ -57,24 +65,28 @@ fn main() {
     let transaction = Transaction::new_signed_with_payer(
         &[mint_ix],
         Some(&payer.pubkey()),
-        &[&payer],
+        &[&payer],  // Only user needs to sign, PDA signs in program
         recent_blockhash,
     );
 
     // Send and confirm transaction
-    let signature = client
-        .send_and_confirm_transaction(&transaction)
-        .expect("Failed to send transaction");
-
-    println!("Mint successful! Signature: {}", signature);
-
-    // Print token balance
-    match client.get_token_account_balance(&token_account) {
-        Ok(balance) => {
-            println!("New token balance: {}", balance.ui_amount.unwrap());
+    match client.send_and_confirm_transaction(&transaction) {
+        Ok(signature) => {
+            println!("Mint successful!");
+            println!("Transaction signature: {}", signature);
+            
+            // Print token balance
+            match client.get_token_account_balance(&token_account) {
+                Ok(balance) => {
+                    println!("New token balance: {}", balance.ui_amount.unwrap());
+                }
+                Err(_) => {
+                    println!("Failed to get token balance");
+                }
+            }
         }
-        Err(_) => {
-            println!("Failed to get token balance");
+        Err(e) => {
+            println!("Error minting token: {}", e);
         }
     }
 } 
