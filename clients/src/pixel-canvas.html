@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pixel Art Editor</title>
+    <style>
+        .pixel-grid {
+            display: grid;
+            grid-template-columns: repeat(50, 10px);
+            gap: 1px;
+            background-color: #ccc;
+            padding: 1px;
+            width: fit-content;
+        }
+
+        .pixel {
+            width: 10px;
+            height: 10px;
+            background-color: white;
+            border: 1px solid #eee;
+            cursor: pointer;
+        }
+
+        .pixel.active {
+            background-color: black;
+        }
+
+        .controls {
+            margin: 20px 0;
+        }
+
+        #hexInput {
+            margin-top: 20px;
+            font-family: monospace;
+            width: 600px;
+            height: 200px;
+        }
+
+        .button-group {
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="clearGrid()">Clear Grid</button>
+        <button onclick="generateHex()">Generate Hex from Grid</button>
+    </div>
+    <div id="pixelGrid" class="pixel-grid"></div>
+    
+    <textarea id="hexInput" placeholder="Enter hex string here..."></textarea>
+    <div class="button-group">
+        <button onclick="generatePixels()">Generate Grid from Hex</button>
+    </div>
+
+    <script>
+        const GRID_SIZE = 50;
+        let grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+
+        function createGrid() {
+            const container = document.getElementById('pixelGrid');
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const pixel = document.createElement('div');
+                    pixel.className = 'pixel';
+                    pixel.dataset.row = i;
+                    pixel.dataset.col = j;
+                    pixel.addEventListener('click', togglePixel);
+                    container.appendChild(pixel);
+                }
+            }
+        }
+
+        function togglePixel(e) {
+            const row = parseInt(e.target.dataset.row);
+            const col = parseInt(e.target.dataset.col);
+            grid[row][col] = grid[row][col] ? 0 : 1;
+            e.target.classList.toggle('active');
+        }
+
+        function clearGrid() {
+            grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(0));
+            document.querySelectorAll('.pixel').forEach(pixel => {
+                pixel.classList.remove('active');
+            });
+            document.getElementById('hexInput').value = '';
+        }
+
+        function generateHex() {
+            let hexOutput = '';
+            
+            // Process all rows into a single continuous string
+            for (let row of grid) {
+                // Convert binary to hex
+                for (let i = 0; i < row.length; i += 4) {
+                    const chunk = row.slice(i, i + 4).join('');
+                    const decimal = parseInt(chunk, 2);
+                    hexOutput += decimal.toString(16).toUpperCase();
+                }
+            }
+            
+            document.getElementById('hexInput').value = hexOutput;
+        }
+
+        function generatePixels() {
+            // Get hex string from input
+            const hexString = document.getElementById('hexInput').value.trim().toUpperCase();
+            if (!hexString) return;
+            
+            // Clear the grid first
+            clearGrid();
+            
+            let hexIndex = 0;
+            
+            // Process each row
+            for (let row = 0; row < GRID_SIZE; row++) {
+                for (let col = 0; col < GRID_SIZE; col += 4) {
+                    if (hexIndex >= hexString.length) return;
+                    
+                    // Get the hex digit and convert to binary (4 bits)
+                    const hexDigit = hexString[hexIndex++];
+                    const decimal = parseInt(hexDigit, 16);
+                    if (isNaN(decimal)) continue;
+                    
+                    const binary = decimal.toString(2).padStart(4, '0');
+                    
+                    // Set the pixels according to binary representation
+                    for (let bit = 0; bit < 4 && col + bit < GRID_SIZE; bit++) {
+                        if (binary[bit] === '1') {
+                            grid[row][col + bit] = 1;
+                            
+                            // Update the visual pixel
+                            const pixelIndex = row * GRID_SIZE + (col + bit);
+                            const pixels = document.querySelectorAll('.pixel');
+                            if (pixelIndex < pixels.length) {
+                                pixels[pixelIndex].classList.add('active');
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Initialize grid when page loads
+        createGrid();
+    </script>
+</body>
+</html>
