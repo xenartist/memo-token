@@ -1,14 +1,15 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
+    instruction::{AccountMeta, Instruction},
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
-    instruction::{AccountMeta, Instruction},
     transaction::Transaction,
+    commitment_config::CommitmentConfig,
 };
-use spl_associated_token_account::get_associated_token_address;
-use std::str::FromStr;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
+use spl_memo::build_memo;
 use sha2::{Sha256, Digest};
-use spl_memo::id as memo_program_id;
+use std::str::FromStr;
 
 // Function to display pixel art in console with emoji square pixels
 fn display_pixel_art(hex_string: &str) {
@@ -56,7 +57,8 @@ fn display_pixel_art(hex_string: &str) {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments for memo
     let args: Vec<String> = std::env::args().collect();
     
@@ -81,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
-    let client = RpcClient::new(rpc_url);
+    let client = RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
 
     // Load wallet
     let payer = read_keypair_file(
@@ -91,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and mint addresses
     let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+    let mint = Pubkey::from_str("HgJGY6N9R1JcF7VHa6tkc7zQPWCD3ZrhuDeXFwnHnU7Y")  // Get from create_token output
         .expect("Invalid mint address");
 
     // Calculate PDA for mint authority
@@ -100,10 +102,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &program_id,
     );
 
-    // Get user's token account
-    let token_account = get_associated_token_address(
+    // Get user's token account - Note we're using the Token-2022 program ID
+    let token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),
         &mint,
+        &spl_token_2022::id(), // Use Token-2022 program ID
     );
 
     // Calculate Anchor instruction sighash
@@ -113,44 +116,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instruction_data = result[..8].to_vec();
 
     // Create mint instruction
-    let mint_ix = Instruction::new_with_bytes(
+    let accounts = vec![
+        AccountMeta::new(payer.pubkey(), true),
+        AccountMeta::new(mint, false),
+        AccountMeta::new_readonly(mint_authority_pda, false),
+        AccountMeta::new(token_account, false),
+        AccountMeta::new_readonly(spl_token_2022::id(), false), // Use Token-2022 program ID
+    ];
+
+    let process_transfer_ix = Instruction {
         program_id,
-        &instruction_data,
-        vec![
-            AccountMeta::new(payer.pubkey(), true),         // user
-            AccountMeta::new(mint, false),                  // mint
-            AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
-            AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
-        ],
-    );
+        accounts,
+        data: instruction_data,
+    };
 
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
+    let memo_ix = build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
 
     // Get recent blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
-        .expect("Failed to get recent blockhash");
+        .await?;
 
-    // Create and send transaction with both mint and memo instructions
+    // Create and send transaction
+    let mut instructions = vec![process_transfer_ix];
+    
+    // Add memo instruction
+    instructions.push(memo_ix);
+
     let transaction = Transaction::new_signed_with_payer(
-        &[mint_ix, memo_ix],
+        &instructions,
         Some(&payer.pubkey()),
-        &[&payer],  // Only user needs to sign, PDA signs in program
+        &[&payer],
         recent_blockhash,
     );
 
-    // Send and confirm transaction
-    let signature = client.send_and_confirm_transaction(&transaction)?;
-    println!("Mint successful! Signature: {}", signature);
-    println!("Memo: {}", memo_text);
+    let signature = client
+        .send_and_confirm_transaction(&transaction)
+        .await?;
+
+    println!("Transaction signature: {}", signature);
+    println!("Token minted successfully with memo: {}", memo_text);
 
     // Print token balance
-    match client.get_token_account_balance(&token_account) {
+    match client.get_token_account_balance(&token_account).await {
         Ok(balance) => {
             println!("New token balance: {}", balance.ui_amount.unwrap());
         }

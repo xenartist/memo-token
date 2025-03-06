@@ -1,4 +1,4 @@
-use image::{GenericImageView, imageops, Rgba};
+use image::{imageops, Rgba};
 use std::env;
 use std::path::Path;
 
