@@ -1,8 +1,11 @@
+[toolchain]
+
 [features]
-seeds = false
+resolution = true
+skip-lint = false
 
 [programs.testnet]
-memo_token = "68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap"
+memo_token = "TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw"
 
 [registry]
 url = "https://api.apr.dev"
