@@ -82,21 +82,21 @@ mod tests {
     fn test_instruction_creation() {
         let program_id = crate::ID;
         
-        // 创建所需的账户
+        // create accounts
         let user = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         let token_account = Pubkey::new_unique();
         
-        // 计算 PDA
+        // calculate PDA
         let (mint_authority, _bump) = Pubkey::find_program_address(
             &[b"mint_authority"],
             &program_id,
         );
 
-        // 创建指令数据
+        // create instruction data
         let ix_data = crate::instruction::ProcessTransfer {}.data();
 
-        // 创建账户元数据
+        // create account metadata
         let accounts = vec![
             AccountMeta::new(user, true),                    // user (signer, writable)
             AccountMeta::new(mint, true),                    // mint (writable)
@@ -105,40 +105,40 @@ mod tests {
             AccountMeta::new_readonly(TOKEN_2022_ID, false), // token_program (readonly)
         ];
 
-        // 构建指令
+        // build instruction
         let ix = Instruction {
             program_id,
             accounts,
             data: ix_data,
         };
 
-        // 验证指令
+        // verify instruction
         assert_eq!(ix.program_id, program_id);
         
-        // 验证账户数量
+        // verify account number
         assert_eq!(ix.accounts.len(), 5);
         
-        // 验证每个账户的属性
+        // verify each account's properties
         let accounts = &ix.accounts;
         
-        // 验证用户账户
+        // verify user account
         assert_eq!(accounts[0].pubkey, user);
         assert!(accounts[0].is_signer);
         assert!(accounts[0].is_writable);
         
-        // 验证 mint 账户
+        // verify mint account
         assert_eq!(accounts[1].pubkey, mint);
         assert!(accounts[1].is_writable);
         
-        // 验证 mint authority
+        // verify mint authority
         assert_eq!(accounts[2].pubkey, mint_authority);
         assert!(!accounts[2].is_writable);
         
-        // 验证 token 账户
+        // verify token account
         assert_eq!(accounts[3].pubkey, token_account);
         assert!(accounts[3].is_writable);
         
-        // 验证 token program
+        // verify token program
         assert_eq!(accounts[4].pubkey, TOKEN_2022_ID);
         assert!(!accounts[4].is_writable);
         assert!(!accounts[4].is_signer);
@@ -148,18 +148,18 @@ mod tests {
     fn test_pda_derivation() {
         let program_id = crate::ID;
         
-        // 测试 PDA 导出
+        // test PDA derivation
         let (mint_authority, bump) = Pubkey::find_program_address(
             &[b"mint_authority"],
             &program_id,
         );
 
-        // 验证 PDA
+        // verify PDA
         assert!(mint_authority != Pubkey::default());
-        // 验证 bump 在合理范围内（通常会小于 255）
+        // verify bump is in a reasonable range (usually less than 255)
         assert!(bump > 0, "Bump seed should be positive");
         
-        // 验证 PDA 一致性
+        // verify PDA consistency
         let (recalculated_authority, recalculated_bump) = 
             Pubkey::find_program_address(&[b"mint_authority"], &program_id);
             
@@ -169,12 +169,10 @@ mod tests {
 
     #[test]
     fn test_instruction_data() {
-        // 测试指令数据序列化
+        // test instruction data serialization
         let ix_data = crate::instruction::ProcessTransfer {}.data();
         
-        // 验证指令数据不为空
+        // verify instruction data is not empty
         assert!(!ix_data.is_empty());
-        
-        // 如果您的指令有特定的格式，可以在这里添加更多验证
     }
 }
