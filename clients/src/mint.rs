@@ -8,7 +8,6 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
-use spl_memo::id as memo_program_id;
 
 // Function to display pixel art in console with emoji square pixels
 fn display_pixel_art(hex_string: &str) {
