@@ -5,6 +5,8 @@ members = [
     "app"
 ]
 
+resolver = "2"
+
 [profile.release]
 overflow-checks = true
 lto = "fat"
