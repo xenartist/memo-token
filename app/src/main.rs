@@ -10,8 +10,8 @@ use spl_associated_token_account::{get_associated_token_address,create_associate
 
 fn main() {
     let rpc_url = "https://rpc.testnet.x1.xyz";
-    let program_id = "68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap";
-    let mint =  Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4").unwrap();
+    let program_id = "TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw";
+    let mint =  Pubkey::from_str("H5UtbVueFsiLk5pg9cD8jp8p4TanBX9dr83Q3SLEKRNw").unwrap();
 
     let payer = read_keypair_file(
         shellexpand::tilde("~/.config/solana/id.json").to_string()
