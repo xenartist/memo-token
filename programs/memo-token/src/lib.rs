@@ -5,7 +5,7 @@ use anchor_spl::{
     token_interface::{Mint, TokenAccount, Token2022}
 };
 
-declare_id!("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap");
+declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
 #[program]
 pub mod memo_token {
@@ -30,6 +30,7 @@ pub mod memo_token {
             &[bump],
         ];
         
+        // Mint tokens
         token_2022::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -52,7 +53,7 @@ pub struct ProcessTransfer<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
-    /// CHECK: This is the token mint account
+    /// CHECK: This is the token mint account that supports metadata
     #[account(mut)]
     pub mint: InterfaceAccount<'info, Mint>,
     

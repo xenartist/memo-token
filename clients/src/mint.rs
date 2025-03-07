@@ -120,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(mint, false),                  // mint
             AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
             AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new_readonly(spl_token_2022::id(), false), // token_program
         ],
     );
 

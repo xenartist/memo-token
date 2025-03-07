@@ -6,6 +6,7 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
+use spl_token_2022::id;
 
 fn main() {
     // Connect to network
@@ -20,7 +21,7 @@ fn main() {
     // Fixed addresses
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+    let mint = Pubkey::from_str("H5UtbVueFsiLk5pg9cD8jp8p4TanBX9dr83Q3SLEKRNw")  // Get from create_token output
         .expect("Invalid mint address");
 
     // Calculate PDA (for information only)
@@ -44,7 +45,7 @@ fn main() {
                 &payer.pubkey(),
                 &payer.pubkey(),
                 &mint,
-                &spl_token::id(),
+                &id(),
             );
 
         let recent_blockhash = client
