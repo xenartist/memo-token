@@ -8,7 +8,6 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
-use spl_memo::id as memo_program_id;
 
 // Function to display pixel art in console with emoji square pixels
 fn display_pixel_art(hex_string: &str) {
@@ -89,9 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).expect("Failed to read keypair file");
 
     // Program and mint addresses
-    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
+    let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")  // Get from create_token output
         .expect("Invalid mint address");
 
     // Calculate PDA for mint authority

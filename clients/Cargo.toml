@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "create_token"
-path = "src/create_token.rs"
+name = "create-token"
+path = "src/create-token.rs"
 
 [[bin]]
 name = "init"
@@ -20,8 +20,8 @@ name = "img2hex"
 path = "src/img2hex.rs"
 
 [dependencies]
-solana-client = "1.17.4"
-solana-sdk = "1.17.4"
+solana-client = "1.18.26"
+solana-sdk = "1.18.26"
 spl-token = "4.0.0"
 spl-associated-token-account = "2.2.0"
 shellexpand = "3.1.0"

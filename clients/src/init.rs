@@ -18,9 +18,9 @@ fn main() {
     ).expect("Failed to read keypair file");
 
     // Fixed addresses
-    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
+    let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("EfVqRhubT8JETBdFtJsggSEnoR25MxrAoakswyir1uM4")  // Get from create_token output
+    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")  // Get from create_token output
         .expect("Invalid mint address");
 
     // Calculate PDA (for information only)

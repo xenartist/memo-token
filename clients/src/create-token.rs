@@ -20,7 +20,7 @@ fn main() {
     ).expect("Failed to read keypair file");
 
     // Program ID
-    let program_id = Pubkey::from_str("68ASgTRCbbwsfgvpkfp3LvdXbpn33QbxbV64jXVaW8Ap")
+    let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
     // Calculate PDA for mint authority
