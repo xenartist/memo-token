@@ -62,7 +62,7 @@ pub mod memo_token {
         let hash = hasher.result();
         
         // generate a random number between 1 and max_tokens
-        let random_bytes = &hash.to_bytes()[0..7];
+        let random_bytes = &hash.to_bytes()[0..8];
         let random_value = u64::from_le_bytes(random_bytes.try_into().unwrap());
         let token_count = (random_value % max_tokens as u64) + 1;
         
@@ -143,7 +143,7 @@ pub enum ErrorCode {
     #[msg("Memo is too short. Must be at least 69 bytes.")]
     MemoTooShort,
     
-    #[msg("Memo is too long. Must be at most 800 bytes.")]
+    #[msg("Memo is too long. Must be at most 700 bytes.")]
     MemoTooLong,
     
     #[msg("Transaction must include a memo.")]
