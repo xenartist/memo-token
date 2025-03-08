@@ -121,25 +121,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
         ],
     );
 
-    // Create memo instruction
+    // Create memo instruction  
     let memo_ix = spl_memo::build_memo(
         memo_text.as_bytes(),
         &[&payer.pubkey()],
     );
+    
+    // print memo program ID and length for debugging
+    println!("Memo program ID: {}", memo_ix.program_id);
+    println!("Memo data length: {}", memo_text.as_bytes().len());
+    
+    // ensure memo length is at least 69 bytes
+    if memo_text.as_bytes().len() < 69 {
+        println!("Warning: Memo length is less than 69 bytes, transaction may fail");
+    }
 
     // Get recent blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // Create and send transaction with both mint and memo instructions
+    // adjust instruction order, add memo instruction first, then mint instruction
     let transaction = Transaction::new_signed_with_payer(
-        &[mint_ix, memo_ix],
+        &[memo_ix, mint_ix],
         Some(&payer.pubkey()),
-        &[&payer],  // Only user needs to sign, PDA signs in program
+        &[&payer],
         recent_blockhash,
     );
 
