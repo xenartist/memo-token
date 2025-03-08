@@ -57,40 +57,26 @@ fn check_memo_before_current_instruction(instructions: &AccountInfo, min_length:
     let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
         .expect("Failed to parse memo program ID");
     
-    // get current instruction index
+    // current instruction index
     let current_index = solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
-    msg!("Current instruction index: {}", current_index);
     
     // only check instructions before current instruction
     for i in 0..current_index {
-        let index: usize = i as usize;
+        let index = i as usize;
         
-        match solana_program::sysvar::instructions::load_instruction_at_checked(index, instructions) {
-            Ok(ix) => {
-                msg!("Checking instruction at index {}, program: {}", index, ix.program_id);
-                
-                // check if it's a memo instruction
-                if ix.program_id == memo_program_id {
-                    msg!("Found memo at index {}, length: {}", index, ix.data.len());
-                    
-                    // check memo length
-                    if ix.data.len() >= min_length {
-                        msg!("Memo length is sufficient: {}", ix.data.len());
-                        return Ok(true);
-                    } else {
-                        msg!("Memo too short: {} bytes (minimum required: {} bytes)", 
-                             ix.data.len(), min_length);
-                        return Err(ErrorCode::MemoTooShort.into());
-                    }
+        if let Ok(ix) = solana_program::sysvar::instructions::load_instruction_at_checked(index, instructions) {
+            // check if it's a memo instruction
+            if ix.program_id == memo_program_id {
+                // check memo length
+                if ix.data.len() >= min_length {
+                    return Ok(true);
+                } else {
+                    return Err(ErrorCode::MemoTooShort.into());
                 }
-            },
-            Err(err) => {
-                msg!("Error loading instruction {}: {:?}", index, err);
             }
         }
     }
-    
-    msg!("No memo instruction found before current instruction");
+
     Ok(false)
 }
 
