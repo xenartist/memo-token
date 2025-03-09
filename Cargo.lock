@@ -370,6 +370,7 @@ dependencies = [
  "solana-sdk",
  "solana-transaction-status",
  "spl-associated-token-account 2.3.0",
+ "spl-memo",
 ]
 
 [[package]]

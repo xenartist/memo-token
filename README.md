@@ -71,9 +71,12 @@ cargo run --bin mint
 ## Architecture
 
 - `lib.rs`: Main program logic with PDA-based mint authority
-- `create_token.rs`: Token creation utility
+- `create-token.rs`: Token creation utility
 - `init.rs`: Token account initialization
 - `mint.rs`: Token minting client
+```
+cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
+``` 
 
 ## Security
 

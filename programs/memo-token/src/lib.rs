@@ -10,8 +10,8 @@ pub mod memo_token {
     use super::*;
     
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
-        // check memo and get data
-        let (memo_found, memo_data) = check_memo_and_get_data(ctx.accounts.instructions.as_ref(), 69)?;
+        // check memo instruction
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
             return Err(ErrorCode::MemoRequired.into());
         }
@@ -47,7 +47,7 @@ pub mod memo_token {
             ctx.program_id
         );
         
-        // check PDA
+        // verify PDA
         if mint_authority != ctx.accounts.mint_authority.key() {
             return Err(ProgramError::InvalidSeeds.into());
         }
@@ -61,12 +61,12 @@ pub mod memo_token {
         hasher.hash(ctx.accounts.user.key().as_ref());
         let hash = hasher.result();
         
-        // generate a random number between 1 and max_tokens
+        // generate random number between 1 and max_tokens
         let random_bytes = &hash.to_bytes()[0..8];
         let random_value = u64::from_le_bytes(random_bytes.try_into().unwrap());
         let token_count = (random_value % max_tokens as u64) + 1;
         
-        // calculate the amount to mint (1 token = 10^9 units)
+        // calculate mint amount (1 token = 10^9 units)
         let amount = token_count * 1_000_000_000;
         
         // mint tokens
@@ -84,36 +84,56 @@ pub mod memo_token {
         )?;
         
         // record the number of tokens minted
-        msg!("Minted {} tokens based on memo length of {} bytes", token_count, memo_length);
+        msg!("Minted {} tokens", token_count);
 
         Ok(())
     }
 }
 
-// modify function to return memo data
-fn check_memo_and_get_data(instructions: &AccountInfo, min_length: usize) -> Result<(bool, Vec<u8>)> {
+// Optimized but still somewhat flexible approach
+fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Result<(bool, Vec<u8>)> {
     // SPL Memo program ID
     let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
         .expect("Failed to parse memo program ID");
     
-    // get the current instruction index
+    // get current instruction index
     let current_index = solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
-    // only check instructions before current instruction
-    for i in 0..current_index {
-        let index = i as usize;
-        
-        if let Ok(ix) = solana_program::sysvar::instructions::load_instruction_at_checked(index, instructions) {
-            if ix.program_id == memo_program_id {
-                if ix.data.len() >= min_length {
-                    return Ok((true, ix.data.to_vec()));
-                } else {
-                    return Err(ErrorCode::MemoTooShort.into());
+    // First check the most likely position (index 1)
+    if current_index > 1 {
+        match solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
+            Ok(ix) => {
+                if ix.program_id == memo_program_id {
+                    if ix.data.len() >= min_length {
+                        return Ok((true, ix.data.to_vec()));
+                    } else {
+                        return Err(ErrorCode::MemoTooShort.into());
+                    }
                 }
-            }
+            },
+            Err(_) => {}
         }
     }
-
+    
+    // If not found at index 1, check other positions as fallback
+    for i in 0..current_index {
+        if i == 1 { continue; } // Skip index 1 as we already checked it
+        
+        match solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
+            Ok(ix) => {
+                if ix.program_id == memo_program_id {
+                    if ix.data.len() >= min_length {
+                        return Ok((true, ix.data.to_vec()));
+                    } else {
+                        return Err(ErrorCode::MemoTooShort.into());
+                    }
+                }
+            },
+            Err(_) => { continue; }
+        }
+    }
+    
+    // No valid memo found
     Ok((false, vec![]))
 }
 

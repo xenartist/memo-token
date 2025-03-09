@@ -4,6 +4,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
+    compute_budget::ComputeBudgetInstruction,
 };
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
@@ -56,13 +57,43 @@ fn display_pixel_art(hex_string: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Get command line arguments for memo
+    // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
-    let memo = if args.len() > 1 {
-        args[1].clone()
+    // Parse compute units from args (default: 440_000)
+    // Now it's the first parameter
+    let compute_units = if args.len() > 1 {
+        match args[1].parse::<u32>() {
+            Ok(cu) => cu,
+            Err(_) => {
+                // If first arg can't be parsed as a number, assume it's a memo
+                // and use default CU
+                440_000
+            }
+        }
     } else {
-        String::from("Default memo message")
+        440_000 // Default CU limit
+    };
+    
+    // Parse memo from args
+    // Now it's the second parameter, with special handling
+    let memo = if args.len() > 1 {
+        // Check if first arg is a number (CU)
+        if args[1].parse::<u32>().is_ok() {
+            // First arg is CU, check if there's a second arg for memo
+            if args.len() > 2 {
+                args[2].clone()
+            } else {
+                // No memo provided, use default
+                String::from("This is a default memo message that is at least 69 bytes long for the minimum requirement.")
+            }
+        } else {
+            // First arg is not a number, assume it's a memo
+            args[1].clone()
+        }
+    } else {
+        // No args provided, use default memo
+        String::from("This is a default memo message that is at least 69 bytes long for the minimum requirement.")
     };
     
     // Check if memo starts with "pixel:" prefix
@@ -78,6 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (memo, false)
     };
 
+    // Ensure memo length is at least 69 bytes
+    let memo_text = ensure_min_length(memo_text, 69);
+
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
@@ -90,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and mint addresses
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")  // Get from create_token output
+    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")
         .expect("Invalid mint address");
 
     // Calculate PDA for mint authority
@@ -111,6 +145,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = hasher.finalize();
     let instruction_data = result[..8].to_vec();
 
+    // Create compute budget instruction to set CU limit
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    
+    // Print memo length and CU information
+    let memo_length = memo_text.as_bytes().len();
+    println!("Memo length: {} bytes", memo_length);
+    println!("Setting compute budget: {} CUs", compute_units);
+
     // Create mint instruction
     let mint_ix = Instruction::new_with_bytes(
         program_id,
@@ -125,29 +167,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     );
 
-    // Create memo instruction  
+    // Create memo instruction
     let memo_ix = spl_memo::build_memo(
         memo_text.as_bytes(),
         &[&payer.pubkey()],
     );
     
-    // print memo program ID and length for debugging
-    println!("Memo program ID: {}", memo_ix.program_id);
-    println!("Memo data length: {}", memo_text.as_bytes().len());
-    
-    // ensure memo length is at least 69 bytes
-    if memo_text.as_bytes().len() < 69 {
-        println!("Warning: Memo length is less than 69 bytes, transaction may fail");
-    }
-
     // Get recent blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // adjust instruction order, add memo instruction first, then mint instruction
+    // Create and send transaction with new instruction order:
+    // 1. Compute budget instruction
+    // 2. Memo instruction
+    // 3. Mint instruction
     let transaction = Transaction::new_signed_with_payer(
-        &[memo_ix, mint_ix],
+        &[compute_budget_ix, memo_ix, mint_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -175,4 +211,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// Ensure string is at least minimum length
+fn ensure_min_length(text: String, min_length: usize) -> String {
+    if text.as_bytes().len() >= min_length {
+        return text;
+    }
+    
+    // If length is insufficient, add padding
+    let padding_needed = min_length - text.as_bytes().len();
+    let padding = ".".repeat(padding_needed);
+    
+    // Add padding and return
+    let result = format!("{}{}", text, padding);
+    println!("Memo was padded to meet minimum length requirement of {} bytes", min_length);
+    
+    result
 }
