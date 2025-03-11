@@ -85,6 +85,11 @@ pub mod memo_token {
         
         // record the number of tokens minted
         msg!("Minted {} tokens", token_count);
+        
+        // print the client's public key, block information, and timestamp
+        msg!("Transaction initiated by: {}", ctx.accounts.user.key());
+        msg!("Transaction slot: {}", clock.slot);
+        msg!("Transaction timestamp: {} (Unix timestamp)", clock.unix_timestamp);
 
         Ok(())
     }
