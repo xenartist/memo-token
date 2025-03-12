@@ -5,9 +5,23 @@ use std::str::FromStr;
 
 declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
+// storage account
+#[account]
+pub struct TestStorage {
+    pub last_user: Pubkey,  // storage last user
+}
+
 #[program]
 pub mod memo_token {
     use super::*;
+    
+    // initialize storage
+    pub fn initialize_storage(ctx: Context<InitializeStorage>) -> Result<()> {
+        let storage = &mut ctx.accounts.test_storage;
+        storage.last_user = Pubkey::default();
+        msg!("Test storage initialized");
+        Ok(())
+    }
     
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
         // check memo instruction
@@ -85,6 +99,12 @@ pub mod memo_token {
         
         // record the number of tokens minted
         msg!("Minted {} tokens", token_count);
+        
+        // update storage last user
+        if let Some(storage) = &mut ctx.accounts.test_storage {
+            storage.last_user = ctx.accounts.user.key();
+            msg!("Updated storage with user: {}", ctx.accounts.user.key());
+        }
 
         Ok(())
     }
@@ -137,6 +157,25 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
     Ok((false, vec![]))
 }
 
+// initialize storage account
+#[derive(Accounts)]
+pub struct InitializeStorage<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32, // discriminator + pubkey
+        seeds = [b"test_onchain_storage"],
+        bump
+    )]
+    pub test_storage: Account<'info, TestStorage>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+// modify ProcessTransfer structure, add optional storage account
 #[derive(Accounts)]
 pub struct ProcessTransfer<'info> {
     #[account(mut)]
@@ -156,6 +195,14 @@ pub struct ProcessTransfer<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+    
+    /// Storage account
+    #[account(
+        mut,
+        seeds = [b"test_onchain_storage"],
+        bump
+    )]
+    pub test_storage: Option<Account<'info, TestStorage>>,
 }
 
 #[error_code]

@@ -8,6 +8,14 @@ name = "create-token"
 path = "src/create-token.rs"
 
 [[bin]]
+name = "init-storage"
+path = "src/init-storage.rs"
+
+[[bin]]
+name = "close-storage"
+path = "src/close-storage.rs"
+
+[[bin]]
 name = "init"
 path = "src/init.rs"
 
