@@ -108,6 +108,13 @@ pub mod memo_token {
 
         Ok(())
     }
+
+    // close storage
+    pub fn close_storage(ctx: Context<CloseStorage>) -> Result<()> {
+        msg!("Closing storage account");
+        // account will be closed and balance will be transferred to receiver
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -203,6 +210,23 @@ pub struct ProcessTransfer<'info> {
         bump
     )]
     pub test_storage: Option<Account<'info, TestStorage>>,
+}
+
+// close storage account
+#[derive(Accounts)]
+pub struct CloseStorage<'info> {
+    #[account(mut)]
+    pub recipient: Signer<'info>,  // receiver account
+
+    #[account(
+        mut,
+        seeds = [b"test_onchain_storage"],
+        bump,
+        close = recipient  // key: specify that the balance will be transferred to recipient after closing
+    )]
+    pub test_storage: Account<'info, TestStorage>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[error_code]
