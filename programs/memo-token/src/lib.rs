@@ -115,6 +115,44 @@ pub mod memo_token {
         // account will be closed and balance will be transferred to receiver
         Ok(())
     }
+
+    // add new instruction in memo_token module
+    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
+        // check memo instruction
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
+        if !memo_found {
+            return Err(ErrorCode::MemoRequired.into());
+        }
+        
+        // check memo length
+        let memo_length = memo_data.len();
+        if memo_length > 700 {
+            return Err(ErrorCode::MemoTooLong.into());
+        }
+
+        // burn tokens
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                token::Burn {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    from: ctx.accounts.token_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        msg!("Burned {} tokens", amount / 1_000_000_000); // convert to actual token quantity
+        
+        // update storage (if needed)
+        if let Some(storage) = &mut ctx.accounts.test_storage {
+            storage.last_user = ctx.accounts.user.key();
+            msg!("Updated storage with user: {}", ctx.accounts.user.key());
+        }
+
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -227,6 +265,37 @@ pub struct CloseStorage<'info> {
     pub test_storage: Account<'info, TestStorage>,
 
     pub system_program: Program<'info, System>,
+}
+
+// add account structure for burning instruction
+#[derive(Accounts)]
+pub struct ProcessBurn<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = user
+    )]
+    pub token_account: Account<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token>,
+    
+    /// CHECK: Instructions sysvar
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>,
+    
+    /// Storage account (optional)
+    #[account(
+        mut,
+        seeds = [b"test_onchain_storage"],
+        bump
+    )]
+    pub test_storage: Option<Account<'info, TestStorage>>,
 }
 
 #[error_code]

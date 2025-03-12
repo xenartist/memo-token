@@ -145,6 +145,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = hasher.finalize();
     let instruction_data = result[..8].to_vec();
 
+    // Calculate storage PDA
+    let (storage_pda, _) = Pubkey::find_program_address(
+        &[b"test_onchain_storage"],
+        &program_id,
+    );
+
     // Create compute budget instruction to set CU limit
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
     
@@ -164,6 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
+            AccountMeta::new(storage_pda, false),          // storage account
         ],
     );
 

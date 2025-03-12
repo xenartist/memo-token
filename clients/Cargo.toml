@@ -28,6 +28,10 @@ name = "mint-test"
 path = "src/mint-test.rs"
 
 [[bin]]
+name = "burn"
+path = "src/burn.rs"
+
+[[bin]]
 name = "img2hex"
 path = "src/img2hex.rs"
 
