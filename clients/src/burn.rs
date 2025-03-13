@@ -59,9 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint,
     );
 
-    // calculate storage PDA
-    let (storage_pda, _) = Pubkey::find_program_address(
-        &[b"test_onchain_storage"],
+    // calculate latest_burn PDA
+    let (latest_burn_pda, _) = Pubkey::find_program_address(
+        &[b"latest_burn"],
         &program_id,
     );
 
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(storage_pda, false),          // storage account
+            AccountMeta::new(latest_burn_pda, false),      // latest burn account
         ],
     );
 

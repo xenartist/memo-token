@@ -7,8 +7,8 @@ declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
 // storage account
 #[account]
-pub struct TestStorage {
-    pub last_user: Pubkey,  // storage last user
+pub struct LatestBurn {
+    pub last_user: Pubkey,  // storage last user who burned tokens
 }
 
 #[program]
@@ -16,10 +16,10 @@ pub mod memo_token {
     use super::*;
     
     // initialize storage
-    pub fn initialize_storage(ctx: Context<InitializeStorage>) -> Result<()> {
-        let storage = &mut ctx.accounts.test_storage;
-        storage.last_user = Pubkey::default();
-        msg!("Test storage initialized");
+    pub fn initialize_latest_burn(ctx: Context<InitializeLatestBurn>) -> Result<()> {
+        let latest_burn = &mut ctx.accounts.latest_burn;
+        latest_burn.last_user = Pubkey::default();
+        msg!("Latest burn storage initialized");
         Ok(())
     }
     
@@ -100,19 +100,12 @@ pub mod memo_token {
         // record the number of tokens minted
         msg!("Minted {} tokens", token_count);
         
-        // update storage last user
-        if let Some(storage) = &mut ctx.accounts.test_storage {
-            storage.last_user = ctx.accounts.user.key();
-            msg!("Updated storage with user: {}", ctx.accounts.user.key());
-        }
-
         Ok(())
     }
 
     // close storage
-    pub fn close_storage(ctx: Context<CloseStorage>) -> Result<()> {
-        msg!("Closing storage account");
-        // account will be closed and balance will be transferred to receiver
+    pub fn close_latest_burn(ctx: Context<CloseLatestBurn>) -> Result<()> {
+        msg!("Closing latest burn storage account");
         Ok(())
     }
 
@@ -146,9 +139,9 @@ pub mod memo_token {
         msg!("Burned {} tokens", amount / 1_000_000_000); // convert to actual token quantity
         
         // update storage (if needed)
-        if let Some(storage) = &mut ctx.accounts.test_storage {
-            storage.last_user = ctx.accounts.user.key();
-            msg!("Updated storage with user: {}", ctx.accounts.user.key());
+        if let Some(latest_burn) = &mut ctx.accounts.latest_burn {
+            latest_burn.last_user = ctx.accounts.user.key();
+            msg!("Updated latest burn with user: {}", ctx.accounts.user.key());
         }
 
         Ok(())
@@ -204,7 +197,7 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
 
 // initialize storage account
 #[derive(Accounts)]
-pub struct InitializeStorage<'info> {
+pub struct InitializeLatestBurn<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     
@@ -212,10 +205,10 @@ pub struct InitializeStorage<'info> {
         init,
         payer = payer,
         space = 8 + 32, // discriminator + pubkey
-        seeds = [b"test_onchain_storage"],
+        seeds = [b"latest_burn"],
         bump
     )]
-    pub test_storage: Account<'info, TestStorage>,
+    pub latest_burn: Account<'info, LatestBurn>,
     
     pub system_program: Program<'info, System>,
 }
@@ -240,29 +233,21 @@ pub struct ProcessTransfer<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
-    
-    /// Storage account
-    #[account(
-        mut,
-        seeds = [b"test_onchain_storage"],
-        bump
-    )]
-    pub test_storage: Option<Account<'info, TestStorage>>,
 }
 
 // close storage account
 #[derive(Accounts)]
-pub struct CloseStorage<'info> {
+pub struct CloseLatestBurn<'info> {
     #[account(mut)]
-    pub recipient: Signer<'info>,  // receiver account
+    pub recipient: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [b"test_onchain_storage"],
+        seeds = [b"latest_burn"],
         bump,
-        close = recipient  // key: specify that the balance will be transferred to recipient after closing
+        close = recipient
     )]
-    pub test_storage: Account<'info, TestStorage>,
+    pub latest_burn: Account<'info, LatestBurn>,
 
     pub system_program: Program<'info, System>,
 }
@@ -289,13 +274,13 @@ pub struct ProcessBurn<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
     
-    /// Storage account (optional)
+    /// Latest burn storage (optional)
     #[account(
         mut,
-        seeds = [b"test_onchain_storage"],
+        seeds = [b"latest_burn"],
         bump
     )]
-    pub test_storage: Option<Account<'info, TestStorage>>,
+    pub latest_burn: Option<Account<'info, LatestBurn>>,
 }
 
 #[error_code]

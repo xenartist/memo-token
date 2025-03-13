@@ -77,6 +77,10 @@ cargo run --bin mint
 ```
 cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
 ``` 
+- `burn.rs`: Token burning client
+```
+cargo run --bin burn 400000 1 "$(printf 'a%.0s' {1..700})"
+```
 
 ## Security
 

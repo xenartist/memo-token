@@ -8,12 +8,12 @@ name = "create-token"
 path = "src/create-token.rs"
 
 [[bin]]
-name = "init-storage"
-path = "src/init-storage.rs"
+name = "init-latest-burn"
+path = "src/init-latest-burn.rs"
 
 [[bin]]
-name = "close-storage"
-path = "src/close-storage.rs"
+name = "close-latest-burn"
+path = "src/close-latest-burn.rs"
 
 [[bin]]
 name = "init"
