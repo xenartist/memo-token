@@ -9,6 +9,7 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
+use serde_json;
 
 // Function to display pixel art in console with emoji square pixels
 fn display_pixel_art(hex_string: &str) {
@@ -75,41 +76,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         440_000 // Default CU limit
     };
     
+    // default fake signature
+    let default_signature = "2ZaXvNKVY8DbqZitNHAYRmqvqD6cBupCJmYY6rDnP5XzY7FPPpyVzKGdNhfXUWnz2J2zU6SK8J2WZPTdJA5eSNoK";
+
     // Parse memo from args
-    // Now it's the second parameter, with special handling
-    let memo = if args.len() > 1 {
+    let (message, signature) = if args.len() > 1 {
         // Check if first arg is a number (CU)
         if args[1].parse::<u32>().is_ok() {
             // First arg is CU, check if there's a second arg for memo
             if args.len() > 2 {
-                args[2].clone()
+                // check if signature separator "|" is included
+                if args[2].contains("|") {
+                    let parts: Vec<&str> = args[2].split("|").collect();
+                    (parts[0].to_string(), parts[1].to_string())
+                } else {
+                    (args[2].clone(), default_signature.to_string())
+                }
             } else {
                 // No memo provided, use default
-                String::from("This is a default memo message that is at least 69 bytes long for the minimum requirement.")
+                (String::from("Default message for memo"), default_signature.to_string())
             }
         } else {
             // First arg is not a number, assume it's a memo
-            args[1].clone()
+            if args[1].contains("|") {
+                let parts: Vec<&str> = args[1].split("|").collect();
+                (parts[0].to_string(), parts[1].to_string())
+            } else {
+                (args[1].clone(), default_signature.to_string())
+            }
         }
     } else {
         // No args provided, use default memo
-        String::from("This is a default memo message that is at least 69 bytes long for the minimum requirement.")
-    };
-    
-    // Check if memo starts with "pixel:" prefix
-    let (memo_text, has_pixel_art) = if memo.starts_with("pixel:") {
-        let hex_part = memo.trim_start_matches("pixel:").trim();
-        // Validate that the remaining part is a valid hex string
-        if hex_part.chars().all(|c| c.is_digit(16)) {
-            (memo.clone(), true)
-        } else {
-            (memo, false)
-        }
-    } else {
-        (memo, false)
+        (String::from("Default message for memo"), default_signature.to_string())
     };
 
-    // Ensure memo length is at least 69 bytes
+    // build JSON format memo
+    let memo_json = serde_json::json!({
+        "signature": signature,
+        "message": message
+    });
+    
+    let memo_text = memo_json.to_string();
+
+    // ensure memo length is at least 69 bytes
     let memo_text = ensure_min_length(memo_text, 69);
 
     // Connect to network
@@ -145,14 +154,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = hasher.finalize();
     let instruction_data = result[..8].to_vec();
 
-    // Create compute budget instruction to set CU limit
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
-    
     // Print memo length and CU information
     let memo_length = memo_text.as_bytes().len();
     println!("Memo length: {} bytes", memo_length);
+    println!("Memo content: {}", memo_text);
     println!("Setting compute budget: {} CUs", compute_units);
 
+    // Create compute budget instruction to set CU limit
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    
     // Create mint instruction
     let mint_ix = Instruction::new_with_bytes(
         program_id,
@@ -167,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     );
 
-    // Create memo instruction
+    // Create memo instruction with JSON content
     let memo_ix = spl_memo::build_memo(
         memo_text.as_bytes(),
         &[&payer.pubkey()],
@@ -205,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // Display pixel art if memo contains pixel art
-    if has_pixel_art {
+    if memo_text.starts_with("pixel:") {
         let hex_string = memo_text.trim_start_matches("pixel:").trim();
         display_pixel_art(hex_string);
     }
@@ -213,18 +223,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Ensure string is at least minimum length
+// modify ensure_min_length function to keep JSON format
 fn ensure_min_length(text: String, min_length: usize) -> String {
     if text.as_bytes().len() >= min_length {
         return text;
     }
     
-    // If length is insufficient, add padding
-    let padding_needed = min_length - text.as_bytes().len();
+    // parse existing JSON
+    let mut json: serde_json::Value = serde_json::from_str(&text)
+        .expect("Failed to parse JSON");
+    
+    // get existing message
+    let message = json["message"].as_str().unwrap_or("");
+    
+    // calculate padding length needed
+    let current_length = text.as_bytes().len();
+    let padding_needed = min_length - current_length;
     let padding = ".".repeat(padding_needed);
     
-    // Add padding and return
-    let result = format!("{}{}", text, padding);
+    // update message field
+    let new_message = format!("{}{}", message, padding);
+    json["message"] = serde_json::Value::String(new_message);
+    
+    // convert back to string
+    let result = json.to_string();
     println!("Memo was padded to meet minimum length requirement of {} bytes", min_length);
     
     result

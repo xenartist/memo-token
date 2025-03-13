@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
+use serde_json::Value;
 
 declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
@@ -9,6 +10,9 @@ declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 #[account]
 pub struct LatestBurn {
     pub last_user: Pubkey,  // storage last user who burned tokens
+    pub signature: String,     // 88 bytes (base58 encoded signature)
+    pub slot: u64,            // 8 bytes
+    pub blocktime: i64,       // 8 bytes
 }
 
 #[program]
@@ -19,6 +23,9 @@ pub mod memo_token {
     pub fn initialize_latest_burn(ctx: Context<InitializeLatestBurn>) -> Result<()> {
         let latest_burn = &mut ctx.accounts.latest_burn;
         latest_burn.last_user = Pubkey::default();
+        latest_burn.signature = String::new();
+        latest_burn.slot = 0;
+        latest_burn.blocktime = 0;
         msg!("Latest burn storage initialized");
         Ok(())
     }
@@ -114,13 +121,44 @@ pub mod memo_token {
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
+            msg!("No memo instruction found");
             return Err(ErrorCode::MemoRequired.into());
         }
         
         // check memo length
         let memo_length = memo_data.len();
-        if memo_length > 700 {
-            return Err(ErrorCode::MemoTooLong.into());
+        msg!("Memo length: {}", memo_length);
+        
+        // Print raw memo data
+        msg!("Raw memo data:");
+        for (i, chunk) in memo_data.chunks(32).enumerate() {
+            let hex = chunk.iter().map(|b| format!("{:02x}", b)).collect::<Vec<String>>().join(" ");
+            msg!("Chunk {}: {}", i, hex);
+        }
+        
+        // Try to convert to string and print
+        if let Ok(memo_str) = String::from_utf8(memo_data.clone()) {
+            msg!("Memo as string: {}", memo_str);
+            
+            // Remove escaped quotes and backslashes
+            let clean_str = memo_str
+                .trim_matches('"')  // Remove outer quotes
+                .replace("\\\"", "\"")  // Replace escaped quotes
+                .replace("\\\\", "\\");  // Replace escaped backslashes
+            
+            msg!("Cleaned memo string: {}", clean_str);
+            
+            // Try to parse JSON with explicit type annotation
+            if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(&clean_str) {
+                msg!("Successfully parsed JSON: {}", json_data);
+                
+                // Try to get signature field
+                if let Some(signature) = json_data["signature"].as_str() {
+                    msg!("Found signature in JSON: {}", signature);
+                }
+            } else {
+                msg!("Failed to parse JSON after cleaning");
+            }
         }
 
         // burn tokens
@@ -136,12 +174,14 @@ pub mod memo_token {
             amount,
         )?;
 
-        msg!("Burned {} tokens", amount / 1_000_000_000); // convert to actual token quantity
+        msg!("Burned {} tokens", amount / 1_000_000_000);
         
-        // update storage (if needed)
+        // get current clock information
+        let clock = Clock::get()?;
+        
+        // update storage
         if let Some(latest_burn) = &mut ctx.accounts.latest_burn {
-            latest_burn.last_user = ctx.accounts.user.key();
-            msg!("Updated latest burn with user: {}", ctx.accounts.user.key());
+            msg!("Latest burn account exists but skipping update for now");
         }
 
         Ok(())
@@ -204,7 +244,11 @@ pub struct InitializeLatestBurn<'info> {
     #[account(
         init,
         payer = payer,
-        space = 8 + 32, // discriminator + pubkey
+        space = 8 + // discriminator
+               32 + // pubkey
+               88 + // signature (base58 string)
+               8 +  // slot
+               8,   // blocktime
         seeds = [b"latest_burn"],
         bump
     )]
@@ -293,4 +337,10 @@ pub enum ErrorCode {
     
     #[msg("Transaction must include a memo.")]
     MemoRequired,
+
+    #[msg("Invalid memo format. Expected JSON format.")]
+    InvalidMemoFormat,
+
+    #[msg("Missing signature field in memo JSON.")]
+    MissingSignature,
 }

@@ -9,6 +9,7 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
+use serde_json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // get command line arguments
@@ -28,15 +29,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1_000_000_000 // default burn 1 token
     };
 
-    // parse memo
-    let memo = if args.len() > 3 {
-        args[3].clone()
+    // default fake signature
+    let default_signature = "2ZaXvNKVY8DbqZitNHAYRmqvqD6cBupCJmYY6rDnP5XzY7FPPpyVzKGdNhfXUWnz2J2zU6SK8J2WZPTdJA5eSNoK";
+
+    // Parse memo and signature from args
+    let (message, signature) = if args.len() > 3 {
+        // check if signature separator "|" is included
+        if args[3].contains("|") {
+            let parts: Vec<&str> = args[3].split("|").collect();
+            (parts[0].to_string(), parts[1].to_string())
+        } else {
+            (args[3].clone(), default_signature.to_string())
+        }
     } else {
-        String::from("This is a default memo message that is at least 69 bytes long for the minimum requirement.")
+        (String::from("Default burn message"), default_signature.to_string())
     };
 
+    // build JSON format memo
+    let memo_json = serde_json::json!({
+        "signature": signature,
+        "message": message
+    });
+    
+    // convert to string with compact formatting
+    let memo_text = serde_json::to_string(&memo_json)
+        .expect("Failed to serialize JSON");
+
     // ensure memo length is at least 69 bytes
-    let memo_text = ensure_min_length(memo, 69);
+    let memo_text = ensure_min_length(memo_text, 69);
+
+    // print detailed information
+    println!("Original JSON structure:");
+    println!("{:#?}", memo_json);
+    println!("\nFinal memo text (length: {} bytes):", memo_text.as_bytes().len());
+    println!("{}", memo_text);
+    println!("\nMemo text bytes:");
+    for (i, byte) in memo_text.as_bytes().iter().enumerate() {
+        print!("{:02x} ", byte);
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
+    }
+    println!("\n");
 
     // connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
@@ -77,8 +111,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create compute budget instruction
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
     
+    // Convert JSON to bytes directly without any extra escaping
+    let memo_ix = spl_memo::build_memo(
+        memo_text.as_bytes(),
+        &[&payer.pubkey()],
+    );
+    
     // print information
-    println!("Memo length: {} bytes", memo_text.as_bytes().len());
+    let memo_length = memo_text.as_bytes().len();
+    println!("Memo length: {} bytes", memo_length);
+    println!("Raw memo content: {}", memo_text);
     println!("Setting compute budget: {} CUs", compute_units);
     println!("Burning {} tokens", burn_amount / 1_000_000_000);
 
@@ -96,18 +138,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     );
 
-    // create memo instruction
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
-    
     // get latest blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // create and send transaction
+    // create and send transaction with instruction order:
+    // 1. compute budget instruction
+    // 2. memo instruction
+    // 3. burn instruction
     let transaction = Transaction::new_signed_with_payer(
         &[compute_budget_ix, memo_ix, burn_ix],
         Some(&payer.pubkey()),
@@ -134,14 +173,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ensure string has at least minimum length
+// modify ensure_min_length function to keep JSON format
 fn ensure_min_length(text: String, min_length: usize) -> String {
     if text.as_bytes().len() >= min_length {
         return text;
     }
     
-    let padding_needed = min_length - text.as_bytes().len();
-    let padding = ".".repeat(padding_needed);
+    // parse existing JSON
+    let mut json: serde_json::Value = serde_json::from_str(&text)
+        .expect("Failed to parse JSON");
     
-    format!("{}{}", text, padding)
+    // get existing message
+    let message = json["message"].as_str().unwrap_or("");
+    
+    // calculate padding length needed
+    let current_length = text.as_bytes().len();
+    let padding_needed = min_length - current_length;
+    
+    // create padding with spaces
+    let padding = " ".repeat(padding_needed);
+    
+    // update message field with padding
+    let new_message = format!("{}{}", message, padding);
+    json["message"] = serde_json::Value::String(new_message);
+    
+    // convert back to string with compact formatting (no extra whitespace)
+    let result = serde_json::to_string(&json)
+        .expect("Failed to serialize JSON");
+    
+    println!("Memo was padded to meet minimum length requirement of {} bytes", min_length);
+    println!("Final JSON: {}", result);
+    
+    result
 }
