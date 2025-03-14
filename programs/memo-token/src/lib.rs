@@ -9,10 +9,35 @@ declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 // storage account
 #[account]
 pub struct LatestBurn {
-    pub last_user: Pubkey,  // storage last user who burned tokens
-    pub signature: String,     // 88 bytes (base58 encoded signature)
-    pub slot: u64,            // 8 bytes
-    pub blocktime: i64,       // 8 bytes
+    pub current_index: u8,    // current index in the circular buffer (1 byte)
+    pub records: Vec<BurnRecord>, // vector of burn records
+}
+
+// individual burn record
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct BurnRecord {
+    pub pubkey: Pubkey,      // 32 bytes
+    pub signature: String,    // 88 bytes (base58 encoded signature)
+    pub slot: u64,           // 8 bytes
+    pub blocktime: i64,      // 8 bytes
+}
+
+impl LatestBurn {
+    pub const MAX_RECORDS: usize = 69;
+    
+    // Add a new burn record
+    pub fn add_record(&mut self, record: BurnRecord) {
+        if self.records.len() < Self::MAX_RECORDS {
+            // If not full, just push
+            self.records.push(record);
+        } else {
+            // Replace the oldest record
+            self.records[self.current_index as usize] = record;
+        }
+        
+        // Update current_index
+        self.current_index = ((self.current_index as usize + 1) % Self::MAX_RECORDS) as u8;
+    }
 }
 
 #[program]
@@ -22,10 +47,8 @@ pub mod memo_token {
     // initialize storage
     pub fn initialize_latest_burn(ctx: Context<InitializeLatestBurn>) -> Result<()> {
         let latest_burn = &mut ctx.accounts.latest_burn;
-        latest_burn.last_user = Pubkey::default();
-        latest_burn.signature = String::new();
-        latest_burn.slot = 0;
-        latest_burn.blocktime = 0;
+        latest_burn.current_index = 0;
+        latest_burn.records = Vec::new();
         msg!("Latest burn storage initialized");
         Ok(())
     }
@@ -125,41 +148,33 @@ pub mod memo_token {
             return Err(ErrorCode::MemoRequired.into());
         }
         
-        // check memo length
-        let memo_length = memo_data.len();
-        msg!("Memo length: {}", memo_length);
+        // get current clock information
+        let clock = Clock::get()?;
         
-        // Print raw memo data
-        msg!("Raw memo data:");
-        for (i, chunk) in memo_data.chunks(32).enumerate() {
-            let hex = chunk.iter().map(|b| format!("{:02x}", b)).collect::<Vec<String>>().join(" ");
-            msg!("Chunk {}: {}", i, hex);
-        }
-        
-        // Try to convert to string and print
-        if let Ok(memo_str) = String::from_utf8(memo_data.clone()) {
-            msg!("Memo as string: {}", memo_str);
-            
-            // Remove escaped quotes and backslashes
+        // Try to convert to string and parse JSON
+        let signature = if let Ok(memo_str) = String::from_utf8(memo_data.clone()) {
             let clean_str = memo_str
-                .trim_matches('"')  // Remove outer quotes
-                .replace("\\\"", "\"")  // Replace escaped quotes
-                .replace("\\\\", "\\");  // Replace escaped backslashes
+                .trim_matches('"')
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
             
-            msg!("Cleaned memo string: {}", clean_str);
+            // Try to parse JSON
+            let json_data = serde_json::from_str::<serde_json::Value>(&clean_str)
+                .map_err(|_| {
+                    msg!("Failed to parse JSON after cleaning");
+                    ErrorCode::InvalidMemoFormat
+                })?;
+
+            msg!("Successfully parsed JSON: {}", json_data);
             
-            // Try to parse JSON with explicit type annotation
-            if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(&clean_str) {
-                msg!("Successfully parsed JSON: {}", json_data);
-                
-                // Try to get signature field
-                if let Some(signature) = json_data["signature"].as_str() {
-                    msg!("Found signature in JSON: {}", signature);
-                }
-            } else {
-                msg!("Failed to parse JSON after cleaning");
-            }
-        }
+            // Extract signature as a String to avoid borrowing issues
+            json_data["signature"]
+                .as_str()
+                .ok_or(ErrorCode::MissingSignature)?
+                .to_string()
+        } else {
+            return Err(ErrorCode::InvalidMemoFormat.into());
+        };
 
         // burn tokens
         token::burn(
@@ -176,12 +191,20 @@ pub mod memo_token {
 
         msg!("Burned {} tokens", amount / 1_000_000_000);
         
-        // get current clock information
-        let clock = Clock::get()?;
-        
         // update storage
         if let Some(latest_burn) = &mut ctx.accounts.latest_burn {
-            msg!("Latest burn account exists but skipping update for now");
+            // Create new burn record
+            let record = BurnRecord {
+                pubkey: ctx.accounts.user.key(),
+                signature,  // Now we can use signature directly since it's owned
+                slot: clock.slot,
+                blocktime: clock.unix_timestamp,
+            };
+            
+            // Add record to storage
+            latest_burn.add_record(record);
+            
+            msg!("Added new burn record at index {}", latest_burn.current_index);
         }
 
         Ok(())
@@ -245,10 +268,14 @@ pub struct InitializeLatestBurn<'info> {
         init,
         payer = payer,
         space = 8 + // discriminator
-               32 + // pubkey
-               88 + // signature (base58 string)
-               8 +  // slot
-               8,   // blocktime
+               1 + // current_index (u8)
+               4 + // vec len
+               (69 * ( // 69 records
+                   32 + // pubkey
+                   88 + // signature string
+                   8 +  // slot
+                   8    // blocktime
+               )),
         seeds = [b"latest_burn"],
         bump
     )]
