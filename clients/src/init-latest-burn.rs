@@ -190,7 +190,7 @@ fn main() {
     // Poll account status with retries
     println!("Polling for account creation...");
     let max_attempts = 10;
-    let delay = Duration::from_millis(5000); // Wait 500ms between attempts
+    let delay = Duration::from_millis(10000); // Wait 10s between attempts
     for attempt in 1..=max_attempts {
         match client.get_account(&latest_burn_pda) {
             Ok(account) => {
