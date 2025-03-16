@@ -51,6 +51,14 @@ path = "src/burn.rs"
 name = "img2hex"
 path = "src/img2hex.rs"
 
+[[bin]]
+name = "check-latest-burn-index"
+path = "src/check-latest-burn-index.rs"
+
+[[bin]]
+name = "check-latest-burn-shard"
+path = "src/check-latest-burn-shard.rs"
+
 [dependencies]
 solana-client = "1.18.26"
 solana-sdk = "1.18.26"
