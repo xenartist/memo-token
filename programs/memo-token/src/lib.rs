@@ -173,6 +173,25 @@ pub mod memo_token {
 
         Ok(())
     }
+
+    // Close latest burn index account
+    pub fn close_latest_burn_index(ctx: Context<CloseLatestBurnIndex>) -> Result<()> {
+        msg!("Closing latest burn index account");
+        Ok(())
+    }
+
+    // Close latest burn shard account
+    pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>, category: String) -> Result<()> {
+        // Remove shard info from index
+        let burn_index = &mut ctx.accounts.latest_burn_index;
+        if let Some(pos) = burn_index.shards.iter().position(|x| x.category == category) {
+            burn_index.shards.remove(pos);
+            burn_index.shard_count -= 1;
+        }
+        
+        msg!("Closing latest burn shard account: {}", category);
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -328,6 +347,46 @@ pub struct CreateLatestBurnShard<'info> {
                (69 * (32 + 88 + 8 + 8)), // 69 records
         seeds = [b"latest_burn_shard", category.as_bytes()],
         bump
+    )]
+    pub latest_burn_shard: Account<'info, LatestBurnShard>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseLatestBurnIndex<'info> {
+    #[account(mut)]
+    pub recipient: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"latest_burn_index"],
+        bump,
+        close = recipient
+    )]
+    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(category: String)]
+pub struct CloseLatestBurnShard<'info> {
+    #[account(mut)]
+    pub recipient: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"latest_burn_index"],
+        bump
+    )]
+    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    
+    #[account(
+        mut,
+        seeds = [b"latest_burn_shard", category.as_bytes()],
+        bump,
+        close = recipient
     )]
     pub latest_burn_shard: Account<'info, LatestBurnShard>,
     

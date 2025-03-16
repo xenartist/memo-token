@@ -24,6 +24,14 @@ name = "close-latest-burn"
 path = "src/close-latest-burn.rs"
 
 [[bin]]
+name = "close-latest-burn-index"
+path = "src/close-latest-burn-index.rs"
+
+[[bin]]
+name = "close-latest-burn-shard"
+path = "src/close-latest-burn-shard.rs"
+
+[[bin]]
 name = "init"
 path = "src/init.rs"
 
