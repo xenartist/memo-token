@@ -2434,6 +2434,7 @@ dependencies = [
 name = "memo-token-client"
 version = "0.1.0"
 dependencies = [
+ "borsh 1.5.5",
  "image",
  "serde_json",
  "sha2 0.10.8",

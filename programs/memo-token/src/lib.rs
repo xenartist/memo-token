@@ -6,13 +6,6 @@ use serde_json::Value;
 
 declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
-// storage account
-#[account]
-pub struct LatestBurn {
-    pub current_index: u8,    // current index in the circular buffer (1 byte)
-    pub records: Vec<BurnRecord>, // vector of burn records
-}
-
 // individual burn record
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct BurnRecord {
@@ -22,20 +15,40 @@ pub struct BurnRecord {
     pub blocktime: i64,      // 8 bytes
 }
 
-impl LatestBurn {
+// latest burn index
+#[account]
+#[derive(Default)]
+pub struct LatestBurnIndex {
+    pub shard_count: u8,    // current shard count
+    pub shards: Vec<ShardInfo>, // shard info list
+}
+
+// shard info
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct ShardInfo {
+    pub category: String,     // shard category name (max 32 bytes)
+    pub pubkey: Pubkey,       // shard account address
+    pub record_count: u16,    // current record count
+}
+
+// latest burn shard
+#[account]
+#[derive(Default)]
+pub struct LatestBurnShard {
+    pub category: String,     // shard category
+    pub current_index: u8,    // current index
+    pub records: Vec<BurnRecord>, // burn records
+}
+
+impl LatestBurnShard {
     pub const MAX_RECORDS: usize = 69;
     
-    // Add a new burn record
     pub fn add_record(&mut self, record: BurnRecord) {
         if self.records.len() < Self::MAX_RECORDS {
-            // If not full, just push
             self.records.push(record);
         } else {
-            // Replace the oldest record
             self.records[self.current_index as usize] = record;
         }
-        
-        // Update current_index
         self.current_index = ((self.current_index as usize + 1) % Self::MAX_RECORDS) as u8;
     }
 }
@@ -43,104 +56,44 @@ impl LatestBurn {
 #[program]
 pub mod memo_token {
     use super::*;
-    
-    // initialize storage
-    pub fn initialize_latest_burn(ctx: Context<InitializeLatestBurn>) -> Result<()> {
-        let latest_burn = &mut ctx.accounts.latest_burn;
-        latest_burn.current_index = 0;
-        latest_burn.records = Vec::new();
-        msg!("Latest burn storage initialized");
-        Ok(())
-    }
-    
-    pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
-        // check memo instruction
-        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
-        if !memo_found {
-            return Err(ErrorCode::MemoRequired.into());
-        }
-        
-        // calculate memo length
-        let memo_length = memo_data.len();
-        
-        // check memo length is not too long
-        if memo_length > 700 {
-            return Err(ErrorCode::MemoTooLong.into());
-        }
-        
-        // determine the possible token count range based on length
-        let max_tokens = if memo_length <= 100 {
-            1
-        } else if memo_length <= 200 {
-            2
-        } else if memo_length <= 300 {
-            3
-        } else if memo_length <= 400 {
-            4
-        } else if memo_length <= 500 {
-            5
-        } else if memo_length <= 600 {
-            6
-        } else {
-            7 // max 700 bytes
-        };
-        
-        // get PDA and bump
-        let (mint_authority, bump) = Pubkey::find_program_address(
-            &[b"mint_authority"],
-            ctx.program_id
-        );
-        
-        // verify PDA
-        if mint_authority != ctx.accounts.mint_authority.key() {
-            return Err(ProgramError::InvalidSeeds.into());
-        }
-        
-        // generate random number
-        let clock = Clock::get()?;
-        let mut hasher = solana_program::hash::Hasher::default();
-        hasher.hash(&memo_data);
-        hasher.hash(&clock.slot.to_le_bytes());
-        hasher.hash(&clock.unix_timestamp.to_le_bytes());
-        hasher.hash(ctx.accounts.user.key().as_ref());
-        let hash = hasher.result();
-        
-        // generate random number between 1 and max_tokens
-        let random_bytes = &hash.to_bytes()[0..8];
-        let random_value = u64::from_le_bytes(random_bytes.try_into().unwrap());
-        let token_count = (random_value % max_tokens as u64) + 1;
-        
-        // calculate mint amount (1 token = 10^9 units)
-        let amount = token_count * 1_000_000_000;
-        
-        // mint tokens
-        token::mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::MintTo {
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.token_account.to_account_info(),
-                    authority: ctx.accounts.mint_authority.to_account_info(),
-                },
-                &[&[b"mint_authority".as_ref(), &[bump]]]
-            ),
-            amount
-        )?;
-        
-        // record the number of tokens minted
-        msg!("Minted {} tokens", token_count);
-        
+
+    // initialize latest burn index
+    pub fn initialize_latest_burn_index(ctx: Context<InitializeLatestBurnIndex>) -> Result<()> {
+        let burn_index = &mut ctx.accounts.latest_burn_index;
+        burn_index.shard_count = 0;
+        burn_index.shards = Vec::new();
+        msg!("Latest burn index initialized");
         Ok(())
     }
 
-    // close storage
-    pub fn close_latest_burn(ctx: Context<CloseLatestBurn>) -> Result<()> {
-        msg!("Closing latest burn storage account");
+    // create new shard
+    pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>, category: String) -> Result<()> {
+        // validate category name length
+        if category.len() > 32 {
+            return Err(ErrorCode::CategoryNameTooLong.into());
+        }
+
+        // initialize shard
+        let burn_shard = &mut ctx.accounts.latest_burn_shard;
+        burn_shard.category = category.clone();
+        burn_shard.current_index = 0;
+        burn_shard.records = Vec::new();
+
+        // update latest burn index
+        let burn_index = &mut ctx.accounts.latest_burn_index;
+        burn_index.shard_count += 1;
+        burn_index.shards.push(ShardInfo {
+            category: category.clone(),
+            pubkey: ctx.accounts.latest_burn_shard.key(),
+            record_count: 0,
+        });
+
+        msg!("Created new latest burn shard: {}", category);
         Ok(())
     }
 
-    // add new instruction in memo_token module
-    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
+    // modify process_burn function
+    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64, category: String) -> Result<()> {
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
@@ -192,19 +145,30 @@ pub mod memo_token {
         msg!("Burned {} tokens", amount / 1_000_000_000);
         
         // update storage
-        if let Some(latest_burn) = &mut ctx.accounts.latest_burn {
-            // Create new burn record
+        if let Some(latest_burn_shard) = &mut ctx.accounts.latest_burn_shard {
+            // validate shard category
+            if latest_burn_shard.category != category {
+                return Err(ErrorCode::InvalidShardCategory.into());
+            }
+
             let record = BurnRecord {
                 pubkey: ctx.accounts.user.key(),
-                signature,  // Now we can use signature directly since it's owned
+                signature,
                 slot: clock.slot,
                 blocktime: clock.unix_timestamp,
             };
             
-            // Add record to storage
-            latest_burn.add_record(record);
+            latest_burn_shard.add_record(record);
             
-            msg!("Added new burn record at index {}", latest_burn.current_index);
+            // update record count in latest burn index
+            if let Some(latest_burn_index) = &mut ctx.accounts.latest_burn_index {
+                if let Some(shard_info) = latest_burn_index.shards.iter_mut()
+                    .find(|s| s.pubkey == latest_burn_shard.key()) {
+                    shard_info.record_count = latest_burn_shard.records.len() as u16;
+                }
+            }
+            
+            msg!("Added new burn record to shard: {}", category);
         }
 
         Ok(())
@@ -260,7 +224,7 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
 
 // initialize storage account
 #[derive(Accounts)]
-pub struct InitializeLatestBurn<'info> {
+pub struct InitializeLatestBurnIndex<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     
@@ -268,18 +232,13 @@ pub struct InitializeLatestBurn<'info> {
         init,
         payer = payer,
         space = 8 + // discriminator
-               1 + // current_index (u8)
+               1 + // shard_count
                4 + // vec len
-               (69 * ( // 69 records
-                   32 + // pubkey
-                   88 + // signature string
-                   8 +  // slot
-                   8    // blocktime
-               )),
-        seeds = [b"latest_burn"],
+               (128 * (36 + 32 + 2)), // 128个分片的空间
+        seeds = [b"latest_burn_index"],
         bump
     )]
-    pub latest_burn: Account<'info, LatestBurn>,
+    pub latest_burn_index: Account<'info, LatestBurnIndex>,
     
     pub system_program: Program<'info, System>,
 }
@@ -306,25 +265,9 @@ pub struct ProcessTransfer<'info> {
     pub instructions: AccountInfo<'info>,
 }
 
-// close storage account
-#[derive(Accounts)]
-pub struct CloseLatestBurn<'info> {
-    #[account(mut)]
-    pub recipient: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"latest_burn"],
-        bump,
-        close = recipient
-    )]
-    pub latest_burn: Account<'info, LatestBurn>,
-
-    pub system_program: Program<'info, System>,
-}
-
 // add account structure for burning instruction
 #[derive(Accounts)]
+#[instruction(category: String)]
 pub struct ProcessBurn<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -345,13 +288,50 @@ pub struct ProcessBurn<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
     
-    /// Latest burn storage (optional)
+    /// Latest burn index (optional)
     #[account(
         mut,
-        seeds = [b"latest_burn"],
+        seeds = [b"latest_burn_index"],
         bump
     )]
-    pub latest_burn: Option<Account<'info, LatestBurn>>,
+    pub latest_burn_index: Option<Account<'info, LatestBurnIndex>>,
+    
+    /// Latest burn shard (optional)
+    #[account(
+        mut,
+        seeds = [b"latest_burn_shard", category.as_bytes()],
+        bump
+    )]
+    pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
+}
+
+#[derive(Accounts)]
+#[instruction(category: String)]
+pub struct CreateLatestBurnShard<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"latest_burn_index"],
+        bump
+    )]
+    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + // discriminator
+               32 + // category
+               1 + // current_index
+               4 + // vec len
+               (69 * (32 + 88 + 8 + 8)), // 69 records
+        seeds = [b"latest_burn_shard", category.as_bytes()],
+        bump
+    )]
+    pub latest_burn_shard: Account<'info, LatestBurnShard>,
+    
+    pub system_program: Program<'info, System>,
 }
 
 #[error_code]
@@ -370,4 +350,10 @@ pub enum ErrorCode {
 
     #[msg("Missing signature field in memo JSON.")]
     MissingSignature,
+
+    #[msg("Category name too long. Maximum 32 bytes allowed.")]
+    CategoryNameTooLong,
+    
+    #[msg("Invalid shard category.")]
+    InvalidShardCategory,
 }
