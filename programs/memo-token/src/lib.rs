@@ -19,6 +19,7 @@ pub struct BurnRecord {
 #[account]
 #[derive(Default)]
 pub struct LatestBurnIndex {
+    pub authority: Pubkey,    // creator's address
     pub shard_count: u8,    // current shard count
     pub shards: Vec<ShardInfo>, // shard info list
 }
@@ -35,6 +36,7 @@ pub struct ShardInfo {
 #[account]
 #[derive(Default)]
 pub struct LatestBurnShard {
+    pub authority: Pubkey,    // creator's address
     pub category: String,     // shard category
     pub current_index: u8,    // current index
     pub records: Vec<BurnRecord>, // burn records
@@ -60,6 +62,7 @@ pub mod memo_token {
     // initialize latest burn index
     pub fn initialize_latest_burn_index(ctx: Context<InitializeLatestBurnIndex>) -> Result<()> {
         let burn_index = &mut ctx.accounts.latest_burn_index;
+        burn_index.authority = ctx.accounts.payer.key();
         burn_index.shard_count = 0;
         burn_index.shards = Vec::new();
         msg!("Latest burn index initialized");
@@ -68,6 +71,11 @@ pub mod memo_token {
 
     // create new shard
     pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>, category: String) -> Result<()> {
+        // Check if the payer is the index authority
+        if ctx.accounts.latest_burn_index.authority != ctx.accounts.payer.key() {
+            return Err(ErrorCode::UnauthorizedAuthority.into());
+        }
+        
         // validate category name length
         if category.len() > 32 {
             return Err(ErrorCode::CategoryNameTooLong.into());
@@ -75,6 +83,7 @@ pub mod memo_token {
 
         // initialize shard
         let burn_shard = &mut ctx.accounts.latest_burn_shard;
+        burn_shard.authority = ctx.accounts.payer.key();
         burn_shard.category = category.clone();
         burn_shard.current_index = 0;
         burn_shard.records = Vec::new();
@@ -176,12 +185,14 @@ pub mod memo_token {
 
     // Close latest burn index account
     pub fn close_latest_burn_index(ctx: Context<CloseLatestBurnIndex>) -> Result<()> {
+        // Authority check is handled in the account validation
         msg!("Closing latest burn index account");
         Ok(())
     }
 
     // Close latest burn shard account
     pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>, category: String) -> Result<()> {
+        // Authority check is handled in the account validation
         // Remove shard info from index
         let burn_index = &mut ctx.accounts.latest_burn_index;
         if let Some(pos) = burn_index.shards.iter().position(|x| x.category == category) {
@@ -362,6 +373,7 @@ pub struct CloseLatestBurnIndex<'info> {
         mut,
         seeds = [b"latest_burn_index"],
         bump,
+        constraint = latest_burn_index.authority == recipient.key(),
         close = recipient
     )]
     pub latest_burn_index: Account<'info, LatestBurnIndex>,
@@ -378,7 +390,8 @@ pub struct CloseLatestBurnShard<'info> {
     #[account(
         mut,
         seeds = [b"latest_burn_index"],
-        bump
+        bump,
+        constraint = latest_burn_index.authority == recipient.key()
     )]
     pub latest_burn_index: Account<'info, LatestBurnIndex>,
     
@@ -386,6 +399,7 @@ pub struct CloseLatestBurnShard<'info> {
         mut,
         seeds = [b"latest_burn_shard", category.as_bytes()],
         bump,
+        constraint = latest_burn_shard.authority == recipient.key(),
         close = recipient
     )]
     pub latest_burn_shard: Account<'info, LatestBurnShard>,
@@ -415,4 +429,7 @@ pub enum ErrorCode {
     
     #[msg("Invalid shard category.")]
     InvalidShardCategory,
+
+    #[msg("Unauthorized: Only the authority can perform this action")]
+    UnauthorizedAuthority,
 }
