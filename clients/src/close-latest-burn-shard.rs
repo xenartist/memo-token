@@ -10,17 +10,17 @@ use solana_sdk::{
 use std::str::FromStr;
 
 fn main() {
-    // Get category from command line args
+    // Get zone from command line args
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {} <category>", args[0]);
+        println!("Usage: {} <zone>", args[0]);
         return;
     }
-    let category = args[1].clone();
+    let zone = args[1].clone();
     
-    // Validate category length
-    if category.len() > 32 {
-        println!("Category name too long. Maximum 32 bytes allowed.");
+    // Validate zone length
+    if zone.len() > 32 {
+        println!("Zone name too long. Maximum 32 bytes allowed.");
         return;
     }
 
@@ -40,13 +40,13 @@ fn main() {
     // Calculate PDAs
     let (latest_burn_index_pda, _) = Pubkey::find_program_address(&[b"latest_burn_index"], &program_id);
     let (latest_burn_shard_pda, _bump) = Pubkey::find_program_address(
-        &[b"latest_burn_shard", category.as_bytes()],
+        &[b"latest_burn_shard", zone.as_bytes()],
         &program_id,
     );
 
     println!("Latest Burn Index PDA: {}", latest_burn_index_pda);
     println!("Latest Burn Shard PDA to close: {}", latest_burn_shard_pda);
-    println!("Category: {}", category);
+    println!("Zone: {}", zone);
 
     // Create instruction
     let accounts = vec![
@@ -58,8 +58,8 @@ fn main() {
 
     // Prepare instruction data
     let mut data = vec![93,129,3,152,194,180,0,53]; // Discriminator for 'close_latest_burn_shard'
-    data.extend((category.len() as u32).to_le_bytes());
-    data.extend(category.as_bytes());
+    data.extend((zone.len() as u32).to_le_bytes());
+    data.extend(zone.as_bytes());
 
     let instruction = Instruction {
         program_id,

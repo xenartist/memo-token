@@ -27,9 +27,9 @@ pub struct LatestBurnIndex {
 // shard info
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct ShardInfo {
-    pub category: String,     // shard category name (max 32 bytes)
-    pub pubkey: Pubkey,       // shard account address
-    pub record_count: u16,    // current record count
+    pub zone: String,     // shard zone name (max 32 bytes)
+    pub pubkey: Pubkey,   // shard account address
+    pub record_count: u16, // current record count
 }
 
 // latest burn shard
@@ -37,7 +37,7 @@ pub struct ShardInfo {
 #[derive(Default)]
 pub struct LatestBurnShard {
     pub authority: Pubkey,    // creator's address
-    pub category: String,     // shard category
+    pub zone: String,     // shard zone
     pub current_index: u8,    // current index
     pub records: Vec<BurnRecord>, // burn records
 }
@@ -70,21 +70,21 @@ pub mod memo_token {
     }
 
     // create new shard
-    pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>, category: String) -> Result<()> {
+    pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>, zone: String) -> Result<()> {
         // Check if the payer is the index authority
         if ctx.accounts.latest_burn_index.authority != ctx.accounts.payer.key() {
             return Err(ErrorCode::UnauthorizedAuthority.into());
         }
         
-        // validate category name length
-        if category.len() > 32 {
-            return Err(ErrorCode::CategoryNameTooLong.into());
+        // validate zone name length
+        if zone.len() > 32 {
+            return Err(ErrorCode::ZoneNameTooLong.into());
         }
 
         // initialize shard
         let burn_shard = &mut ctx.accounts.latest_burn_shard;
         burn_shard.authority = ctx.accounts.payer.key();
-        burn_shard.category = category.clone();
+        burn_shard.zone = zone.clone();
         burn_shard.current_index = 0;
         burn_shard.records = Vec::new();
 
@@ -92,17 +92,17 @@ pub mod memo_token {
         let burn_index = &mut ctx.accounts.latest_burn_index;
         burn_index.shard_count += 1;
         burn_index.shards.push(ShardInfo {
-            category: category.clone(),
+            zone: zone.clone(),
             pubkey: ctx.accounts.latest_burn_shard.key(),
             record_count: 0,
         });
 
-        msg!("Created new latest burn shard: {}", category);
+        msg!("Created new latest burn shard: {}", zone);
         Ok(())
     }
 
     // modify process_burn function
-    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64, category: String) -> Result<()> {
+    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64, zone: String) -> Result<()> {
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
@@ -155,9 +155,9 @@ pub mod memo_token {
         
         // update storage
         if let Some(latest_burn_shard) = &mut ctx.accounts.latest_burn_shard {
-            // validate shard category
-            if latest_burn_shard.category != category {
-                return Err(ErrorCode::InvalidShardCategory.into());
+            // validate zone
+            if latest_burn_shard.zone != zone {
+                return Err(ErrorCode::InvalidShardZone.into());
             }
 
             let record = BurnRecord {
@@ -177,7 +177,7 @@ pub mod memo_token {
                 }
             }
             
-            msg!("Added new burn record to shard: {}", category);
+            msg!("Added new burn record to shard: {}", zone);
         }
 
         Ok(())
@@ -191,16 +191,16 @@ pub mod memo_token {
     }
 
     // Close latest burn shard account
-    pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>, category: String) -> Result<()> {
+    pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>, zone: String) -> Result<()> {
         // Authority check is handled in the account validation
         // Remove shard info from index
         let burn_index = &mut ctx.accounts.latest_burn_index;
-        if let Some(pos) = burn_index.shards.iter().position(|x| x.category == category) {
+        if let Some(pos) = burn_index.shards.iter().position(|x| x.zone == zone) {
             burn_index.shards.remove(pos);
             burn_index.shard_count -= 1;
         }
         
-        msg!("Closing latest burn shard account: {}", category);
+        msg!("Closing latest burn shard account: {}", zone);
         Ok(())
     }
 }
@@ -297,7 +297,7 @@ pub struct ProcessTransfer<'info> {
 
 // add account structure for burning instruction
 #[derive(Accounts)]
-#[instruction(category: String)]
+#[instruction(zone: String)]
 pub struct ProcessBurn<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -329,14 +329,14 @@ pub struct ProcessBurn<'info> {
     /// Latest burn shard (optional)
     #[account(
         mut,
-        seeds = [b"latest_burn_shard", category.as_bytes()],
+        seeds = [b"latest_burn_shard", zone.as_bytes()],
         bump
     )]
     pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
 }
 
 #[derive(Accounts)]
-#[instruction(category: String)]
+#[instruction(zone: String)]
 pub struct CreateLatestBurnShard<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -352,11 +352,11 @@ pub struct CreateLatestBurnShard<'info> {
         init,
         payer = payer,
         space = 8 + // discriminator
-               32 + // category
+               32 + // zone
                1 + // current_index
                4 + // vec len
                (69 * (32 + 88 + 8 + 8)), // 69 records
-        seeds = [b"latest_burn_shard", category.as_bytes()],
+        seeds = [b"latest_burn_shard", zone.as_bytes()],
         bump
     )]
     pub latest_burn_shard: Account<'info, LatestBurnShard>,
@@ -382,7 +382,7 @@ pub struct CloseLatestBurnIndex<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(category: String)]
+#[instruction(zone: String)]
 pub struct CloseLatestBurnShard<'info> {
     #[account(mut)]
     pub recipient: Signer<'info>,
@@ -397,7 +397,7 @@ pub struct CloseLatestBurnShard<'info> {
     
     #[account(
         mut,
-        seeds = [b"latest_burn_shard", category.as_bytes()],
+        seeds = [b"latest_burn_shard", zone.as_bytes()],
         bump,
         constraint = latest_burn_shard.authority == recipient.key(),
         close = recipient
@@ -424,11 +424,11 @@ pub enum ErrorCode {
     #[msg("Missing signature field in memo JSON.")]
     MissingSignature,
 
-    #[msg("Category name too long. Maximum 32 bytes allowed.")]
-    CategoryNameTooLong,
+    #[msg("Zone name too long. Maximum 32 bytes allowed.")]
+    ZoneNameTooLong,
     
-    #[msg("Invalid shard category.")]
-    InvalidShardCategory,
+    #[msg("Invalid shard zone.")]
+    InvalidShardZone,
 
     #[msg("Unauthorized: Only the authority can perform this action")]
     UnauthorizedAuthority,

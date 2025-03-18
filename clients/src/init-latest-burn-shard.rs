@@ -16,17 +16,17 @@ use std::{str::FromStr, thread::sleep, time::Duration};
 use borsh::ser::BorshSerialize;
 
 fn main() {
-    // Get category from command line args
+    // Get zone from command line args
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {} <category>", args[0]);
+        println!("Usage: {} <zone>", args[0]);
         return;
     }
-    let category = args[1].clone();
+    let zone = args[1].clone();
     
-    // Validate category length
-    if category.len() > 32 {
-        println!("Category name too long. Maximum 32 bytes allowed.");
+    // Validate zone length
+    if zone.len() > 32 {
+        println!("Zone name too long. Maximum 32 bytes allowed.");
         return;
     }
 
@@ -51,7 +51,7 @@ fn main() {
     // Calculate PDAs
     let (latest_burn_index_pda, _) = Pubkey::find_program_address(&[b"latest_burn_index"], &program_id);
     let (latest_burn_shard_pda, bump) = Pubkey::find_program_address(
-        &[b"latest_burn_shard", category.as_bytes()],
+        &[b"latest_burn_shard", zone.as_bytes()],
         &program_id
     );
 
@@ -78,7 +78,7 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
-                32 + // category
+                32 + // zone
                 1 + // current_index
                 4 + // vec len
                 (69 * (32 + 88 + 8 + 8)); // 69 records
@@ -104,8 +104,8 @@ fn main() {
 
     // Prepare instruction data
     let mut data = vec![167,228,2,172,243,48,109,204]; // Discriminator for 'create_latest_burn_shard'
-    data.extend((category.len() as u32).to_le_bytes());
-    data.extend(category.as_bytes());
+    data.extend((zone.len() as u32).to_le_bytes());
+    data.extend(zone.as_bytes());
 
     let instruction = Instruction {
         program_id,
@@ -149,7 +149,7 @@ fn main() {
             println!("\nLatest Burn Shard Account Info:");
             println!("Program ID: {}", program_id);
             println!("Latest Burn Shard PDA: {}", latest_burn_shard_pda);
-            println!("Category: {}", category);
+            println!("Zone: {}", zone);
             println!("Your wallet (payer): {}", payer.pubkey());
 
             // Get transaction logs

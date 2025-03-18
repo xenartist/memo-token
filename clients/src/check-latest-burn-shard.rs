@@ -3,13 +3,13 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 fn main() {
-    // Get category from command line args
+    // Get zone from command line args
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {} <category>", args[0]);
+        println!("Usage: {} <zone>", args[0]);
         return;
     }
-    let category = args[1].clone();
+    let zone = args[1].clone();
 
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
@@ -21,12 +21,12 @@ fn main() {
 
     // Calculate latest burn shard PDA
     let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
-        &[b"latest_burn_shard", category.as_bytes()],
+        &[b"latest_burn_shard", zone.as_bytes()],
         &program_id,
     );
 
     println!("Latest Burn Shard PDA: {}", latest_burn_shard_pda);
-    println!("Category: {}", category);
+    println!("Zone: {}", zone);
 
     // Get account data
     match client.get_account(&latest_burn_shard_pda) {
@@ -45,13 +45,13 @@ fn main() {
             let authority = Pubkey::new(&data[0..32]);
             println!("\nAuthority: {}", authority);
             
-            // 解析 category string
+            // 解析 zone string
             let mut offset = 32;
-            let category_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            let zone_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
             offset += 4;
-            let category = String::from_utf8_lossy(&data[offset..offset+category_len]);
-            offset += category_len;
-            println!("Category: {}", category);
+            let zone = String::from_utf8_lossy(&data[offset..offset+zone_len]);
+            offset += zone_len;
+            println!("Zone: {}", zone);
             
             // 解析 current_index (1 byte)
             let current_index = data[offset];
