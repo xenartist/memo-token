@@ -81,6 +81,11 @@ pub mod memo_token {
             return Err(ErrorCode::ZoneNameTooLong.into());
         }
 
+        // check if zone already exists
+        if ctx.accounts.latest_burn_index.shards.iter().any(|shard| shard.zone == zone) {
+            return Err(ErrorCode::ZoneAlreadyExists.into());
+        }
+
         // initialize shard
         let burn_shard = &mut ctx.accounts.latest_burn_shard;
         burn_shard.authority = ctx.accounts.payer.key();
@@ -432,4 +437,7 @@ pub enum ErrorCode {
 
     #[msg("Unauthorized: Only the authority can perform this action")]
     UnauthorizedAuthority,
+
+    #[msg("Zone already exists.")]
+    ZoneAlreadyExists,
 }
