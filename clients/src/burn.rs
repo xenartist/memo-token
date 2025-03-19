@@ -94,8 +94,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // calculate PDAs
-    let (latest_burn_index_pda, _) = Pubkey::find_program_address(
-        &[b"latest_burn_index"],
+    let (global_burn_index_pda, _) = Pubkey::find_program_address(
+        &[b"global_burn_index"],
         &program_id,
     );
     
@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(_) => {
             println!("Warning: Burn shard does not exist.");
-            println!("The transaction may fail. Please create the shard first using init-latest-burn-shard.");
+            println!("The transaction may fail. Please initialize the shard first using init-latest-burn-shard.");
             println!("Continue anyway? (y/n)");
             
             let mut input = String::new();
@@ -157,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(latest_burn_index_pda, false), // latest burn index
+            AccountMeta::new(global_burn_index_pda, false), // global burn index
             AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
         ],
     );

@@ -67,8 +67,8 @@ pub mod memo_token {
         Ok(())
     }
 
-    // create new shard
-    pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>) -> Result<()> {
+    // initialize latest burn shard
+    pub fn initialize_latest_burn_shard(ctx: Context<InitializeLatestBurnShard>) -> Result<()> {
         // Check if the payer is the index authority
         if ctx.accounts.global_burn_index.authority != ctx.accounts.payer.key() {
             return Err(ErrorCode::UnauthorizedAuthority.into());
@@ -88,7 +88,7 @@ pub mod memo_token {
             record_count: 0,
         });
 
-        msg!("Created new latest burn shard");
+        msg!("Latest burn shard initialized");
         Ok(())
     }
 
@@ -317,7 +317,7 @@ pub struct ProcessBurn<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CreateLatestBurnShard<'info> {
+pub struct InitializeLatestBurnShard<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 

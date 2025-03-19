@@ -86,8 +86,8 @@ fn main() {
         AccountMeta::new_readonly(system_program::id(), false),
     ];
 
-    // Prepare instruction data - Discriminator for 'create_latest_burn_shard'
-    let data = vec![167,228,2,172,243,48,109,204]; 
+    // Prepare instruction data - Discriminator for 'initialize_latest_burn_shard'
+    let data = vec![150,220,2,213,30,67,33,31]; 
 
     let instruction = Instruction {
         program_id,
