@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // default fake signature
-    let default_signature = "2ZaXvNKVY8DbqZitNHAYRmqvqD6cBupCJmYY6rDnP5XzY7FPPpyVzKGdNhfXUWnz2J2zU6SK8J2WZPTdJA5eSNoK";
+    let default_signature = "3GZFMnLbY2kaV1EpS8sa2rXjMGJaGjZ2QtVE5EANSicTqAWrmmqrKcyEg2m44D2Zs1cJ9r226K8F1zuoqYfU7KFr";
 
     // Parse memo and signature from args
     let (message, signature) = if args.len() > 3 {
@@ -93,13 +93,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint,
     );
 
-    // calculate latest_burn PDA
-    let (latest_burn_pda, _) = Pubkey::find_program_address(
-        &[b"latest_burn"],
+    // calculate PDAs
+    let (latest_burn_index_pda, _) = Pubkey::find_program_address(
+        &[b"latest_burn_index"],
+        &program_id,
+    );
+    
+    let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
+        &[b"latest_burn_shard"],
         &program_id,
     );
 
-    // calculate Anchor instruction sighash
+    // Check if shard exists
+    match client.get_account(&latest_burn_shard_pda) {
+        Ok(_) => {
+            println!("Found burn shard");
+        },
+        Err(_) => {
+            println!("Warning: Burn shard does not exist.");
+            println!("The transaction may fail. Please create the shard first using init-latest-burn-shard.");
+            println!("Continue anyway? (y/n)");
+            
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                return Ok(());
+            }
+        }
+    }
+
+    // calculate Anchor instruction sighash for process_burn
     let mut hasher = Sha256::new();
     hasher.update(b"global:process_burn");
     let result = hasher.finalize();
@@ -134,7 +157,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(latest_burn_pda, false),      // latest burn account
+            AccountMeta::new(latest_burn_index_pda, false), // latest burn index
+            AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
         ],
     );
 
@@ -164,9 +188,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(balance) = client.get_token_account_balance(&token_account) {
                 println!("New token balance: {}", balance.ui_amount.unwrap());
             }
+            
+            // Check if record was added to shard
+            match client.get_account(&latest_burn_shard_pda) {
+                Ok(_) => {
+                    println!("Burn record added to shard. Use check-latest-burn-shard to view records.");
+                },
+                Err(err) => {
+                    println!("Warning: Could not verify shard update: {}", err);
+                }
+            }
         }
         Err(err) => {
             println!("Failed to burn tokens: {}", err);
+            println!("This may happen if:");
+            println!("1. The shard doesn't exist - run init-latest-burn-shard first");
+            println!("2. Insufficient token balance");
+            println!("3. Issues with the memo format");
         }
     }
 
