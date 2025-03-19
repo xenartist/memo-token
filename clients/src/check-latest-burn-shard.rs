@@ -3,14 +3,6 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
 fn main() {
-    // Get zone from command line args
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        println!("Usage: {} <zone>", args[0]);
-        return;
-    }
-    let zone = args[1].clone();
-
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
@@ -21,12 +13,11 @@ fn main() {
 
     // Calculate latest burn shard PDA
     let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
-        &[b"latest_burn_shard", zone.as_bytes()],
+        &[b"latest_burn_shard"],
         &program_id,
     );
 
     println!("Latest Burn Shard PDA: {}", latest_burn_shard_pda);
-    println!("Zone: {}", zone);
 
     // Get account data
     match client.get_account(&latest_burn_shard_pda) {
@@ -38,47 +29,42 @@ fn main() {
             let discriminator = &account.data[0..8];
             println!("\nDiscriminator: {:?}", discriminator);
             
-            // 手动解析数据
+            // parse data
             let data = &account.data[8..];
             
-            // 解析 authority (32 bytes)
+            // parse authority (32 bytes)
             let authority = Pubkey::new(&data[0..32]);
             println!("\nAuthority: {}", authority);
             
-            // 解析 zone string
-            let mut offset = 32;
-            let zone_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
-            offset += 4;
-            let zone = String::from_utf8_lossy(&data[offset..offset+zone_len]);
-            offset += zone_len;
-            println!("Zone: {}", zone);
+            // modified offset
+            let mut offset = 32; // only authority 32 bytes
             
-            // 解析 current_index (1 byte)
+            // parse current_index (1 byte)
             let current_index = data[offset];
             println!("Current Index: {}", current_index);
             offset += 1;
             
-            // 解析 records vector
+            // parse records vector
             let vec_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
             offset += 4;
             println!("\nRecords ({})", vec_len);
             
             for i in 0..vec_len {
-                // 读取 pubkey (32 bytes)
+                // parse pubkey (32 bytes)
                 let pubkey = Pubkey::new(&data[offset..offset+32]);
                 offset += 32;
                 
-                // 读取 signature string
+                // read signature string
                 let sig_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
                 offset += 4;
                 let signature = String::from_utf8_lossy(&data[offset..offset+sig_len]);
                 offset += sig_len;
                 
-                // 读取 slot (8 bytes)
+                // read slot (8 bytes)
                 let slot = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
                 offset += 8;
                 
-                // 读取 blocktime (8 bytes)
+                // read blocktime (8 bytes)
                 let blocktime = i64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
                 offset += 8;
                 

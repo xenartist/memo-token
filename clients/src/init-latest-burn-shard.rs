@@ -10,26 +10,10 @@ use solana_sdk::{
     system_program,
     commitment_config::CommitmentConfig,
     compute_budget,
-    borsh::try_from_slice_unchecked,
 };
 use std::{str::FromStr, thread::sleep, time::Duration};
-use borsh::ser::BorshSerialize;
 
 fn main() {
-    // Get zone from command line args
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        println!("Usage: {} <zone>", args[0]);
-        return;
-    }
-    let zone = args[1].clone();
-    
-    // Validate zone length
-    if zone.len() > 32 {
-        println!("Zone name too long. Maximum 32 bytes allowed.");
-        return;
-    }
-
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
@@ -51,7 +35,7 @@ fn main() {
     // Calculate PDAs
     let (latest_burn_index_pda, _) = Pubkey::find_program_address(&[b"latest_burn_index"], &program_id);
     let (latest_burn_shard_pda, bump) = Pubkey::find_program_address(
-        &[b"latest_burn_shard", zone.as_bytes()],
+        &[b"latest_burn_shard"],
         &program_id
     );
 
@@ -78,7 +62,7 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
-                32 + // zone
+                32 + // authority
                 1 + // current_index
                 4 + // vec len
                 (69 * (32 + 88 + 8 + 8)); // 69 records
@@ -102,10 +86,8 @@ fn main() {
         AccountMeta::new_readonly(system_program::id(), false),
     ];
 
-    // Prepare instruction data
-    let mut data = vec![167,228,2,172,243,48,109,204]; // Discriminator for 'create_latest_burn_shard'
-    data.extend((zone.len() as u32).to_le_bytes());
-    data.extend(zone.as_bytes());
+    // Prepare instruction data - Discriminator for 'create_latest_burn_shard'
+    let data = vec![167,228,2,172,243,48,109,204]; 
 
     let instruction = Instruction {
         program_id,
@@ -113,13 +95,16 @@ fn main() {
         data,
     };
 
+    // Add compute budget instruction
+    let compute_budget_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(200_000);
+
     // Create and send transaction
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
     let transaction = Transaction::new_signed_with_payer(
-        &[instruction],
+        &[compute_budget_ix, instruction],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -149,7 +134,6 @@ fn main() {
             println!("\nLatest Burn Shard Account Info:");
             println!("Program ID: {}", program_id);
             println!("Latest Burn Shard PDA: {}", latest_burn_shard_pda);
-            println!("Zone: {}", zone);
             println!("Your wallet (payer): {}", payer.pubkey());
 
             // Get transaction logs
