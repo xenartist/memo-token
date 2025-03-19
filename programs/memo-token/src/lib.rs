@@ -15,10 +15,10 @@ pub struct BurnRecord {
     pub blocktime: i64,      // 8 bytes
 }
 
-// latest burn index
+// global burn index
 #[account]
 #[derive(Default)]
-pub struct LatestBurnIndex {
+pub struct GlobalBurnIndex {
     pub authority: Pubkey,    // creator's address
     pub shard_count: u8,    // current shard count
     pub shards: Vec<ShardInfo>, // shard info list
@@ -57,20 +57,20 @@ impl LatestBurnShard {
 pub mod memo_token {
     use super::*;
 
-    // initialize latest burn index
-    pub fn initialize_latest_burn_index(ctx: Context<InitializeLatestBurnIndex>) -> Result<()> {
-        let burn_index = &mut ctx.accounts.latest_burn_index;
+    // initialize global burn index
+    pub fn initialize_global_burn_index(ctx: Context<InitializeGlobalBurnIndex>) -> Result<()> {
+        let burn_index = &mut ctx.accounts.global_burn_index;
         burn_index.authority = ctx.accounts.payer.key();
         burn_index.shard_count = 0;
         burn_index.shards = Vec::new();
-        msg!("Latest burn index initialized");
+        msg!("Global burn index initialized");
         Ok(())
     }
 
     // create new shard
     pub fn create_latest_burn_shard(ctx: Context<CreateLatestBurnShard>) -> Result<()> {
         // Check if the payer is the index authority
-        if ctx.accounts.latest_burn_index.authority != ctx.accounts.payer.key() {
+        if ctx.accounts.global_burn_index.authority != ctx.accounts.payer.key() {
             return Err(ErrorCode::UnauthorizedAuthority.into());
         }
 
@@ -80,8 +80,8 @@ pub mod memo_token {
         burn_shard.current_index = 0;
         burn_shard.records = Vec::new();
 
-        // update latest burn index
-        let burn_index = &mut ctx.accounts.latest_burn_index;
+        // update global burn index
+        let burn_index = &mut ctx.accounts.global_burn_index;
         burn_index.shard_count += 1;
         burn_index.shards.push(ShardInfo {
             pubkey: ctx.accounts.latest_burn_shard.key(),
@@ -155,9 +155,9 @@ pub mod memo_token {
             
             latest_burn_shard.add_record(record);
             
-            // update record count in latest burn index
-            if let Some(latest_burn_index) = &mut ctx.accounts.latest_burn_index {
-                if let Some(shard_info) = latest_burn_index.shards.iter_mut()
+            // update record count in global burn index
+            if let Some(global_burn_index) = &mut ctx.accounts.global_burn_index {
+                if let Some(shard_info) = global_burn_index.shards.iter_mut()
                     .find(|s| s.pubkey == latest_burn_shard.key()) {
                     shard_info.record_count = latest_burn_shard.records.len() as u16;
                 }
@@ -169,10 +169,10 @@ pub mod memo_token {
         Ok(())
     }
 
-    // Close latest burn index account
-    pub fn close_latest_burn_index(ctx: Context<CloseLatestBurnIndex>) -> Result<()> {
+    // Close global burn index account
+    pub fn close_global_burn_index(ctx: Context<CloseGlobalBurnIndex>) -> Result<()> {
         // Authority check is handled in the account validation
-        msg!("Closing latest burn index account");
+        msg!("Closing global burn index account");
         Ok(())
     }
 
@@ -180,7 +180,7 @@ pub mod memo_token {
     pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>) -> Result<()> {
         // Authority check is handled in the account validation
         // Remove shard info from index
-        let burn_index = &mut ctx.accounts.latest_burn_index;
+        let burn_index = &mut ctx.accounts.global_burn_index;
         if let Some(pos) = burn_index.shards.iter().position(|x| x.pubkey == ctx.accounts.latest_burn_shard.key()) {
             burn_index.shards.remove(pos);
             burn_index.shard_count -= 1;
@@ -240,7 +240,7 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
 
 // initialize storage account
 #[derive(Accounts)]
-pub struct InitializeLatestBurnIndex<'info> {
+pub struct InitializeGlobalBurnIndex<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     
@@ -251,10 +251,10 @@ pub struct InitializeLatestBurnIndex<'info> {
                1 + // shard_count
                4 + // vec len
                (128 * (32 + 2)), // 128 shards
-        seeds = [b"latest_burn_index"],
+        seeds = [b"global_burn_index"],
         bump
     )]
-    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
     
     pub system_program: Program<'info, System>,
 }
@@ -303,13 +303,13 @@ pub struct ProcessBurn<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
     
-    /// Latest burn index (optional)
+    /// Global burn index (optional)
     #[account(
         mut,
-        seeds = [b"latest_burn_index"],
+        seeds = [b"global_burn_index"],
         bump
     )]
-    pub latest_burn_index: Option<Account<'info, LatestBurnIndex>>,
+    pub global_burn_index: Option<Account<'info, GlobalBurnIndex>>,
     
     /// Latest burn shard (optional)
     #[account(mut)]
@@ -323,10 +323,10 @@ pub struct CreateLatestBurnShard<'info> {
 
     #[account(
         mut,
-        seeds = [b"latest_burn_index"],
+        seeds = [b"global_burn_index"],
         bump
     )]
-    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
     
     #[account(
         init,
@@ -345,18 +345,18 @@ pub struct CreateLatestBurnShard<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CloseLatestBurnIndex<'info> {
+pub struct CloseGlobalBurnIndex<'info> {
     #[account(mut)]
     pub recipient: Signer<'info>,
     
     #[account(
         mut,
-        seeds = [b"latest_burn_index"],
+        seeds = [b"global_burn_index"],
         bump,
-        constraint = latest_burn_index.authority == recipient.key(),
+        constraint = global_burn_index.authority == recipient.key(),
         close = recipient
     )]
-    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
     
     pub system_program: Program<'info, System>,
 }
@@ -368,11 +368,11 @@ pub struct CloseLatestBurnShard<'info> {
     
     #[account(
         mut,
-        seeds = [b"latest_burn_index"],
+        seeds = [b"global_burn_index"],
         bump,
-        constraint = latest_burn_index.authority == recipient.key()
+        constraint = global_burn_index.authority == recipient.key()
     )]
-    pub latest_burn_index: Account<'info, LatestBurnIndex>,
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
     
     #[account(
         mut,

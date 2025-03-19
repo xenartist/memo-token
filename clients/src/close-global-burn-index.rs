@@ -23,23 +23,23 @@ fn main() {
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
-    // Calculate latest burn index PDA
-    let (latest_burn_index_pda, _bump) = Pubkey::find_program_address(
-        &[b"latest_burn_index"],
+    // Calculate global burn index PDA
+    let (global_burn_index_pda, _bump) = Pubkey::find_program_address(
+        &[b"global_burn_index"],
         &program_id,
     );
 
-    println!("Latest Burn Index PDA to close: {}", latest_burn_index_pda);
+    println!("Global Burn Index PDA to close: {}", global_burn_index_pda);
 
     // Create instruction
     let accounts = vec![
         AccountMeta::new(payer.pubkey(), true),      // recipient (writable, signer)
-        AccountMeta::new(latest_burn_index_pda, false),    // latest_burn_index account (writable)
+        AccountMeta::new(global_burn_index_pda, false),    // global_burn_index account (writable)
         AccountMeta::new_readonly(system_program::id(), false), // system program
     ];
 
-    // close_latest_burn_index instruction discriminator
-    let data = vec![165,60,102,151,142,96,120,43]; // You'll need to replace this with the actual discriminator
+    // close_global_burn_index instruction discriminator
+    let data = vec![250,224,134,80,71,240,143,218];
 
     let instruction = Instruction {
         program_id,
@@ -59,21 +59,21 @@ fn main() {
         recent_blockhash,
     );
 
-    println!("Sending transaction to close latest burn index account...");
+    println!("Sending transaction to close global burn index account...");
 
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {
-            println!("Latest burn index account closed successfully!");
+            println!("Global burn index account closed successfully!");
             println!("Transaction signature: {}", signature);
             
             // Verify account closure
-            match client.get_account(&latest_burn_index_pda) {
+            match client.get_account(&global_burn_index_pda) {
                 Ok(_) => println!("Warning: Account still exists"),
                 Err(_) => println!("✓ Account successfully closed"),
             }
         }
         Err(err) => {
-            println!("Failed to close latest burn index account: {}", err);
+            println!("Failed to close global burn index account: {}", err);
         }
     }
 } 

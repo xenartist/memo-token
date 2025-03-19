@@ -8,24 +8,24 @@ name = "create-token"
 path = "src/create-token.rs"
 
 [[bin]]
-name = "init-latest-burn"
-path = "src/init-latest-burn.rs"
-
-[[bin]]
-name = "init-latest-burn-index"
-path = "src/init-latest-burn-index.rs"
+name = "init-global-burn-index"
+path = "src/init-global-burn-index.rs"
 
 [[bin]]
 name = "init-latest-burn-shard"
 path = "src/init-latest-burn-shard.rs"
 
 [[bin]]
-name = "close-latest-burn"
-path = "src/close-latest-burn.rs"
+name = "check-global-burn-index"
+path = "src/check-global-burn-index.rs"
 
 [[bin]]
-name = "close-latest-burn-index"
-path = "src/close-latest-burn-index.rs"
+name = "check-latest-burn-shard"
+path = "src/check-latest-burn-shard.rs"
+
+[[bin]]
+name = "close-global-burn-index"
+path = "src/close-global-burn-index.rs"
 
 [[bin]]
 name = "close-latest-burn-shard"
@@ -50,14 +50,6 @@ path = "src/burn.rs"
 [[bin]]
 name = "img2hex"
 path = "src/img2hex.rs"
-
-[[bin]]
-name = "check-latest-burn-index"
-path = "src/check-latest-burn-index.rs"
-
-[[bin]]
-name = "check-latest-burn-shard"
-path = "src/check-latest-burn-shard.rs"
 
 [dependencies]
 solana-client = "1.18.26"

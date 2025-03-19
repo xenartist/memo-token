@@ -9,6 +9,7 @@ use solana_sdk::{
     transaction::Transaction,
     system_program,
     commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
 };
 use std::{str::FromStr, thread::sleep, time::Duration};
 
@@ -31,14 +32,14 @@ fn main() {
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
-    // Calculate latest burn index PDA
-    let (latest_burn_index_pda, bump) = Pubkey::find_program_address(&[b"latest_burn_index"], &program_id);
+    // Calculate global burn index PDA
+    let (global_burn_index_pda, bump) = Pubkey::find_program_address(&[b"global_burn_index"], &program_id);
 
-    println!("Latest Burn Index PDA: {}", latest_burn_index_pda);
+    println!("Global Burn Index PDA: {}", global_burn_index_pda);
     println!("Bump seed: {}", bump);
 
     // Double-check account status
-    match client.get_account(&latest_burn_index_pda) {
+    match client.get_account(&global_burn_index_pda) {
         Ok(account) => {
             println!(
                 "Account already exists with {} bytes of data",
@@ -58,7 +59,7 @@ fn main() {
     let space = 8 + // discriminator
                 1 + // shard_count
                 4 + // vec len
-                (128 * (36 + 32 + 2)); // 128 shards space
+                (128 * (32 + 2)); // 128 shards space
 
     // Calculate required lamports for rent exemption
     let rent = client
@@ -74,12 +75,13 @@ fn main() {
     // Create instruction
     let accounts = vec![
         AccountMeta::new(payer.pubkey(), true),
-        AccountMeta::new(latest_burn_index_pda, false),
+        AccountMeta::new(global_burn_index_pda, false),
         AccountMeta::new_readonly(system_program::id(), false),
     ];
 
-    // Initialize latest burn index instruction (discriminator for 'initialize_latest_burn_index')
-    let data = vec![112,222,151,91,87,228,75,27];
+    // Initialize global burn index instruction (discriminator for 'initialize_global_burn_index')
+    // Note: You may need to update this discriminator value after changing the function name
+    let data = vec![149,86,149,63,142,155,229,170];
 
     let instruction = Instruction {
         program_id,
@@ -87,20 +89,23 @@ fn main() {
         data,
     };
 
+    // Create compute budget instruction
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(200_000);
+
     // Create and send transaction
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
     let transaction = Transaction::new_signed_with_payer(
-        &[instruction],
+        &[compute_budget_ix, instruction],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
     );
 
     // Send and confirm transaction
-    println!("Sending transaction to initialize latest burn index...");
+    println!("Sending transaction to initialize global burn index...");
 
     let config = RpcSendTransactionConfig {
         skip_preflight: true,
@@ -116,13 +121,13 @@ fn main() {
         config,
     ) {
         Ok(signature) => {
-            println!("Latest burn index initialized successfully!");
+            println!("Global burn index initialized successfully!");
             println!("Transaction signature: {}", signature);
 
             // Print account info
-            println!("\nLatest Burn Index Account Info:");
+            println!("\nGlobal Burn Index Account Info:");
             println!("Program ID: {}", program_id);
-            println!("Latest Burn Index PDA: {}", latest_burn_index_pda);
+            println!("Global Burn Index PDA: {}", global_burn_index_pda);
             println!("Your wallet (payer): {}", payer.pubkey());
 
             // Get transaction logs
@@ -153,7 +158,7 @@ fn main() {
             }
         }
         Err(err) => {
-            println!("Failed to initialize latest burn index: {}", err);
+            println!("Failed to initialize global burn index: {}", err);
             return;
         }
     }
@@ -163,7 +168,7 @@ fn main() {
     let max_attempts = 10;
     let delay = Duration::from_millis(10000); // 10 seconds
     for attempt in 1..=max_attempts {
-        match client.get_account(&latest_burn_index_pda) {
+        match client.get_account(&global_burn_index_pda) {
             Ok(account) => {
                 println!(
                     "Account created successfully with {} bytes of data",
