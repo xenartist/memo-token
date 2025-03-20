@@ -15,11 +15,13 @@ pub struct BurnRecord {
     pub blocktime: i64,      // 8 bytes
 }
 
+// admin public key
+pub const ADMIN_PUBKEY: &str = "YOUR_ADMIN_PUBLIC_KEY_HERE"; // replace with your admin public key
+
 // global burn index
 #[account]
 #[derive(Default)]
 pub struct GlobalBurnIndex {
-    pub authority: Pubkey,    // creator's address
     pub shard_count: u8,    // current shard count
     pub shards: Vec<ShardInfo>, // shard info list
 }
@@ -35,7 +37,6 @@ pub struct ShardInfo {
 #[account]
 #[derive(Default)]
 pub struct LatestBurnShard {
-    pub authority: Pubkey,    // creator's address
     pub current_index: u8,    // current index
     pub records: Vec<BurnRecord>, // burn records
 }
@@ -59,8 +60,12 @@ pub mod memo_token {
 
     // initialize global burn index
     pub fn initialize_global_burn_index(ctx: Context<InitializeGlobalBurnIndex>) -> Result<()> {
+        // check if caller is admin
+        if ctx.accounts.payer.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+        
         let burn_index = &mut ctx.accounts.global_burn_index;
-        burn_index.authority = ctx.accounts.payer.key();
         burn_index.shard_count = 0;
         burn_index.shards = Vec::new();
         msg!("Global burn index initialized");
@@ -69,14 +74,13 @@ pub mod memo_token {
 
     // initialize latest burn shard
     pub fn initialize_latest_burn_shard(ctx: Context<InitializeLatestBurnShard>) -> Result<()> {
-        // Check if the payer is the index authority
-        if ctx.accounts.global_burn_index.authority != ctx.accounts.payer.key() {
-            return Err(ErrorCode::UnauthorizedAuthority.into());
+        // check if caller is admin
+        if ctx.accounts.payer.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
         }
 
         // initialize shard
         let burn_shard = &mut ctx.accounts.latest_burn_shard;
-        burn_shard.authority = ctx.accounts.payer.key();
         burn_shard.current_index = 0;
         burn_shard.records = Vec::new();
 
@@ -238,27 +242,6 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
     Ok((false, vec![]))
 }
 
-// initialize storage account
-#[derive(Accounts)]
-pub struct InitializeGlobalBurnIndex<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + // discriminator
-               1 + // shard_count
-               4 + // vec len
-               (128 * (32 + 2)), // 128 shards
-        seeds = [b"global_burn_index"],
-        bump
-    )]
-    pub global_burn_index: Account<'info, GlobalBurnIndex>,
-    
-    pub system_program: Program<'info, System>,
-}
-
 // modify ProcessTransfer structure, add optional storage account
 #[derive(Accounts)]
 pub struct ProcessTransfer<'info> {
@@ -317,6 +300,26 @@ pub struct ProcessBurn<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitializeGlobalBurnIndex<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + // discriminator
+               1 + // shard_count
+               4 + // vec len
+               (128 * (32 + 2)), // 128 shards
+        seeds = [b"global_burn_index"],
+        bump
+    )]
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct InitializeLatestBurnShard<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -332,7 +335,6 @@ pub struct InitializeLatestBurnShard<'info> {
         init,
         payer = payer,
         space = 8 + // discriminator
-               32 + // authority
                1 + // current_index
                4 + // vec len
                (69 * (32 + 88 + 8 + 8)), // 69 records
@@ -346,14 +348,13 @@ pub struct InitializeLatestBurnShard<'info> {
 
 #[derive(Accounts)]
 pub struct CloseGlobalBurnIndex<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
     pub recipient: Signer<'info>,
     
     #[account(
         mut,
         seeds = [b"global_burn_index"],
         bump,
-        constraint = global_burn_index.authority == recipient.key(),
         close = recipient
     )]
     pub global_burn_index: Account<'info, GlobalBurnIndex>,
@@ -363,20 +364,18 @@ pub struct CloseGlobalBurnIndex<'info> {
 
 #[derive(Accounts)]
 pub struct CloseLatestBurnShard<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
     pub recipient: Signer<'info>,
     
     #[account(
         mut,
         seeds = [b"global_burn_index"],
-        bump,
-        constraint = global_burn_index.authority == recipient.key()
+        bump
     )]
     pub global_burn_index: Account<'info, GlobalBurnIndex>,
     
     #[account(
         mut,
-        constraint = latest_burn_shard.authority == recipient.key(),
         close = recipient
     )]
     pub latest_burn_shard: Account<'info, LatestBurnShard>,
@@ -403,4 +402,7 @@ pub enum ErrorCode {
     
     #[msg("Unauthorized: Only the authority can perform this action")]
     UnauthorizedAuthority,
+    
+    #[msg("Unauthorized: Only the admin can perform this action")]
+    UnauthorizedAdmin,
 }
