@@ -48,6 +48,10 @@ name = "burn"
 path = "src/burn.rs"
 
 [[bin]]
+name = "test-batch-burn"
+path = "src/test-batch-burn.rs"
+
+[[bin]]
 name = "img2hex"
 path = "src/img2hex.rs"
 
