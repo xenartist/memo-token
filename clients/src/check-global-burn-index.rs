@@ -7,15 +7,13 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[repr(C)]
 struct ShardInfo {
-    category: String,     // shard category name (max 32 bytes)
     pubkey: Pubkey,      // shard account address
     record_count: u16,   // current record count
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[repr(C)]
-struct LatestBurnIndex {
-    authority: Pubkey,    // creator's address
+struct GlobalBurnIndex {
     shard_count: u8,      // current shard count
     shards: Vec<ShardInfo>, // shard info list
 }
@@ -50,16 +48,12 @@ fn main() {
             // parse data
             let data = &account.data[8..];
             
-            // parse authority (32 bytes)
-            let authority = Pubkey::new(&data[0..32]);
-            println!("\nAuthority: {}", authority);
+            // Directly parse shard_count (1 byte) as authority field has been removed
+            let shard_count = data[0];
+            println!("\nShard count: {}", shard_count);
             
-            // parse shard_count (1 byte)
-            let shard_count = data[32];
-            println!("Shard count: {}", shard_count);
-            
-            // parse shards vector
-            let mut offset = 33;
+            // Parse shards vector - offset is now 1 instead of 33
+            let mut offset = 1;
             println!("\nShards:");
             
             // parse vector length (4 bytes)

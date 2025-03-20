@@ -29,15 +29,11 @@ fn main() {
             let discriminator = &account.data[0..8];
             println!("\nDiscriminator: {:?}", discriminator);
             
-            // parse data
+            // parse data - skip discriminator
             let data = &account.data[8..];
             
-            // parse authority (32 bytes)
-            let authority = Pubkey::new(&data[0..32]);
-            println!("\nAuthority: {}", authority);
-            
-            // modified offset
-            let mut offset = 32; // only authority 32 bytes
+            // No more authority field, start directly with current_index
+            let mut offset = 0; // No authority field anymore
             
             // parse current_index (1 byte)
             let current_index = data[offset];

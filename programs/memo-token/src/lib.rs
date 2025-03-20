@@ -16,7 +16,7 @@ pub struct BurnRecord {
 }
 
 // admin public key
-pub const ADMIN_PUBKEY: &str = "YOUR_ADMIN_PUBLIC_KEY_HERE"; // replace with your admin public key
+pub const ADMIN_PUBKEY: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"; // replace with your admin public key
 
 // global burn index
 #[account]
