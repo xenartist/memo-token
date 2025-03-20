@@ -276,14 +276,6 @@ pub struct ProcessBurn<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
     
-    /// Global burn index (optional)
-    #[account(
-        mut,
-        seeds = [b"global_burn_index"],
-        bump
-    )]
-    pub global_burn_index: Option<Account<'info, GlobalBurnIndex>>,
-    
     /// Latest burn shard (optional)
     #[account(mut)]
     pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,

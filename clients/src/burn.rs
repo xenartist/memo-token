@@ -157,7 +157,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(token_account, false),         // token_account
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(global_burn_index_pda, false), // global burn index
             AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
         ],
     );
