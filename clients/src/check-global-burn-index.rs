@@ -8,7 +8,6 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[repr(C)]
 struct ShardInfo {
     pubkey: Pubkey,      // shard account address
-    record_count: u16,   // current record count
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -48,11 +47,11 @@ fn main() {
             // parse data
             let data = &account.data[8..];
             
-            // Directly parse shard_count (1 byte) as authority field has been removed
+            // parse shard_count (1 byte)
             let shard_count = data[0];
-            println!("\nShard count: {}", shard_count);
+            println!("Shard count: {}", shard_count);
             
-            // Parse shards vector - offset is now 1 instead of 33
+            // parse shards vector
             let mut offset = 1;
             println!("\nShards:");
             
@@ -65,13 +64,43 @@ fn main() {
                 let pubkey = Pubkey::new(&data[offset..offset+32]);
                 offset += 32;
                 
-                // parse record_count
-                let record_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap());
-                offset += 2;
+                // No more record_count parsing needed
                 
                 println!("\nShard #{}:", i + 1);
                 println!("  Pubkey: {}", pubkey);
-                println!("  Record Count: {}", record_count);
+                
+                // Check if this is the latest burn shard
+                let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
+                    &[b"latest_burn_shard"],
+                    &program_id,
+                );
+                
+                if pubkey == latest_burn_shard_pda {
+                    println!("  Type: Latest Burn Shard");
+                    
+                    // Try to get actual record count from the shard
+                    match client.get_account(&latest_burn_shard_pda) {
+                        Ok(shard_account) => {
+                            // Check if it has data
+                            if shard_account.data.len() > 9 { // At least discriminator + current_index + vec length
+                                // Skip discriminator and go to records vector length
+                                let record_data = &shard_account.data[8+1..]; // Skip discriminator and current_index
+                                let record_count = u32::from_le_bytes(record_data[0..4].try_into().unwrap());
+                                println!("  Current Records: {}", record_count);
+                                println!("  Max Records: 69");
+                                
+                                // Get current index
+                                let current_index = shard_account.data[8];
+                                println!("  Current Index: {}", current_index);
+                            } else {
+                                println!("  Empty shard or invalid data");
+                            }
+                        },
+                        Err(err) => {
+                            println!("  Could not fetch shard data: {}", err);
+                        }
+                    }
+                }
             }
 
             println!("\nAccount Info:");

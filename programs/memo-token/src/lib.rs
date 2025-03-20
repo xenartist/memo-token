@@ -30,7 +30,6 @@ pub struct GlobalBurnIndex {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct ShardInfo {
     pub pubkey: Pubkey,   // shard account address
-    pub record_count: u16, // current record count
 }
 
 // latest burn shard
@@ -89,7 +88,6 @@ pub mod memo_token {
         burn_index.shard_count += 1;
         burn_index.shards.push(ShardInfo {
             pubkey: ctx.accounts.latest_burn_shard.key(),
-            record_count: 0,
         });
 
         msg!("Latest burn shard initialized");
@@ -158,14 +156,6 @@ pub mod memo_token {
             };
             
             latest_burn_shard.add_record(record);
-            
-            // update record count in global burn index
-            if let Some(global_burn_index) = &mut ctx.accounts.global_burn_index {
-                if let Some(shard_info) = global_burn_index.shards.iter_mut()
-                    .find(|s| s.pubkey == latest_burn_shard.key()) {
-                    shard_info.record_count = latest_burn_shard.records.len() as u16;
-                }
-            }
             
             msg!("Added new burn record to shard");
         }
@@ -310,7 +300,7 @@ pub struct InitializeGlobalBurnIndex<'info> {
         space = 8 + // discriminator
                1 + // shard_count
                4 + // vec len
-               (128 * (32 + 2)), // 128 shards
+               (128 * 32), // 128 shards
         seeds = [b"global_burn_index"],
         bump
     )]

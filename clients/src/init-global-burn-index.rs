@@ -80,7 +80,7 @@ fn main() {
     let space = 8 + // discriminator
                 1 + // shard_count
                 4 + // vec len
-                (128 * (32 + 2)); // 128 shards space
+                (128 * 32); // 128 shards
 
     // Calculate required lamports for rent exemption
     let rent = client
