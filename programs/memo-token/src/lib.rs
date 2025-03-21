@@ -54,6 +54,56 @@ impl LatestBurnShard {
     }
 }
 
+// single max burn shard
+#[account]
+#[derive(Default)]
+pub struct SingleMaxBurnShard {
+    pub records: Vec<BurnRecord>, // burn records sorted by amount (descending)
+}
+
+impl SingleMaxBurnShard {
+    pub const MAX_RECORDS: usize = 69;
+    
+    pub fn add_record_if_qualified(&mut self, record: BurnRecord) -> bool {
+        // First, check if this record qualifies to be added
+        if self.records.len() < Self::MAX_RECORDS {
+            // If we have less than max records, always add the record
+            // Insert into sorted position
+            self.insert_sorted(record);
+            return true;
+        } else {
+            // Check if the new record has a higher amount than the smallest record
+            let smallest_record = &self.records[self.records.len() - 1];
+            if record.amount >= smallest_record.amount {
+                // Remove the smallest record (last in our sorted array)
+                self.records.pop();
+                // Insert the new record in sorted position
+                self.insert_sorted(record);
+                return true;
+            }
+        }
+        
+        // Not qualified to be added
+        false
+    }
+    
+    // Helper function to insert a record in sorted position (by amount, descending)
+    fn insert_sorted(&mut self, record: BurnRecord) {
+        let mut insert_pos = self.records.len();
+        
+        // Find the position to insert (descending order)
+        for (i, existing) in self.records.iter().enumerate() {
+            if record.amount >= existing.amount {
+                insert_pos = i;
+                break;
+            }
+        }
+        
+        // Insert at the found position
+        self.records.insert(insert_pos, record);
+    }
+}
+
 #[program]
 pub mod memo_token {
     use super::*;
@@ -232,19 +282,28 @@ pub mod memo_token {
 
         msg!("Burned {} tokens", amount / 1_000_000_000);
         
-        // update storage
+        // Create the burn record
+        let record = BurnRecord {
+            pubkey: ctx.accounts.user.key(),
+            signature,
+            slot: clock.slot,
+            blocktime: clock.unix_timestamp,
+            amount,
+        };
+        
+        // update latest burn shard
         if let Some(latest_burn_shard) = &mut ctx.accounts.latest_burn_shard {
-            let record = BurnRecord {
-                pubkey: ctx.accounts.user.key(),
-                signature,
-                slot: clock.slot,
-                blocktime: clock.unix_timestamp,
-                amount,
-            };
-            
-            latest_burn_shard.add_record(record);
-            
-            msg!("Added new burn record to shard");
+            latest_burn_shard.add_record(record.clone());
+            msg!("Added new burn record to latest burn shard");
+        }
+        
+        // update single max burn shard
+        if let Some(single_max_burn_shard) = &mut ctx.accounts.single_max_burn_shard {
+            if single_max_burn_shard.add_record_if_qualified(record) {
+                msg!("Added new burn record to single max burn shard");
+            } else {
+                msg!("Burn amount not high enough for single max burn shard");
+            }
         }
 
         Ok(())
@@ -268,6 +327,42 @@ pub mod memo_token {
         }
         
         msg!("Closing latest burn shard account");
+        Ok(())
+    }
+
+    // initialize single max burn shard
+    pub fn initialize_single_max_burn_shard(ctx: Context<InitializeSingleMaxBurnShard>) -> Result<()> {
+        // check if caller is admin
+        if ctx.accounts.payer.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+
+        // initialize shard
+        let burn_shard = &mut ctx.accounts.single_max_burn_shard;
+        burn_shard.records = Vec::new();
+
+        // update global burn index
+        let burn_index = &mut ctx.accounts.global_burn_index;
+        burn_index.shard_count += 1;
+        burn_index.shards.push(ShardInfo {
+            pubkey: ctx.accounts.single_max_burn_shard.key(),
+        });
+
+        msg!("Single max burn shard initialized");
+        Ok(())
+    }
+
+    // Close single max burn shard account
+    pub fn close_single_max_burn_shard(ctx: Context<CloseSingleMaxBurnShard>) -> Result<()> {
+        // Authority check is handled in the account validation
+        // Remove shard info from index
+        let burn_index = &mut ctx.accounts.global_burn_index;
+        if let Some(pos) = burn_index.shards.iter().position(|x| x.pubkey == ctx.accounts.single_max_burn_shard.key()) {
+            burn_index.shards.remove(pos);
+            burn_index.shard_count -= 1;
+        }
+        
+        msg!("Closing single max burn shard account");
         Ok(())
     }
 }
@@ -366,6 +461,10 @@ pub struct ProcessBurn<'info> {
     /// Latest burn shard (optional)
     #[account(mut)]
     pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
+    
+    /// Single max burn shard (optional)
+    #[account(mut)]
+    pub single_max_burn_shard: Option<Account<'info, SingleMaxBurnShard>>,
 }
 
 #[derive(Accounts)]
@@ -448,6 +547,53 @@ pub struct CloseLatestBurnShard<'info> {
         close = recipient
     )]
     pub latest_burn_shard: Account<'info, LatestBurnShard>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeSingleMaxBurnShard<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"global_burn_index"],
+        bump
+    )]
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
+    
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + // discriminator
+               4 + // vec len
+               (69 * (32 + 88 + 8 + 8 + 8)), // 69 records
+        seeds = [b"single_max_burn_shard"],
+        bump
+    )]
+    pub single_max_burn_shard: Account<'info, SingleMaxBurnShard>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseSingleMaxBurnShard<'info> {
+    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
+    pub recipient: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"global_burn_index"],
+        bump
+    )]
+    pub global_burn_index: Account<'info, GlobalBurnIndex>,
+    
+    #[account(
+        mut,
+        close = recipient
+    )]
+    pub single_max_burn_shard: Account<'info, SingleMaxBurnShard>,
     
     pub system_program: Program<'info, System>,
 }
