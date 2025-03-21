@@ -13,6 +13,7 @@ pub struct BurnRecord {
     pub signature: String,    // 88 bytes (base58 encoded signature)
     pub slot: u64,           // 8 bytes
     pub blocktime: i64,      // 8 bytes
+    pub amount: u64,         // 8 bytes - token burn amount
 }
 
 // admin public key
@@ -233,6 +234,7 @@ pub mod memo_token {
                 signature,
                 slot: clock.slot,
                 blocktime: clock.unix_timestamp,
+                amount,
             };
             
             latest_burn_shard.add_record(record);
@@ -399,7 +401,7 @@ pub struct InitializeLatestBurnShard<'info> {
         space = 8 + // discriminator
                1 + // current_index
                4 + // vec len
-               (69 * (32 + 88 + 8 + 8)), // 69 records
+               (69 * (32 + 88 + 8 + 8 + 8)), // 69 records
         seeds = [b"latest_burn_shard"],
         bump
     )]

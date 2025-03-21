@@ -64,11 +64,16 @@ fn main() {
                 let blocktime = i64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
                 offset += 8;
                 
+                // read amount (8 bytes)
+                let amount = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+                offset += 8;
+                
                 println!("\nRecord #{}:", i + 1);
                 println!("  Pubkey: {}", pubkey);
                 println!("  Signature: {}", signature);
                 println!("  Slot: {}", slot);
                 println!("  Blocktime: {}", blocktime);
+                println!("  Amount: {} ({} tokens)", amount, amount / 1_000_000_000);
             }
 
             println!("\nAccount Info:");

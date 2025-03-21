@@ -84,10 +84,9 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
-                32 + // authority
                 1 + // current_index
                 4 + // vec len
-                (69 * (32 + 88 + 8 + 8)); // 69 records
+                (69 * (32 + 88 + 8 + 8 + 8)); // 69 records
 
     // Calculate required lamports for rent exemption
     let rent = client
