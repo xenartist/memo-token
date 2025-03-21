@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "create-token"
-path = "src/create-token.rs"
+name = "admin-create-token"
+path = "src/admin-create-token.rs"
 
 [[bin]]
 name = "init-global-burn-index"
@@ -32,20 +32,20 @@ name = "close-latest-burn-shard"
 path = "src/close-latest-burn-shard.rs"
 
 [[bin]]
-name = "init"
-path = "src/init.rs"
+name = "init-token-account"
+path = "src/init-token-account.rs"
 
 [[bin]]
-name = "mint"
-path = "src/mint.rs"
+name = "test-single-mint"
+path = "src/test-single-mint.rs"
 
 [[bin]]
-name = "mint-test"
-path = "src/mint-test.rs"
+name = "test-batch-mint"
+path = "src/test-batch-mint.rs"
 
 [[bin]]
-name = "burn"
-path = "src/burn.rs"
+name = "test-single-burn"
+path = "src/test-single-burn.rs"
 
 [[bin]]
 name = "test-batch-burn"
