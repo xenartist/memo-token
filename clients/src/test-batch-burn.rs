@@ -25,11 +25,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         80
     };
     
-    // Parse burn amount per transaction (default: 0.01 tokens)
+    // Parse burn amount per transaction (default: 1 token)
+    // ensure default value is at least 1 token
     let burn_amount = if args.len() > 2 {
-        args[2].parse::<f64>().unwrap_or(0.01) * 1_000_000_000.0 as f64
+        let amount = args[2].parse::<f64>().unwrap_or(1.0);
+        // ensure user input value is at least 1.0
+        if amount < 1.0 {
+            println!("Warning: Burn amount must be at least 1 token. Setting to 1 token.");
+            1.0 * 1_000_000_000.0
+        } else {
+            amount * 1_000_000_000.0
+        }
     } else {
-        0.01 * 1_000_000_000.0 // 0.01 tokens in lamports
+        1.0 * 1_000_000_000.0 // default value is 1 token
     } as u64;
 
     // Parse compute units (default: 200_000)
@@ -38,6 +46,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         200_000
     };
+
+    // display input information, emphasizing the number of tokens burned per transaction
+    println!("Burn configuration:");
+    println!("  Number of burns: {}", burn_count);
+    println!("  Tokens per burn: {} (minimum allowed is 1 token)", 
+             (burn_amount as f64) / 1_000_000_000.0);
+    println!("  Compute units:   {}", compute_units);
+    println!();
 
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
@@ -100,15 +116,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if token_balance < required_tokens {
         println!("Warning: Insufficient token balance for all burns.");
         println!("You need at least {:.6} tokens but have {:.6} tokens.", required_tokens, token_balance);
-        println!("Continue anyway? (This will burn as many tokens as possible) (y/n)");
+        
+        // calculate the maximum number of burns that can be performed
+        let max_possible_burns = (token_balance / ((burn_amount as f64) / 1_000_000_000.0)) as usize;
+        println!("With your current balance, you can perform at most {} burns.", max_possible_burns);
+        println!("Continue with {} burns instead? (y/n)", max_possible_burns);
         
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
+        if input.trim().eq_ignore_ascii_case("y") {
+            // adjust the burn count
+            if max_possible_burns > 0 {
+                println!("Adjusted burn count to {} burns", max_possible_burns);
+                // note: here we reassign burn_count
+                let old_burn_count = burn_count;
+                // cannot directly modify burn_count, as it is passed from the command line, so use a new variable
+                let adjusted_burn_count = max_possible_burns;
+                println!("Reducing burn count from {} to {}", old_burn_count, adjusted_burn_count);
+                // use this new variable instead of burn_count
+                return run_burns(&client, &payer, program_id, mint, token_account, 
+                                latest_burn_shard_pda, adjusted_burn_count, burn_amount, compute_units);
+            } else {
+                println!("Not enough tokens for even a single burn. Operation cancelled.");
+                return Ok(());
+            }
+        } else {
+            println!("Operation cancelled");
             return Ok(());
         }
     }
 
+    // perform the burn operation
+    run_burns(&client, &payer, program_id, mint, token_account, 
+             latest_burn_shard_pda, burn_count, burn_amount, compute_units)
+}
+
+// extract the burn logic into a separate function, for easy adjustment of the burn count
+fn run_burns(
+    client: &RpcClient,
+    payer: &Keypair,
+    program_id: Pubkey,
+    mint: Pubkey,
+    token_account: Pubkey,
+    latest_burn_shard_pda: Pubkey,
+    burn_count: usize,
+    burn_amount: u64,
+    compute_units: u32
+) -> Result<(), Box<dyn std::error::Error>> {
     // Calculate Anchor instruction sighash for process_burn once
     let mut hasher = Sha256::new();
     hasher.update(b"global:process_burn");
@@ -182,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let transaction = Transaction::new_signed_with_payer(
             &[compute_budget_ix, memo_ix, burn_ix],
             Some(&payer.pubkey()),
-            &[&payer],
+            &[payer],
             recent_blockhash,
         );
 
@@ -213,8 +267,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 failed_burns += 1;
                 println!("Burn #{} failed: {}", i, err);
                 
+                // check the error type, if it is because the burn amount is too small, give a more specific prompt
+                if err.to_string().contains("BurnAmountTooSmall") {
+                    println!("Error: Burn amount too small. Contract requires at least 1 token per burn.");
+                    println!("Please restart with a higher burn amount. Stopping batch burn.");
+                    break;
+                }
                 // If we're out of tokens, stop
-                if err.to_string().contains("insufficient funds") {
+                else if err.to_string().contains("insufficient funds") {
                     println!("Insufficient funds to continue. Stopping batch burn.");
                     break;
                 }
@@ -251,7 +311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nTest completed. You should verify:");
     println!("1. Only the most recent 69 records are retained in the shard");
     println!("2. The current_index has wrapped around correctly");
-    println!("3. The record_count is updated correctly in the global burn index");
+    println!("3. Each burn record includes the correct amount value");
 
     Ok(())
 }
