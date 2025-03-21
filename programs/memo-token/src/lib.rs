@@ -94,6 +94,86 @@ pub mod memo_token {
         Ok(())
     }
 
+    pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
+        // check memo instruction
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
+        if !memo_found {
+            return Err(ErrorCode::MemoRequired.into());
+        }
+        
+        // calculate memo length
+        let memo_length = memo_data.len();
+        
+        // check memo length is not too long
+        if memo_length > 700 {
+            return Err(ErrorCode::MemoTooLong.into());
+        }
+        
+        // determine the possible token count range based on length
+        let max_tokens = if memo_length <= 100 {
+            1
+        } else if memo_length <= 200 {
+            2
+        } else if memo_length <= 300 {
+            3
+        } else if memo_length <= 400 {
+            4
+        } else if memo_length <= 500 {
+            5
+        } else if memo_length <= 600 {
+            6
+        } else {
+            7 // max 700 bytes
+        };
+        
+        // get PDA and bump
+        let (mint_authority, bump) = Pubkey::find_program_address(
+            &[b"mint_authority"],
+            ctx.program_id
+        );
+        
+        // verify PDA
+        if mint_authority != ctx.accounts.mint_authority.key() {
+            return Err(ProgramError::InvalidSeeds.into());
+        }
+        
+        // generate random number
+        let clock = Clock::get()?;
+        let mut hasher = solana_program::hash::Hasher::default();
+        hasher.hash(&memo_data);
+        hasher.hash(&clock.slot.to_le_bytes());
+        hasher.hash(&clock.unix_timestamp.to_le_bytes());
+        hasher.hash(ctx.accounts.user.key().as_ref());
+        let hash = hasher.result();
+        
+        // generate random number between 1 and max_tokens
+        let random_bytes = &hash.to_bytes()[0..8];
+        let random_value = u64::from_le_bytes(random_bytes.try_into().unwrap());
+        let token_count = (random_value % max_tokens as u64) + 1;
+        
+        // calculate mint amount (1 token = 10^9 units)
+        let amount = token_count * 1_000_000_000;
+        
+        // mint tokens
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::MintTo {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.token_account.to_account_info(),
+                    authority: ctx.accounts.mint_authority.to_account_info(),
+                },
+                &[&[b"mint_authority".as_ref(), &[bump]]]
+            ),
+            amount
+        )?;
+        
+        // record the number of tokens minted
+        msg!("Minted {} tokens", token_count);
+        
+        Ok(())
+    }
+
     // modify process_burn function
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
         // check memo instruction
