@@ -177,6 +177,11 @@ pub mod memo_token {
 
     // modify process_burn function
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
+        // check burn amount is at least 1 token (10^9 units)
+        if amount < 1_000_000_000 {
+            return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+        
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
@@ -469,4 +474,7 @@ pub enum ErrorCode {
     
     #[msg("Unauthorized: Only the admin can perform this action")]
     UnauthorizedAdmin,
+    
+    #[msg("Burn amount too small. Must burn at least 1 token.")]
+    BurnAmountTooSmall,
 }
