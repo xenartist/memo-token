@@ -16,6 +16,10 @@ name = "init-latest-burn-shard"
 path = "src/init-latest-burn-shard.rs"
 
 [[bin]]
+name = "init-single-max-burn-shard"
+path = "src/init-single-max-burn-shard.rs"
+
+[[bin]]
 name = "check-global-burn-index"
 path = "src/check-global-burn-index.rs"
 
@@ -24,12 +28,20 @@ name = "check-latest-burn-shard"
 path = "src/check-latest-burn-shard.rs"
 
 [[bin]]
+name = "check-single-max-burn-shard"
+path = "src/check-single-max-burn-shard.rs"
+
+[[bin]]
 name = "close-global-burn-index"
 path = "src/close-global-burn-index.rs"
 
 [[bin]]
 name = "close-latest-burn-shard"
 path = "src/close-latest-burn-shard.rs"
+
+[[bin]]
+name = "close-single-max-burn-shard"
+path = "src/close-single-max-burn-shard.rs"
 
 [[bin]]
 name = "init-token-account"
