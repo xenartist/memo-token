@@ -13,6 +13,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use sha2::{Sha256, Digest};
 use serde_json;
+use rand::Rng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -25,11 +26,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         80
     };
     
-    // Parse burn amount per transaction (default: 1 token)
-    // ensure default value is at least 1 token
-    let burn_amount = if args.len() > 2 {
+    // Parse burn amount per transaction (default: random between 1.001 and 1.999 tokens)
+    let use_random_amount = if args.len() > 2 {
+        args[2].to_lowercase() == "random"
+    } else {
+        true
+    };
+    
+    let base_burn_amount = if !use_random_amount && args.len() > 2 {
         let amount = args[2].parse::<f64>().unwrap_or(1.0);
-        // ensure user input value is at least 1.0
         if amount < 1.0 {
             println!("Warning: Burn amount must be at least 1 token. Setting to 1 token.");
             1.0 * 1_000_000_000.0
@@ -37,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             amount * 1_000_000_000.0
         }
     } else {
-        1.0 * 1_000_000_000.0 // default value is 1 token
+        1.0 * 1_000_000_000.0
     } as u64;
 
     // Parse compute units (default: 200_000)
@@ -50,8 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // display input information, emphasizing the number of tokens burned per transaction
     println!("Burn configuration:");
     println!("  Number of burns: {}", burn_count);
-    println!("  Tokens per burn: {} (minimum allowed is 1 token)", 
-             (burn_amount as f64) / 1_000_000_000.0);
+    if use_random_amount {
+        println!("  Tokens per burn: Random between 1.001 and 1.999 tokens (for testing top burn sorting)");
+    } else {
+        println!("  Tokens per burn: {} (fixed amount)", (base_burn_amount as f64) / 1_000_000_000.0);
+    }
     println!("  Compute units:   {}", compute_units);
     println!();
 
@@ -86,15 +94,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[b"latest_burn_shard"],
         &program_id,
     );
+    
+    // calculate top_burn_shard_pda
+    let (top_burn_shard_pda, _) = Pubkey::find_program_address(
+        &[b"top_burn_shard"],
+        &program_id,
+    );
 
-    // Check if shard exists
+    // Check if latest burn shard exists
     match client.get_account(&latest_burn_shard_pda) {
         Ok(_) => {
-            println!("Found burn shard");
+            println!("Found latest burn shard");
         },
         Err(_) => {
-            println!("Warning: Burn shard does not exist.");
+            println!("Warning: Latest burn shard does not exist.");
             println!("The transaction may fail. Please initialize the shard first using init-latest-burn-shard.");
+            println!("Continue anyway? (y/n)");
+            
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                return Ok(());
+            }
+        }
+    }
+    
+    // check if top burn shard exists
+    match client.get_account(&top_burn_shard_pda) {
+        Ok(_) => {
+            println!("Found top burn shard");
+        },
+        Err(_) => {
+            println!("Warning: Top burn shard does not exist.");
+            println!("Burns will be recorded in latest burn shard, but not in top burn shard.");
+            println!("To enable top burn tracking, initialize the shard using init-top-burn-shard.");
             println!("Continue anyway? (y/n)");
             
             let mut input = String::new();
@@ -108,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check token balance
     let balance = client.get_token_account_balance(&token_account)?;
     let token_balance = balance.ui_amount.unwrap();
-    let required_tokens = (burn_amount as f64 * burn_count as f64) / 1_000_000_000.0;
+    let required_tokens = (base_burn_amount as f64 * burn_count as f64) / 1_000_000_000.0;
     
     println!("Current token balance: {} tokens", token_balance);
     println!("Required tokens for {} burns: {:.6} tokens", burn_count, required_tokens);
@@ -118,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("You need at least {:.6} tokens but have {:.6} tokens.", required_tokens, token_balance);
         
         // calculate the maximum number of burns that can be performed
-        let max_possible_burns = (token_balance / ((burn_amount as f64) / 1_000_000_000.0)) as usize;
+        let max_possible_burns = (token_balance / ((base_burn_amount as f64) / 1_000_000_000.0)) as usize;
         println!("With your current balance, you can perform at most {} burns.", max_possible_burns);
         println!("Continue with {} burns instead? (y/n)", max_possible_burns);
         
@@ -135,7 +168,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Reducing burn count from {} to {}", old_burn_count, adjusted_burn_count);
                 // use this new variable instead of burn_count
                 return run_burns(&client, &payer, program_id, mint, token_account, 
-                                latest_burn_shard_pda, adjusted_burn_count, burn_amount, compute_units);
+                                latest_burn_shard_pda, top_burn_shard_pda, adjusted_burn_count, 
+                                base_burn_amount, use_random_amount, compute_units);
             } else {
                 println!("Not enough tokens for even a single burn. Operation cancelled.");
                 return Ok(());
@@ -148,7 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // perform the burn operation
     run_burns(&client, &payer, program_id, mint, token_account, 
-             latest_burn_shard_pda, burn_count, burn_amount, compute_units)
+             latest_burn_shard_pda, top_burn_shard_pda, burn_count, 
+             base_burn_amount, use_random_amount, compute_units)
 }
 
 // extract the burn logic into a separate function, for easy adjustment of the burn count
@@ -159,18 +194,31 @@ fn run_burns(
     mint: Pubkey,
     token_account: Pubkey,
     latest_burn_shard_pda: Pubkey,
+    top_burn_shard_pda: Pubkey,
     burn_count: usize,
-    burn_amount: u64,
+    base_burn_amount: u64,
+    use_random_amount: bool,
     compute_units: u32
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Create random number generator
+    let mut rng = rand::thread_rng();
+    
     // Calculate Anchor instruction sighash for process_burn once
     let mut hasher = Sha256::new();
     hasher.update(b"global:process_burn");
     let sighash_result = hasher.finalize()[..8].to_vec();
 
+    // Create a vector to store actual burn amounts for final statistics
+    let mut actual_burn_amounts: Vec<f64> = Vec::with_capacity(burn_count);
+
     // Start batch burning
-    println!("\nStarting batch burn test with {} burns of {:.6} tokens each", 
-            burn_count, (burn_amount as f64) / 1_000_000_000.0);
+    println!("\nStarting batch burn test with {} burns", burn_count);
+    if use_random_amount {
+        println!("Using random amounts between 1.001 and 1.999 tokens per burn");
+    } else {
+        println!("Using fixed amount of {:.6} tokens per burn", 
+                (base_burn_amount as f64) / 1_000_000_000.0);
+    }
     println!("Compute units per transaction: {}", compute_units);
     println!("----------------------------------------\n");
 
@@ -179,10 +227,24 @@ fn run_burns(
     let delay = Duration::from_secs(1); // 1 second delay between transactions
 
     for i in 1..=burn_count {
-        println!("Processing burn #{}/{}...", i, burn_count);
+        // Generate a random burn amount if using random amounts
+        let burn_amount = if use_random_amount {
+            // Generate a random number between 1.001 and 1.999
+            let random_float = 1.0 + rng.gen_range(0.001..0.999);
+            // Convert to lamports (multiply by 10^9)
+            (random_float * 1_000_000_000.0) as u64
+        } else {
+            base_burn_amount
+        };
+        
+        // Save actual burn amount in tokens
+        let burn_amount_in_tokens = (burn_amount as f64) / 1_000_000_000.0;
+        actual_burn_amounts.push(burn_amount_in_tokens);
+        
+        println!("Processing burn #{}/{} - Amount: {:.6} tokens", i, burn_count, burn_amount_in_tokens);
         
         // Generate a unique message for each burn to track it
-        let message = format!("Batch burn #{} of {}", i, burn_count);
+        let message = format!("Batch burn #{} of {} - Amount: {:.6}", i, burn_count, burn_amount_in_tokens);
         
         // Use a deterministic signature for testing
         let signature = format!("BatchBurnSig{}", i);
@@ -224,6 +286,7 @@ fn run_burns(
                 AccountMeta::new_readonly(spl_token::id(), false), // token_program
                 AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
                 AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
+                AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
             ],
         );
 
@@ -287,13 +350,24 @@ fn run_burns(
         }
     }
 
+    // Calculate actual total tokens burned
+    let total_tokens_burned: f64 = actual_burn_amounts.iter().sum();
+    
+    // Find maximum and minimum burn amounts
+    let max_amount = actual_burn_amounts.iter().cloned().fold(0.0, f64::max);
+    let min_amount = if actual_burn_amounts.is_empty() { 0.0 } else {
+        actual_burn_amounts.iter().cloned().fold(f64::INFINITY, f64::min)
+    };
+
     // Print summary
     println!("\n----------------------------------------");
     println!("Batch Burn Test Summary:");
     println!("Total burns attempted: {}", burn_count);
     println!("Successful burns: {}", successful_burns);
     println!("Failed burns: {}", failed_burns);
-    println!("Tokens burned: {:.6}", (successful_burns as f64 * burn_amount as f64) / 1_000_000_000.0);
+    println!("Tokens burned: {:.6}", total_tokens_burned);
+    println!("Highest burn amount: {:.6}", max_amount);
+    println!("Lowest burn amount: {:.6}", min_amount);
     println!("----------------------------------------");
 
     // Check latest burn shard state
@@ -307,10 +381,32 @@ fn run_burns(
             println!("Failed to get latest burn shard account: {}", err);
         }
     }
+    
+    // check if top burn shard exists
+    println!("\nChecking top burn shard state...");
+    match client.get_account(&top_burn_shard_pda) {
+        Ok(account) => {
+            println!("Top burn shard has {} bytes of data", account.data.len());
+            println!("To view the leaderboard, run: cargo run --bin check-top-burn-shard");
+            println!("The top burn shard should contain the highest amount burns in descending order");
+        },
+        Err(err) => {
+            println!("Failed to get top burn shard account: {}", err);
+        }
+    }
+
+    // If random amounts, display recommendations
+    if use_random_amount {
+        println!("\nSince you used random burn amounts, we recommend:");
+        println!("1. Run 'cargo run --bin check-top-burn-shard' to verify the sorting");
+        println!("2. The burn amounts should be in descending order in the top burn shard");
+        println!("3. Only the top {} burns should be recorded if more than {} burns were performed", 
+                 69, 69);
+    }
 
     println!("\nTest completed. You should verify:");
-    println!("1. Only the most recent 69 records are retained in the shard");
-    println!("2. The current_index has wrapped around correctly");
+    println!("1. Only the most recent 69 records are retained in the latest burn shard");
+    println!("2. The top burn shard contains only the highest amount burns (sorted in descending order)");
     println!("3. Each burn record includes the correct amount value");
 
     Ok(())

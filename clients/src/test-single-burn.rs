@@ -103,15 +103,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[b"latest_burn_shard"],
         &program_id,
     );
+    
+    // calculate top_burn_shard_pda
+    let (top_burn_shard_pda, _) = Pubkey::find_program_address(
+        &[b"top_burn_shard"],
+        &program_id,
+    );
 
-    // Check if shard exists
+    // Check if shards exist
     match client.get_account(&latest_burn_shard_pda) {
         Ok(_) => {
-            println!("Found burn shard");
+            println!("Found latest burn shard");
         },
         Err(_) => {
-            println!("Warning: Burn shard does not exist.");
+            println!("Warning: Latest burn shard does not exist.");
             println!("The transaction may fail. Please initialize the shard first using init-latest-burn-shard.");
+            println!("Continue anyway? (y/n)");
+            
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                return Ok(());
+            }
+        }
+    }
+    
+    // check if top burn shard exists
+    match client.get_account(&top_burn_shard_pda) {
+        Ok(_) => {
+            println!("Found top burn shard");
+        },
+        Err(_) => {
+            println!("Warning: Top burn shard does not exist.");
+            println!("Burns will be recorded in latest burn shard, but not in top burn shard.");
+            println!("To enable top burn tracking, initialize the shard using init-top-burn-shard.");
             println!("Continue anyway? (y/n)");
             
             let mut input = String::new();
@@ -158,6 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
             AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
+            AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
         ],
     );
 
@@ -188,22 +214,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("New token balance: {}", balance.ui_amount.unwrap());
             }
             
-            // Check if record was added to shard
+            // Check if record was added to latest burn shard
             match client.get_account(&latest_burn_shard_pda) {
                 Ok(_) => {
-                    println!("Burn record added to shard. Use check-latest-burn-shard to view records.");
+                    println!("Burn record added to latest burn shard. Use check-latest-burn-shard to view records.");
                 },
                 Err(err) => {
-                    println!("Warning: Could not verify shard update: {}", err);
+                    println!("Warning: Could not verify latest burn shard update: {}", err);
+                }
+            }
+            
+            // check if record was added to top burn shard
+            match client.get_account(&top_burn_shard_pda) {
+                Ok(_) => {
+                    // check if burn is added to top burn shard (depends on amount)
+                    println!("Top burn shard updated. Use check-top-burn-shard to see if your burn qualified for the leaderboard.");
+                    println!("Note: Burn is only added to top burn shard if amount is high enough to qualify.");
+                },
+                Err(err) => {
+                    println!("Warning: Could not verify top burn shard update: {}", err);
                 }
             }
         }
         Err(err) => {
             println!("Failed to burn tokens: {}", err);
             println!("This may happen if:");
-            println!("1. The shard doesn't exist - run init-latest-burn-shard first");
+            println!("1. The burn shards don't exist - run initialization scripts first");
             println!("2. Insufficient token balance");
             println!("3. Issues with the memo format");
+            println!("4. Burn amount is less than the minimum required (1 token)");
         }
     }
 
