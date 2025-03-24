@@ -20,6 +20,10 @@ name = "init-top-burn-shard"
 path = "src/init-top-burn-shard.rs"
 
 [[bin]]
+name = "init-user-profile"
+path = "src/init-user-profile.rs"
+
+[[bin]]
 name = "check-global-burn-index"
 path = "src/check-global-burn-index.rs"
 
@@ -30,6 +34,14 @@ path = "src/check-latest-burn-shard.rs"
 [[bin]]
 name = "check-top-burn-shard"
 path = "src/check-top-burn-shard.rs"
+
+[[bin]]
+name = "check-user-profile"
+path = "src/check-user-profile.rs"
+
+[[bin]]
+name = "update-user-profile"
+path = "src/update-user-profile.rs"
 
 [[bin]]
 name = "close-global-burn-index"

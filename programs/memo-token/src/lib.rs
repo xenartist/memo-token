@@ -104,6 +104,21 @@ impl TopBurnShard {
     }
 }
 
+// user profile
+#[account]
+#[derive(Default)]
+pub struct UserProfile {
+    pub pubkey: Pubkey,           // 32 bytes - user pubkey
+    pub username: String,         // 4 + 32 bytes - max 32 characters username
+    pub total_minted: u64,        // 8 bytes - total minted tokens
+    pub total_burned: u64,        // 8 bytes - total burned tokens
+    pub mint_count: u64,          // 8 bytes - mint count
+    pub burn_count: u64,          // 8 bytes - burn count
+    pub profile_image: String,    // 4 + 128 bytes - max 128 characters profile image url
+    pub created_at: i64,          // 8 bytes - create timestamp
+    pub last_updated: i64,        // 8 bytes - last updated timestamp
+}
+
 #[program]
 pub mod memo_token {
     use super::*;
@@ -142,6 +157,71 @@ pub mod memo_token {
         });
 
         msg!("Latest burn shard initialized");
+        Ok(())
+    }
+
+    // initialize user profile
+    pub fn initialize_user_profile(
+        ctx: Context<InitializeUserProfile>, 
+        username: String, 
+        profile_image: String
+    ) -> Result<()> {
+        // check username length
+        if username.len() > 32 {
+            return Err(ErrorCode::UsernameTooLong.into());
+        }
+        
+        // check profile image length
+        if profile_image.len() > 128 {
+            return Err(ErrorCode::ProfileImageTooLong.into());
+        }
+        
+        let user_profile = &mut ctx.accounts.user_profile;
+        let clock = Clock::get()?;
+        
+        user_profile.pubkey = ctx.accounts.user.key();
+        user_profile.username = username;
+        user_profile.total_minted = 0;
+        user_profile.total_burned = 0;
+        user_profile.mint_count = 0;
+        user_profile.burn_count = 0;
+        user_profile.profile_image = profile_image;
+        user_profile.created_at = clock.unix_timestamp;
+        user_profile.last_updated = clock.unix_timestamp;
+        
+        msg!("User profile initialized for: {}", user_profile.username);
+        Ok(())
+    }
+    
+    // update user profile
+    pub fn update_user_profile(
+        ctx: Context<UpdateUserProfile>, 
+        username: Option<String>, 
+        profile_image: Option<String>
+    ) -> Result<()> {
+        let user_profile = &mut ctx.accounts.user_profile;
+        let clock = Clock::get()?;
+        
+        // update username (if provided)
+        if let Some(new_username) = username {
+            if new_username.len() > 32 {
+                return Err(ErrorCode::UsernameTooLong.into());
+            }
+            user_profile.username = new_username;
+        }
+        
+        // update profile image (if provided)
+        if let Some(new_profile_image) = profile_image {
+            if new_profile_image.len() > 128 {
+                return Err(ErrorCode::ProfileImageTooLong.into());
+            }
+            user_profile.profile_image = new_profile_image;
+        }
+        
+        // update last updated time
+        user_profile.last_updated = clock.unix_timestamp;
+        
+        msg!("User profile updated for: {}", user_profile.username);
         Ok(())
     }
 
@@ -219,6 +299,17 @@ pub mod memo_token {
             amount
         )?;
         
+        // update user profile stats (if user profile account exists)
+        if let Some(user_profile) = &mut ctx.accounts.user_profile {
+            // Check if user_profile.pubkey matches the signer's key
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+            user_profile.total_minted += amount;
+            user_profile.mint_count += 1;
+            msg!("Updated user profile stats for mint operation");
+        }
+        
         // record the number of tokens minted
         msg!("Minted {} tokens", token_count);
         
@@ -281,6 +372,17 @@ pub mod memo_token {
         )?;
 
         msg!("Burned {} tokens", amount / 1_000_000_000);
+        
+        // update user profile stats (if user profile account exists)
+        if let Some(user_profile) = &mut ctx.accounts.user_profile {
+            // Check if user_profile.pubkey matches the signer's key
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+            user_profile.total_burned += amount;
+            user_profile.burn_count += 1;
+            msg!("Updated user profile stats for burn operation");
+        }
         
         // Create the burn record
         let record = BurnRecord {
@@ -434,6 +536,14 @@ pub struct ProcessTransfer<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+    
+    // user profile (optional)
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+    )]
+    pub user_profile: Option<Account<'info, UserProfile>>,
 }
 
 // add account structure for burning instruction
@@ -465,6 +575,14 @@ pub struct ProcessBurn<'info> {
     /// Top burn shard (optional)
     #[account(mut)]
     pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    
+    // user profile (optional)
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+    )]
+    pub user_profile: Option<Account<'info, UserProfile>>,
 }
 
 #[derive(Accounts)]
@@ -598,6 +716,48 @@ pub struct CloseTopBurnShard<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct InitializeUserProfile<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = 8 + // discriminator
+               32 + // pubkey
+               4 + 32 + // username (String)
+               8 + // total_minted
+               8 + // total_burned
+               8 + // mint_count
+               8 + // burn_count
+               4 + 128 + // profile_image (String)
+               8 + // created_at
+               8,  // last_updated
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateUserProfile<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+        constraint = user_profile.pubkey == user.key() @ ErrorCode::UnauthorizedUser
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Memo is too short. Must be at least 69 bytes.")]
@@ -623,4 +783,13 @@ pub enum ErrorCode {
     
     #[msg("Burn amount too small. Must burn at least 1 token.")]
     BurnAmountTooSmall,
+    
+    #[msg("Username too long. Maximum length is 32 characters.")]
+    UsernameTooLong,
+    
+    #[msg("Profile image URL too long. Maximum length is 128 characters.")]
+    ProfileImageTooLong,
+    
+    #[msg("Unauthorized: Only the user can update their own profile")]
+    UnauthorizedUser,
 }

@@ -148,6 +148,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint,
     );
 
+    // Calculate user profile PDA
+    let (user_profile_pda, _) = Pubkey::find_program_address(
+        &[b"user_profile", payer.pubkey().as_ref()],
+        &program_id,
+    );
+
+    // Check if user profile exists
+    let user_profile_exists = match client.get_account(&user_profile_pda) {
+        Ok(_) => {
+            println!("User profile found at: {}", user_profile_pda);
+            true
+        },
+        Err(_) => {
+            println!("No user profile found. The mint will succeed but won't track statistics.");
+            println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
+            false
+        }
+    };
+
     // Calculate Anchor instruction sighash
     let mut hasher = Sha256::new();
     hasher.update(b"global:process_transfer");
@@ -163,18 +182,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create compute budget instruction to set CU limit
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
     
-    // Create mint instruction
+    // Create mint instruction - include user profile account if it exists
+    let mut accounts = vec![
+        AccountMeta::new(payer.pubkey(), true),         // user
+        AccountMeta::new(mint, false),                  // mint
+        AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
+        AccountMeta::new(token_account, false),         // token_account
+        AccountMeta::new_readonly(spl_token::id(), false), // token_program
+        AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
+    ];
+    
+    // Add user profile PDA to account list if it exists
+    if user_profile_exists {
+        accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
+    }
+    
     let mint_ix = Instruction::new_with_bytes(
         program_id,
         &instruction_data,
-        vec![
-            AccountMeta::new(payer.pubkey(), true),         // user
-            AccountMeta::new(mint, false),                  // mint
-            AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
-            AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
-            AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-        ],
+        accounts,
     );
 
     // Create memo instruction with JSON content
@@ -200,24 +226,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Send and confirm transaction
-    let signature = client.send_and_confirm_transaction(&transaction)?;
-    println!("Mint successful! Signature: {}", signature);
-    println!("Memo: {}", memo_text);
+    match client.send_and_confirm_transaction(&transaction) {
+        Ok(signature) => {
+            println!("Mint successful! Signature: {}", signature);
+            println!("Memo: {}", memo_text);
 
-    // Print token balance
-    match client.get_token_account_balance(&token_account) {
-        Ok(balance) => {
-            println!("New token balance: {}", balance.ui_amount.unwrap());
+            // Print token balance
+            match client.get_token_account_balance(&token_account) {
+                Ok(balance) => {
+                    println!("New token balance: {}", balance.ui_amount.unwrap());
+                    
+                    // Check user profile stats if a profile exists
+                    if user_profile_exists {
+                        println!("\nYour mint statistics have been updated in your user profile.");
+                        println!("To view your profile stats, run: cargo run --bin check-user-profile");
+                    }
+                }
+                Err(_) => {
+                    println!("Failed to get token balance");
+                }
+            }
+            
+            // Display pixel art if memo contains pixel art
+            if memo_text.starts_with("pixel:") {
+                let hex_string = memo_text.trim_start_matches("pixel:").trim();
+                display_pixel_art(hex_string);
+            }
+        },
+        Err(err) => {
+            println!("Error: {}", err);
+            println!("\nCommon issues:");
+            println!("1. If you've created a user profile, make sure to include it in the transaction");
+            println!("2. If you don't have a user profile, the contract expects the account list to be exactly 6 accounts");
+            println!("3. Memo length must be at least 69 bytes");
+            
+            // Provide more specific advice based on error
+            if err.to_string().contains("AccountNotEnoughKeys") {
+                println!("\nThe contract is expecting more accounts than provided.");
+                println!("To fix this, either create a user profile or update this script to include a dummy user profile account.");
+            }
+            
+            return Err(err.into());
         }
-        Err(_) => {
-            println!("Failed to get token balance");
-        }
-    }
-    
-    // Display pixel art if memo contains pixel art
-    if memo_text.starts_with("pixel:") {
-        let hex_string = memo_text.trim_start_matches("pixel:").trim();
-        display_pixel_art(hex_string);
     }
 
     Ok(())
