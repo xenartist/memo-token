@@ -318,6 +318,9 @@ pub mod memo_token {
             // Check if mint_count would overflow
             if let Some(new_count) = user_profile.mint_count.checked_add(1) {
                 user_profile.mint_count = new_count;
+            } else {
+                msg!("Warning: Mint count would overflow, keeping at max value");
+                user_profile.mint_count = u64::MAX;
             }
             
             msg!("Updated user profile stats for mint operation");
@@ -412,6 +415,9 @@ pub mod memo_token {
             // Check if burn_count would overflow
             if let Some(new_count) = user_profile.burn_count.checked_add(1) {
                 user_profile.burn_count = new_count;
+            } else {
+                msg!("Warning: Burn count would overflow, keeping at max value");
+                user_profile.burn_count = u64::MAX;
             }
             
             msg!("Updated user profile stats for burn operation");
