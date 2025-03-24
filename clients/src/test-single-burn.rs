@@ -276,6 +276,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("2. Insufficient token balance");
             println!("3. Issues with the memo format");
             println!("4. Burn amount is less than the minimum required (1 token)");
+
+            println!("5. Burn amount is not an integer multiple of 1 token");
+    
+            // overflow error
+            if err.to_string().contains("would overflow") {
+                println!("\nWARNING: The burn operation would cause a counter overflow.");
+                println!("The system has protection against this, but it indicates you've reached");
+                println!("a maximum limit for burning tokens. Your statistics will be capped at the maximum value.");
+            }
             
             // Provide more specific advice based on error
             if err.to_string().contains("AccountNotEnoughKeys") {

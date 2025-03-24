@@ -305,8 +305,21 @@ pub mod memo_token {
             if user_profile.pubkey != ctx.accounts.user.key() {
                 return Err(ErrorCode::UnauthorizedUser.into());
             }
-            user_profile.total_minted += amount;
-            user_profile.mint_count += 1;
+            
+            // Check if total_minted would overflow
+            let tokens_to_add = token_count;
+            if let Some(new_total) = user_profile.total_minted.checked_add(tokens_to_add) {
+                user_profile.total_minted = new_total;
+            } else {
+                msg!("Warning: Total minted would overflow, keeping at max value");
+                user_profile.total_minted = u64::MAX;
+            }
+            
+            // Check if mint_count would overflow
+            if let Some(new_count) = user_profile.mint_count.checked_add(1) {
+                user_profile.mint_count = new_count;
+            }
+            
             msg!("Updated user profile stats for mint operation");
         }
         
@@ -321,6 +334,11 @@ pub mod memo_token {
         // check burn amount is at least 1 token (10^9 units)
         if amount < 1_000_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+
+        // check burn amount is an integer multiple of 1 token (10^9 units)
+        if amount % 1_000_000_000 != 0 {
+            return Err(ErrorCode::InvalidBurnAmount.into());
         }
         
         // check memo instruction
@@ -379,8 +397,23 @@ pub mod memo_token {
             if user_profile.pubkey != ctx.accounts.user.key() {
                 return Err(ErrorCode::UnauthorizedUser.into());
             }
-            user_profile.total_burned += amount;
-            user_profile.burn_count += 1;
+            
+            // Calculate tokens to add
+            let tokens_to_add = amount / 1_000_000_000;
+            
+            // Check if total_burned would overflow
+            if let Some(new_total) = user_profile.total_burned.checked_add(tokens_to_add) {
+                user_profile.total_burned = new_total;
+            } else {
+                msg!("Warning: Total burned would overflow, keeping at max value");
+                user_profile.total_burned = u64::MAX;
+            }
+            
+            // Check if burn_count would overflow
+            if let Some(new_count) = user_profile.burn_count.checked_add(1) {
+                user_profile.burn_count = new_count;
+            }
+            
             msg!("Updated user profile stats for burn operation");
         }
         
@@ -792,4 +825,7 @@ pub enum ErrorCode {
     
     #[msg("Unauthorized: Only the user can update their own profile")]
     UnauthorizedUser,
+
+    #[msg("Invalid burn amount. Must be an integer multiple of 1 token (1,000,000,000 units).")]
+    InvalidBurnAmount,
 }

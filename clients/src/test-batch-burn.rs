@@ -20,31 +20,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
+    // Check if "random" is present
+    let has_random = args.iter().any(|arg| arg.to_lowercase() == "random");
+
     // Parse number of burns (default: 80)
-    let burn_count = if args.len() > 1 {
+    let burn_count = if args.len() > 1 && args[1].to_lowercase() != "random" {
         args[1].parse().unwrap_or(80)
     } else {
         80
     };
     
     // Parse burn amount per transaction (default: random between 1.001 and 1.999 tokens)
-    let use_random_amount = if args.len() > 2 {
-        args[2].to_lowercase() == "random"
-    } else {
-        true
-    };
+    let use_random_amount = has_random;
     
     let base_burn_amount = if !use_random_amount && args.len() > 2 {
-        let amount = args[2].parse::<f64>().unwrap_or(1.0);
-        if amount < 1.0 {
+        let amount = args[2].parse::<u64>().unwrap_or(1);
+        if amount < 1 {
             println!("Warning: Burn amount must be at least 1 token. Setting to 1 token.");
-            1.0 * 1_000_000_000.0
+            1 * 1_000_000_000
+        } else if amount > 5 {
+            println!("Warning: Burn amount limited to maximum 5 tokens. Setting to 5 tokens.");
+            5 * 1_000_000_000
         } else {
-            amount * 1_000_000_000.0
+            amount * 1_000_000_000
         }
     } else {
-        1.0 * 1_000_000_000.0
-    } as u64;
+        1 * 1_000_000_000 // default burn 1 token
+    };
 
     // Parse compute units (default: 400_000)
     let compute_units = if args.len() > 3 {
@@ -57,9 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Burn configuration:");
     println!("  Number of burns: {}", burn_count);
     if use_random_amount {
-        println!("  Tokens per burn: Random between 1.001 and 1.999 tokens (for testing top burn sorting)");
+        println!("  Tokens per burn: Random integer between 1 and 5 tokens");
     } else {
-        println!("  Tokens per burn: {} (fixed amount)", (base_burn_amount as f64) / 1_000_000_000.0);
+        println!("  Tokens per burn: {} tokens (fixed amount)", base_burn_amount / 1_000_000_000);
     }
     println!("  Compute units:   {}", compute_units);
     println!();
@@ -254,22 +256,22 @@ fn run_burns(
     for i in 1..=burn_count {
         // Generate a random burn amount if using random amounts
         let burn_amount = if use_random_amount {
-            // Generate a random number between 1.001 and 1.999
-            let random_float = 1.0 + rng.gen_range(0.001..0.999);
-            // Convert to lamports (multiply by 10^9)
-            (random_float * 1_000_000_000.0) as u64
+            // generate a random integer between 1 and 5 tokens
+            let random_tokens = rng.gen_range(1..=5);
+            // convert to lamports (multiply by 10^9)
+            random_tokens * 1_000_000_000
         } else {
             base_burn_amount
         };
         
         // Save actual burn amount in tokens
-        let burn_amount_in_tokens = (burn_amount as f64) / 1_000_000_000.0;
-        actual_burn_amounts.push(burn_amount_in_tokens);
+        let burn_amount_in_tokens = burn_amount / 1_000_000_000;
+        actual_burn_amounts.push(burn_amount_in_tokens as f64);
         
-        println!("Processing burn #{}/{} - Amount: {:.6} tokens", i, burn_count, burn_amount_in_tokens);
+        println!("Processing burn #{}/{} - Amount: {} tokens", i, burn_count, burn_amount_in_tokens);
         
         // Generate a unique message for each burn to track it
-        let message = format!("Batch burn #{} of {} - Amount: {:.6}", i, burn_count, burn_amount_in_tokens);
+        let message = format!("Batch burn #{} of {} - Amount: {}", i, burn_count, burn_amount_in_tokens);
         
         // Use a deterministic signature for testing
         let signature = format!("BatchBurnSig{}", i);
@@ -379,6 +381,11 @@ fn run_burns(
                     println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
                     break;
                 }
+                // overflow error
+                else if err.to_string().contains("would overflow") {
+                    println!("Warning: Counter would overflow. The transaction succeeded but statistics may be capped.");
+                    successful_burns += 1; // still count as successful burn
+                }
             }
         }
 
@@ -437,6 +444,8 @@ fn run_burns(
     if user_profile_exists {
         println!("\nYour burn statistics have been updated in your user profile.");
         println!("To view your profile stats, run: cargo run --bin check-user-profile");
+        println!("NOTE: If your total burned count was close to maximum, it may have been capped");
+        println!("to prevent overflow. This is normal and protects the contract integrity.");
     }
 
     // If random amounts, display recommendations

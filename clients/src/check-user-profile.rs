@@ -128,10 +128,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Username: {}", username);
             println!("Profile Image: {}", if profile_image.is_empty() { "None" } else { &profile_image });
             println!("\n==== TOKEN STATISTICS ====");
-            println!("Total Minted: {} tokens", (total_minted as f64) / 1_000_000_000.0);
-            println!("Total Burned: {} tokens", (total_burned as f64) / 1_000_000_000.0);
-            println!("Net Balance from Mint/Burn: {} tokens", 
-                    ((total_minted as i64 - total_burned as i64) as f64) / 1_000_000_000.0);
+            println!("Total Minted: {} tokens", total_minted);
+println!("Total Burned: {} tokens", total_burned);
+println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_burned as i64));
             println!("Mint Operations: {}", mint_count);
             println!("Burn Operations: {}", burn_count);
             println!("\n==== ACCOUNT INFO ====");
