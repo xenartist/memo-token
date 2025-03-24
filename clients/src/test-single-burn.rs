@@ -109,6 +109,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[b"top_burn_shard"],
         &program_id,
     );
+    
+    // Calculate user profile PDA
+    let (user_profile_pda, _) = Pubkey::find_program_address(
+        &[b"user_profile", payer.pubkey().as_ref()],
+        &program_id,
+    );
+
+    // Check if user profile exists
+    let user_profile_exists = match client.get_account(&user_profile_pda) {
+        Ok(_) => {
+            println!("User profile found at: {}", user_profile_pda);
+            println!("Burn statistics will be tracked in your profile");
+            true
+        },
+        Err(_) => {
+            println!("No user profile found. The burn will succeed but won't track your statistics.");
+            println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
+            false
+        }
+    };
 
     // Check if shards exist
     match client.get_account(&latest_burn_shard_pda) {
@@ -172,19 +192,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Setting compute budget: {} CUs", compute_units);
     println!("Burning {} tokens", burn_amount / 1_000_000_000);
 
-    // create burn instruction
+    // Create burn instruction - include user profile account if it exists
+    let mut accounts = vec![
+        AccountMeta::new(payer.pubkey(), true),         // user
+        AccountMeta::new(mint, false),                  // mint
+        AccountMeta::new(token_account, false),         // token_account
+        AccountMeta::new_readonly(spl_token::id(), false), // token_program
+        AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
+        AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
+        AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
+    ];
+    
+    // Add user profile PDA to account list if it exists
+    if user_profile_exists {
+        accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
+    }
+    
     let burn_ix = Instruction::new_with_bytes(
         program_id,
         &instruction_data,
-        vec![
-            AccountMeta::new(payer.pubkey(), true),         // user
-            AccountMeta::new(mint, false),                  // mint
-            AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
-            AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
-            AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
-        ],
+        accounts,
     );
 
     // get latest blockhash
@@ -235,6 +262,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Warning: Could not verify top burn shard update: {}", err);
                 }
             }
+            
+            // If user profile exists, show info about stats being updated
+            if user_profile_exists {
+                println!("\nYour burn statistics have been updated in your user profile.");
+                println!("To view your profile stats, run: cargo run --bin check-user-profile");
+            }
         }
         Err(err) => {
             println!("Failed to burn tokens: {}", err);
@@ -243,6 +276,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("2. Insufficient token balance");
             println!("3. Issues with the memo format");
             println!("4. Burn amount is less than the minimum required (1 token)");
+            
+            // Provide more specific advice based on error
+            if err.to_string().contains("AccountNotEnoughKeys") {
+                println!("\nThe contract is expecting more accounts than provided.");
+                println!("To fix this, either create a user profile or update this script to include all required accounts.");
+            }
         }
     }
 

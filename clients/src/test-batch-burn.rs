@@ -1,3 +1,4 @@
+// clients/src/test-batch-burn.rs
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     signature::{read_keypair_file, Signer, Keypair},
@@ -45,11 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0 * 1_000_000_000.0
     } as u64;
 
-    // Parse compute units (default: 200_000)
+    // Parse compute units (default: 400_000)
     let compute_units = if args.len() > 3 {
-        args[3].parse().unwrap_or(200_000)
+        args[3].parse().unwrap_or(400_000)
     } else {
-        200_000
+        400_000
     };
 
     // display input information, emphasizing the number of tokens burned per transaction
@@ -100,6 +101,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[b"top_burn_shard"],
         &program_id,
     );
+    
+    // Calculate user profile PDA
+    let (user_profile_pda, _) = Pubkey::find_program_address(
+        &[b"user_profile", payer.pubkey().as_ref()],
+        &program_id,
+    );
+
+    // Check if user profile exists
+    let user_profile_exists = match client.get_account(&user_profile_pda) {
+        Ok(_) => {
+            println!("User profile found at: {}", user_profile_pda);
+            println!("Burn statistics will be tracked in your profile");
+            true
+        },
+        Err(_) => {
+            println!("No user profile found. Burns will succeed but won't track your statistics.");
+            println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
+            false
+        }
+    };
 
     // Check if latest burn shard exists
     match client.get_account(&latest_burn_shard_pda) {
@@ -168,7 +189,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Reducing burn count from {} to {}", old_burn_count, adjusted_burn_count);
                 // use this new variable instead of burn_count
                 return run_burns(&client, &payer, program_id, mint, token_account, 
-                                latest_burn_shard_pda, top_burn_shard_pda, adjusted_burn_count, 
+                                latest_burn_shard_pda, top_burn_shard_pda, user_profile_pda, 
+                                user_profile_exists, adjusted_burn_count, 
                                 base_burn_amount, use_random_amount, compute_units);
             } else {
                 println!("Not enough tokens for even a single burn. Operation cancelled.");
@@ -182,7 +204,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // perform the burn operation
     run_burns(&client, &payer, program_id, mint, token_account, 
-             latest_burn_shard_pda, top_burn_shard_pda, burn_count, 
+             latest_burn_shard_pda, top_burn_shard_pda, user_profile_pda,
+             user_profile_exists, burn_count, 
              base_burn_amount, use_random_amount, compute_units)
 }
 
@@ -195,6 +218,8 @@ fn run_burns(
     token_account: Pubkey,
     latest_burn_shard_pda: Pubkey,
     top_burn_shard_pda: Pubkey,
+    user_profile_pda: Pubkey,
+    user_profile_exists: bool,
     burn_count: usize,
     base_burn_amount: u64,
     use_random_amount: bool,
@@ -275,19 +300,26 @@ fn run_burns(
             &[&payer.pubkey()],
         );
         
-        // Create burn instruction
+        // Create burn instruction with accounts
+        let mut accounts = vec![
+            AccountMeta::new(payer.pubkey(), true),         // user
+            AccountMeta::new(mint, false),                  // mint
+            AccountMeta::new(token_account, false),         // token_account
+            AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
+            AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
+            AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
+        ];
+        
+        // Add user profile to accounts if it exists
+        if user_profile_exists {
+            accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
+        }
+        
         let burn_ix = Instruction::new_with_bytes(
             program_id,
             &instruction_data,
-            vec![
-                AccountMeta::new(payer.pubkey(), true),         // user
-                AccountMeta::new(mint, false),                  // mint
-                AccountMeta::new(token_account, false),         // token_account
-                AccountMeta::new_readonly(spl_token::id(), false), // token_program
-                AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-                AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
-                AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
-            ],
+            accounts,
         );
 
         // Get latest blockhash
@@ -330,7 +362,7 @@ fn run_burns(
                 failed_burns += 1;
                 println!("Burn #{} failed: {}", i, err);
                 
-                // check the error type, if it is because the burn amount is too small, give a more specific prompt
+                // Check the error type
                 if err.to_string().contains("BurnAmountTooSmall") {
                     println!("Error: Burn amount too small. Contract requires at least 1 token per burn.");
                     println!("Please restart with a higher burn amount. Stopping batch burn.");
@@ -339,6 +371,12 @@ fn run_burns(
                 // If we're out of tokens, stop
                 else if err.to_string().contains("insufficient funds") {
                     println!("Insufficient funds to continue. Stopping batch burn.");
+                    break;
+                }
+                // If there's an account issue
+                else if err.to_string().contains("AccountNotEnoughKeys") {
+                    println!("Error: Not enough account keys. Make sure to create a user profile or update the script.");
+                    println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
                     break;
                 }
             }
@@ -393,6 +431,12 @@ fn run_burns(
         Err(err) => {
             println!("Failed to get top burn shard account: {}", err);
         }
+    }
+    
+    // If user profile exists, show profile info
+    if user_profile_exists {
+        println!("\nYour burn statistics have been updated in your user profile.");
+        println!("To view your profile stats, run: cargo run --bin check-user-profile");
     }
 
     // If random amounts, display recommendations
