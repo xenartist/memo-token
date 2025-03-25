@@ -506,6 +506,17 @@ pub mod memo_token {
         msg!("Closing top burn shard account");
         Ok(())
     }
+
+    // Close user profile
+    pub fn close_user_profile(ctx: Context<CloseUserProfile>) -> Result<()> {
+        // Ensure only the user can close their own profile
+        if ctx.accounts.user.key() != ctx.accounts.user_profile.pubkey {
+            return Err(ErrorCode::UnauthorizedUser.into());
+        }
+        
+        msg!("Closing user profile for: {}", ctx.accounts.user_profile.username);
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -791,6 +802,22 @@ pub struct UpdateUserProfile<'info> {
         seeds = [b"user_profile", user.key().as_ref()],
         bump,
         constraint = user_profile.pubkey == user.key() @ ErrorCode::UnauthorizedUser
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseUserProfile<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+        close = user // Close account and return SOL to user
     )]
     pub user_profile: Account<'info, UserProfile>,
     

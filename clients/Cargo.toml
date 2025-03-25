@@ -56,6 +56,10 @@ name = "close-top-burn-shard"
 path = "src/close-top-burn-shard.rs"
 
 [[bin]]
+name = "close-user-profile"
+path = "src/close-user-profile.rs"
+
+[[bin]]
 name = "init-token-account"
 path = "src/init-token-account.rs"
 
