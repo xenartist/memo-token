@@ -114,7 +114,7 @@ pub struct UserProfile {
     pub total_burned: u64,        // 8 bytes - total burned tokens
     pub mint_count: u64,          // 8 bytes - mint count
     pub burn_count: u64,          // 8 bytes - burn count
-    pub profile_image: String,    // 4 + 128 bytes - max 128 characters profile image url
+    pub profile_image: String,    // 4 + 256 bytes - hex string of the profile image
     pub created_at: i64,          // 8 bytes - create timestamp
     pub last_updated: i64,        // 8 bytes - last updated timestamp
 }
@@ -172,7 +172,7 @@ pub mod memo_token {
         }
         
         // check profile image length
-        if profile_image.len() > 128 {
+        if profile_image.len() > 256 {
             return Err(ErrorCode::ProfileImageTooLong.into());
         }
         
@@ -212,8 +212,11 @@ pub mod memo_token {
         
         // update profile image (if provided)
         if let Some(new_profile_image) = profile_image {
-            if new_profile_image.len() > 128 {
+            if new_profile_image.len() > 256 {
                 return Err(ErrorCode::ProfileImageTooLong.into());
+            }
+            if !new_profile_image.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(ErrorCode::InvalidProfileImageFormat.into());
             }
             user_profile.profile_image = new_profile_image;
         }
@@ -774,16 +777,16 @@ pub struct InitializeUserProfile<'info> {
     #[account(
         init,
         payer = user,
-        space = 8 + // discriminator
-               32 + // pubkey
+        space = 8 +    // discriminator
+               32 +    // pubkey
                4 + 32 + // username (String)
-               8 + // total_minted
-               8 + // total_burned
-               8 + // mint_count
-               8 + // burn_count
-               4 + 128 + // profile_image (String)
-               8 + // created_at
-               8,  // last_updated
+               8 +     // total_minted
+               8 +     // total_burned
+               8 +     // mint_count
+               8 +     // burn_count
+               4 + 256 + // profile_image (Hex String)
+               8 +     // created_at
+               8,      // last_updated
         seeds = [b"user_profile", user.key().as_ref()],
         bump
     )]
@@ -853,7 +856,7 @@ pub enum ErrorCode {
     #[msg("Username too long. Maximum length is 32 characters.")]
     UsernameTooLong,
     
-    #[msg("Profile image URL too long. Maximum length is 128 characters.")]
+    #[msg("Profile image too long. Maximum length is 256 characters.")]
     ProfileImageTooLong,
     
     #[msg("Unauthorized: Only the user can update their own profile")]
@@ -861,4 +864,7 @@ pub enum ErrorCode {
 
     #[msg("Invalid burn amount. Must be an integer multiple of 1 token (1,000,000,000 units).")]
     InvalidBurnAmount,
+
+    #[msg("Invalid profile image format. Must be a valid hexadecimal string.")]
+    InvalidProfileImageFormat,
 }

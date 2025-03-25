@@ -9,36 +9,105 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use std::io::Write;
+use rand::Rng;
 
 // Using discriminator value from IDL
 const UPDATE_USER_PROFILE_DISCRIMINATOR: [u8; 8] = [79, 75, 114, 130, 68, 123, 180, 11];
+
+// generate random username
+fn generate_random_username() -> String {
+    let mut rng = rand::thread_rng();
+    let number = rng.gen_range(0..10); // generate 0-9 random number
+    format!("test{}", number)
+}
+
+fn generate_random_pixel_art() -> String {
+    let mut rng = rand::thread_rng();
+    let mut hex_string = String::with_capacity(256);
+    
+    for _ in 0..256 {
+        let hex_char = format!("{:X}", rng.gen_range(0..16));
+        hex_string.push_str(&hex_char);
+    }
+    
+    hex_string
+}
+
+fn display_pixel_art(hex_string: &str) {
+    if hex_string.is_empty() {
+        return;
+    }
+
+    println!("\nPixel Art Representation:");
+    
+    // Convert hex to binary
+    let mut binary = String::new();
+    for c in hex_string.chars() {
+        let value = c.to_digit(16).unwrap();
+        binary.push_str(&format!("{:04b}", value));
+    }
+    
+    // Calculate grid size (try to make it square)
+    let size = (binary.len() as f64).sqrt() as usize;
+    
+    // Display the grid
+    let mut i = 0;
+    for _ in 0..size {
+        for _ in 0..size {
+            if i < binary.len() {
+                print!("{}", if &binary[i..i+1] == "1" { "⬛" } else { "⬜" });
+                i += 1;
+            }
+        }
+        println!();
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
-    if args.len() < 3 {
+    let (field, value) = if args.len() < 3 {
+        println!("No parameters provided, generating random values...");
         println!("Usage: cargo run --bin update-user-profile <field> <value>");
         println!("Fields: username, profile_image");
         println!("Example: cargo run --bin update-user-profile username \"NewName\"");
-        println!("Example: cargo run --bin update-user-profile profile_image \"https://example.com/new-avatar.png\"");
-        return Err("Field and value are required".into());
-    }
+        println!("Example: cargo run --bin update-user-profile profile_image \"FF00FF00\"");
+        println!("Note: profile_image should be a hex string representing pixel art (1=black, 0=white)");
+        println!("You can use img2hex tool to convert images to hex format");
+        
+        // Randomly choose between username and profile_image
+        let mut rng = rand::thread_rng();
+        if rng.gen_bool(0.5) {
+            let random_username = generate_random_username();
+            println!("\nGenerating random username: {}", random_username);
+            ("username".to_string(), random_username)
+        } else {
+            let random_art = generate_random_pixel_art();
+            println!("\nGenerating random pixel art...");
+            println!("Generated hex string: {}", random_art);
+            ("profile_image".to_string(), random_art)
+        }
+    } else {
+        (args[1].to_lowercase(), args[2].clone())
+    };
     
-    let field = args[1].to_lowercase();
     if field != "username" && field != "profile_image" {
         return Err("Invalid field. Must be 'username' or 'profile_image'".into());
     }
-    
-    let value = args[2].clone();
     
     // Validate input values
     if field == "username" && value.len() > 32 {
         return Err("Username too long. Maximum length is 32 characters.".into());
     }
     
-    if field == "profile_image" && value.len() > 128 {
-        return Err("Profile image URL too long. Maximum length is 128 characters.".into());
+    if field == "profile_image" {
+        if value.len() > 256 {
+            return Err("Profile image hex string too long. Maximum length is 256 characters.".into());
+        }
+        if !value.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Profile image must be a valid hexadecimal string (0-9, A-F).".into());
+        }
     }
     
     // Connect to network
@@ -129,6 +198,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("User profile updated successfully!");
             println!("Transaction signature: {}", signature);
             println!("\nUpdated {} to: '{}'", field, value);
+            if field == "profile_image" && !value.is_empty() {
+                display_pixel_art(&value);
+            }
             println!("\nTo view your profile, run: cargo run --bin check-user-profile");
         },
         Err(err) => {

@@ -10,9 +10,52 @@ use solana_sdk::{
 use std::str::FromStr;
 use borsh::{BorshSerialize, BorshDeserialize};
 use std::io::Write;
+use rand::Rng;
 
 // Using discriminator value from IDL
 const INIT_USER_PROFILE_DISCRIMINATOR: [u8; 8] = [192, 144, 204, 140, 113, 25, 59, 102];
+
+fn generate_random_pixel_art() -> String {
+    let mut rng = rand::thread_rng();
+    let mut hex_string = String::with_capacity(256);
+    
+    for _ in 0..256 {
+        let hex_char = format!("{:X}", rng.gen_range(0..16));
+        hex_string.push_str(&hex_char);
+    }
+    
+    hex_string
+}
+
+fn display_pixel_art(hex_string: &str) {
+    if hex_string.is_empty() {
+        return;
+    }
+
+    println!("\nPixel Art Representation:");
+    
+    // Convert hex to binary
+    let mut binary = String::new();
+    for c in hex_string.chars() {
+        let value = c.to_digit(16).unwrap();
+        binary.push_str(&format!("{:04b}", value));
+    }
+    
+    // Calculate grid size (try to make it square)
+    let size = (binary.len() as f64).sqrt() as usize;
+    
+    // Display the grid
+    let mut i = 0;
+    for _ in 0..size {
+        for _ in 0..size {
+            if i < binary.len() {
+                print!("{}", if &binary[i..i+1] == "1" { "⬛" } else { "⬜" });
+                i += 1;
+            }
+        }
+        println!();
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -20,8 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Parse username (required)
     if args.len() < 2 {
-        println!("Usage: cargo run --bin init-user-profile <username> [profile_image_url]");
-        println!("Example: cargo run --bin init-user-profile \"SolanaUser\" \"https://example.com/avatar.png\"");
+        println!("Usage: cargo run --bin init-user-profile <username> [profile_image_hex]");
+        println!("Example: cargo run --bin init-user-profile \"SolanaUser\" \"FF00FF00\"");
+        println!("Note: profile_image_hex should be a hex string representing pixel art (1=black, 0=white)");
+        println!("You can use img2hex tool to convert images to hex format");
+        println!("If no profile_image_hex is provided, a random pattern will be generated");
         return Err("Username is required".into());
     }
     
@@ -30,15 +76,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Username too long. Maximum length is 32 characters.".into());
     }
     
-    // Parse profile image URL (optional)
+    // Parse or generate profile image hex string
     let profile_image = if args.len() > 2 {
         args[2].clone()
     } else {
-        String::from("") // Default empty string if not provided
+        println!("No profile image provided, generating random pixel art...");
+        let random_art = generate_random_pixel_art();
+        println!("Generated random pixel art hex string: {}", random_art);
+        random_art
     };
     
-    if profile_image.len() > 128 {
-        return Err("Profile image URL too long. Maximum length is 128 characters.".into());
+    // check profile image hex string length
+    if profile_image.len() > 256 {
+        return Err("Profile image hex string too long. Maximum length is 256 characters.".into());
+    }
+
+    // check profile image hex string format
+    if !profile_image.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Profile image must be a valid hexadecimal string (0-9, A-F).".into());
     }
     
     // Connect to network
@@ -109,9 +164,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
     
     // Print initialization details
-    println!("Initializing user profile with the following details:");
+    println!("\nInitializing user profile with the following details:");
     println!("Username: {}", username);
-    println!("Profile Image URL: {}", if profile_image.is_empty() { "None" } else { &profile_image });
+    println!("Profile Image (hex): {}", if profile_image.is_empty() { "None" } else { &profile_image });
+    display_pixel_art(&profile_image);
     println!("Account Space: {} bytes", space);
     println!("Required Rent (lamports): {}", rent);
     

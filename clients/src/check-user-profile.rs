@@ -8,6 +8,36 @@ use std::str::FromStr;
 use std::io::{Cursor, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn display_pixel_art(hex_string: &str) {
+    if hex_string.is_empty() {
+        return;
+    }
+
+    println!("\nPixel Art Representation:");
+    
+    // Convert hex to binary
+    let mut binary = String::new();
+    for c in hex_string.chars() {
+        let value = c.to_digit(16).unwrap();
+        binary.push_str(&format!("{:04b}", value));
+    }
+    
+    // Calculate grid size (try to make it square)
+    let size = (binary.len() as f64).sqrt() as usize;
+    
+    // Display the grid
+    let mut i = 0;
+    for _ in 0..size {
+        for _ in 0..size {
+            if i < binary.len() {
+                print!("{}", if &binary[i..i+1] == "1" { "⬛" } else { "⬜" });
+                i += 1;
+            }
+        }
+        println!();
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
@@ -126,11 +156,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Display user profile information
             println!("\n==== USER PROFILE ====");
             println!("Username: {}", username);
-            println!("Profile Image: {}", if profile_image.is_empty() { "None" } else { &profile_image });
+            println!("Profile Image (hex): {}", if profile_image.is_empty() { "None" } else { &profile_image });
+            if !profile_image.is_empty() {
+                display_pixel_art(&profile_image);
+            }
             println!("\n==== TOKEN STATISTICS ====");
             println!("Total Minted: {} tokens", total_minted);
-println!("Total Burned: {} tokens", total_burned);
-println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_burned as i64));
+            println!("Total Burned: {} tokens", total_burned);
+            println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_burned as i64));
             println!("Mint Operations: {}", mint_count);
             println!("Burn Operations: {}", burn_count);
             println!("\n==== ACCOUNT INFO ====");
@@ -142,7 +175,7 @@ println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_b
         },
         Err(_) => {
             println!("No user profile found for {}.", target_pubkey);
-            println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_url]'");
+            println!("To create a profile, use 'cargo run --bin init-user-profile <username> [profile_image_hex]'");
         }
     }
     
