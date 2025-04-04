@@ -215,9 +215,6 @@ pub mod memo_token {
             if new_profile_image.len() > 256 {
                 return Err(ErrorCode::ProfileImageTooLong.into());
             }
-            if !new_profile_image.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(ErrorCode::InvalidProfileImageFormat.into());
-            }
             user_profile.profile_image = new_profile_image;
         }
         
@@ -864,7 +861,4 @@ pub enum ErrorCode {
 
     #[msg("Invalid burn amount. Must be an integer multiple of 1 token (1,000,000,000 units).")]
     InvalidBurnAmount,
-
-    #[msg("Invalid profile image format. Must be a valid hexadecimal string.")]
-    InvalidProfileImageFormat,
 }
