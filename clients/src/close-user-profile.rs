@@ -8,6 +8,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
 };
 use std::str::FromStr;
+use std::io;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
@@ -37,6 +38,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(account) => {
             println!("Found user profile at: {}", user_profile_pda);
             println!("Account rent-exempt balance: {} lamports", account.lamports);
+            println!("Note: This will permanently delete your profile, including your pixel art!");
+            println!("Are you sure you want to continue? (y/n)");
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Operation cancelled.");
+                return Ok(());
+            }
             
             // Create instruction data
             let mut instruction_data = Vec::new();

@@ -7,35 +7,95 @@ use solana_sdk::{
 use std::str::FromStr;
 use std::io::{Cursor, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
+use flate2::read::DeflateDecoder;
+use base64::{decode};
+use std::io::prelude::*;
 
-fn display_pixel_art(hex_string: &str) {
-    if hex_string.is_empty() {
+fn display_pixel_art(profile_image: &str) {
+    if profile_image.is_empty() {
         return;
     }
 
+    // parse prefix and data
+    let (prefix, data) = match profile_image.split_once(':') {
+        Some(("c", compressed)) => {
+            // handle compressed data
+            match decompress_with_deflate(compressed) {
+                Ok(decompressed) => ("n", decompressed),
+                Err(e) => {
+                    println!("Error decompressing profile image: {}", e);
+                    return;
+                }
+            }
+        },
+        Some(("n", uncompressed)) => ("n", uncompressed.to_string()),
+        _ => {
+            println!("Invalid profile image format");
+            return;
+        }
+    };
+
+    // display pixel art
     println!("\nPixel Art Representation:");
-    
-    // Convert hex to binary
-    let mut binary = String::new();
-    for c in hex_string.chars() {
-        let value = c.to_digit(16).unwrap();
-        binary.push_str(&format!("{:04b}", value));
-    }
-    
-    // Calculate grid size (try to make it square)
-    let size = (binary.len() as f64).sqrt() as usize;
-    
-    // Display the grid
-    let mut i = 0;
-    for _ in 0..size {
-        for _ in 0..size {
-            if i < binary.len() {
-                print!("{}", if &binary[i..i+1] == "1" { "⬛" } else { "⬜" });
-                i += 1;
+    let mut current_row = String::new();
+    let mut bit_count = 0;
+    let mut current_bits = 0u8;
+
+    for c in data.chars() {
+        if let Some(value) = map_from_safe_char(c) {
+            for i in (0..6).rev() {
+                let bit = (value & (1 << i)) != 0;
+                print!("{}", if bit { "⬛" } else { "⬜" });
+                bit_count += 1;
+                
+                if bit_count % 32 == 0 {
+                    println!();
+                }
             }
         }
-        println!();
     }
+    println!();
+}
+
+// helper function: map from safe char to value
+fn map_from_safe_char(c: char) -> Option<u8> {
+    let ascii = c as u8;
+    
+    if c == ':' || c == '\\' || c == '"' {
+        return None;
+    }
+    
+    if ascii < 35 || ascii > 126 {
+        return None;
+    }
+    
+    let mut value = ascii - 35;
+    if ascii > 92 { value -= 1; }  // adjust '\'
+    if ascii > 58 { value -= 1; }  // adjust ':'
+    
+    if value >= 64 {
+        return None;
+    }
+    
+    Some(value)
+}
+
+// helper function: decompress data
+fn decompress_with_deflate(input: &str) -> Result<String, String> {
+    let bytes = decode(input)
+        .map_err(|e| format!("Base64 decode error: {}", e))?;
+        
+    let mut decoder = DeflateDecoder::new(&bytes[..]);
+    let mut decompressed = Vec::new();
+    
+    decoder.read_to_end(&mut decompressed)
+        .map_err(|e| format!("Decompression error: {}", e))?;
+        
+    let result: String = decompressed.into_iter()
+        .map(|b| b as char)
+        .collect();
+        
+    Ok(result)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

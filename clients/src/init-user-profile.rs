@@ -11,20 +11,78 @@ use std::str::FromStr;
 use borsh::{BorshSerialize, BorshDeserialize};
 use std::io::Write;
 use rand::Rng;
+use flate2::Compression;
+use flate2::write::DeflateEncoder;
+use base64::{encode};
 
 // Using discriminator value from IDL
 const INIT_USER_PROFILE_DISCRIMINATOR: [u8; 8] = [192, 144, 204, 140, 113, 25, 59, 102];
 
 fn generate_random_pixel_art() -> String {
     let mut rng = rand::thread_rng();
-    let mut hex_string = String::with_capacity(256);
+    let mut pixel_data = Vec::with_capacity(1024); // 32x32 pixels
     
-    for _ in 0..256 {
-        let hex_char = format!("{:X}", rng.gen_range(0..16));
-        hex_string.push_str(&hex_char);
+    // generate random pixel art
+    for _ in 0..32 {
+        for _ in 0..32 {
+            pixel_data.push(rng.gen_bool(0.5));
+        }
     }
     
-    hex_string
+    // convert to safe string
+    let mut result = String::with_capacity(171);
+    let mut current_bits = 0u8;
+    let mut bit_count = 0;
+
+    for &pixel in &pixel_data {
+        current_bits = (current_bits << 1) | (pixel as u8);
+        bit_count += 1;
+
+        if bit_count == 6 {
+            result.push(map_to_safe_char(current_bits));
+            current_bits = 0;
+            bit_count = 0;
+        }
+    }
+
+    if bit_count > 0 {
+        current_bits <<= (6 - bit_count);
+        result.push(map_to_safe_char(current_bits));
+    }
+
+    // try to compress
+    match compress_with_deflate(&result) {
+        Ok(compressed) => {
+            if compressed.len() + 2 < result.len() {
+                format!("c:{}", compressed)
+            } else {
+                format!("n:{}", result)
+            }
+        }
+        Err(_) => format!("n:{}", result)
+    }
+}
+
+fn map_to_safe_char(value: u8) -> char {
+    assert!(value < 64, "Value must be less than 64");
+    let mut ascii = 35 + value;  // start from ASCII 35
+    
+    // skip ':' and '\'
+    if ascii >= 58 { ascii += 1; }  // skip ':'
+    if ascii >= 92 { ascii += 1; }  // skip '\'
+    
+    ascii as char
+}
+
+fn compress_with_deflate(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let bytes: Vec<u8> = input.chars()
+        .map(|c| c as u8)
+        .collect();
+    
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(&bytes)?;
+    let compressed = encoder.finish()?;
+    Ok(encode(compressed))
 }
 
 fn display_pixel_art(hex_string: &str) {
@@ -88,12 +146,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // check profile image hex string length
     if profile_image.len() > 256 {
-        return Err("Profile image hex string too long. Maximum length is 256 characters.".into());
+        return Err("Profile image string too long. Maximum length is 256 characters.".into());
     }
 
-    // check profile image hex string format
-    if !profile_image.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("Profile image must be a valid hexadecimal string (0-9, A-F).".into());
+    // check format prefix
+    if !profile_image.starts_with("n:") && !profile_image.starts_with("c:") {
+        return Err("Profile image must start with 'n:' or 'c:' prefix.".into());
     }
     
     // Connect to network
@@ -166,8 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print initialization details
     println!("\nInitializing user profile with the following details:");
     println!("Username: {}", username);
-    println!("Profile Image (hex): {}", if profile_image.is_empty() { "None" } else { &profile_image });
-    display_pixel_art(&profile_image);
+    println!("Profile Image: {}", profile_image);
     println!("Account Space: {} bytes", space);
     println!("Required Rent (lamports): {}", rent);
     
@@ -204,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nUser profile details:");
             println!("Owner: {}", payer.pubkey());
             println!("Username: {}", username);
-            println!("Profile Image: {}", if profile_image.is_empty() { "None" } else { &profile_image });
+            println!("Profile Image: {}", profile_image);
             println!("\nYou can now use your profile in mint and burn operations.");
             println!("The profile will automatically track your token statistics.");
         },
