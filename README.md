@@ -1,6 +1,6 @@
 # Memo Token
 
-A Solana program for creating and minting tokens using a Program Derived Address (PDA) as the mint authority.
+X1
 
 ## Overview
 
