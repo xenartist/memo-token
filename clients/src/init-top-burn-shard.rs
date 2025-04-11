@@ -84,8 +84,9 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
+                1 + // current_index
                 4 + // vec len
-                (69 * (32 + 88 + 8 + 8 + 8)); // 69 records
+                (69 * (32 + 88 + 8 + 8 + 8)); // 69 records (pubkey + signature + slot + blocktime + amount)
 
     // Calculate required lamports for rent exemption
     let rent = client
@@ -156,6 +157,8 @@ fn main() {
             println!("Program ID: {}", program_id);
             println!("Top Burn Shard PDA: {}", top_burn_shard_pda);
             println!("Your wallet (payer): {}", payer.pubkey());
+            println!("Account size: {} bytes", space);
+            println!("Minimum burn amount to qualify: {} tokens", 42069);
 
             // Get transaction logs
             if let Ok(tx_data) = client.get_transaction_with_config(

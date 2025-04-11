@@ -58,49 +58,35 @@ impl LatestBurnShard {
 #[account]
 #[derive(Default)]
 pub struct TopBurnShard {
-    pub records: Vec<BurnRecord>, // burn records sorted by amount (descending)
+    pub current_index: u8,    // current index
+    pub records: Vec<BurnRecord>, // burn records
 }
 
 impl TopBurnShard {
     pub const MAX_RECORDS: usize = 69;
+    pub const MIN_BURN_AMOUNT: u64 = 42069 * 1_000_000_000; // 42069 tokens threshold
     
-    pub fn add_record_if_qualified(&mut self, record: BurnRecord) -> bool {
-        // First, check if this record qualifies to be added
+    pub fn add_record(&mut self, record: BurnRecord) -> bool {
+        // Check if the burn amount meets the minimum threshold
+        if record.amount < Self::MIN_BURN_AMOUNT {
+            msg!("Burn amount {} is below threshold {}", 
+                record.amount / 1_000_000_000, 
+                Self::MIN_BURN_AMOUNT / 1_000_000_000);
+            return false;
+        }
+
+        // Add record using circular buffer logic
         if self.records.len() < Self::MAX_RECORDS {
-            // If we have less than max records, always add the record
-            // Insert into sorted position
-            self.insert_sorted(record);
-            return true;
+            self.records.push(record);
         } else {
-            // Check if the new record has a higher amount than the smallest record
-            let smallest_record = &self.records[self.records.len() - 1];
-            if record.amount >= smallest_record.amount {
-                // Remove the smallest record (last in our sorted array)
-                self.records.pop();
-                // Insert the new record in sorted position
-                self.insert_sorted(record);
-                return true;
-            }
+            self.records[self.current_index as usize] = record;
         }
         
-        // Not qualified to be added
-        false
-    }
-    
-    // Helper function to insert a record in sorted position (by amount, descending)
-    fn insert_sorted(&mut self, record: BurnRecord) {
-        let mut insert_pos = self.records.len();
+        // Update current_index
+        self.current_index = ((self.current_index as usize + 1) % Self::MAX_RECORDS) as u8;
         
-        // Find the position to insert (descending order)
-        for (i, existing) in self.records.iter().enumerate() {
-            if record.amount >= existing.amount {
-                insert_pos = i;
-                break;
-            }
-        }
-        
-        // Insert at the found position
-        self.records.insert(insert_pos, record);
+        msg!("Added record to top burn shard at index {}", self.current_index);
+        true
     }
 }
 
@@ -440,10 +426,10 @@ pub mod memo_token {
         
         // update top burn shard
         if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
-            if top_burn_shard.add_record_if_qualified(record) {
+            if top_burn_shard.add_record(record) {
                 msg!("Added new burn record to top burn shard");
             } else {
-                msg!("Burn amount not high enough for top burn shard");
+                msg!("Burn amount not high enough for top burn shard (minimum 42069 tokens)");
             }
         }
 
@@ -480,6 +466,7 @@ pub mod memo_token {
 
         // initialize shard
         let burn_shard = &mut ctx.accounts.top_burn_shard;
+        burn_shard.current_index = 0;
         burn_shard.records = Vec::new();
 
         // update global burn index

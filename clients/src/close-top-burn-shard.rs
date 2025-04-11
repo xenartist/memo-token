@@ -87,19 +87,34 @@ fn main() {
 
     println!("Sending transaction to close top burn shard account...");
 
+    // add warning information
+    println!("\nWarning: This will permanently delete the top burn shard!");
+    println!("All {} record slots will be lost.", 69);
+    println!("Are you sure you want to continue? (y/n)");
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).expect("Failed to read input");
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Operation cancelled");
+        return;
+    }
+
+    // add confirmation information after successful closure
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {
             println!("Top burn shard account closed successfully!");
             println!("Transaction signature: {}", signature);
+            println!("✓ All burn records have been cleared");
+            println!("✓ Account lamports returned to admin");
             
             // Verify account closure
             match client.get_account(&top_burn_shard_pda) {
                 Ok(_) => println!("Warning: Account still exists"),
                 Err(_) => println!("✓ Account successfully closed"),
             }
-        }
+        },
         Err(err) => {
-            println!("Failed to close single max burn shard account: {}", err);
+            println!("Failed to close top burn shard account: {}", err);
         }
     }
 }

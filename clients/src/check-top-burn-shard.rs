@@ -34,10 +34,16 @@ fn main() {
             
             let mut offset = 0;
             
+            // read current_index (1 byte)
+            let current_index = data[offset];
+            offset += 1;
+            println!("\nCurrent Index: {}", current_index);
+            
             // parse records vector
             let vec_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
             offset += 4;
-            println!("\nRecords ({}) - Top Burns Leaderboard (sorted by amount):", vec_len);
+            println!("\nRecords ({}) - Top Burns (minimum {} tokens to qualify):", 
+                vec_len, 42069);
             
             for i in 0..vec_len {
                 // parse pubkey (32 bytes)
@@ -62,24 +68,21 @@ fn main() {
                 let amount = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
                 offset += 8;
                 
-                println!("\nRank #{}: ", i + 1);
+                println!("\nRecord #{}: ", i + 1);
                 println!("  Pubkey: {}", pubkey);
                 println!("  Signature: {}", signature);
                 println!("  Slot: {}", slot);
                 println!("  Blocktime: {}", blocktime);
                 println!("  Amount: {} ({} tokens)", amount, amount / 1_000_000_000);
+                
+                // current index position
+                if i == current_index as usize {
+                    println!("  ** Current Index Position **");
+                }
             }
 
-            // If the record list is not empty, show the minimum burn amount required to qualify
-            if vec_len > 0 {
-                // Go back to the last record's amount
-                let min_amount_offset = 8 + 4 + ((vec_len - 1) * (32 + 4 + 88 + 8 + 8)) + 32 + 4 + 88 + 8 + 8;
-                let min_amount = u64::from_le_bytes(data[min_amount_offset..min_amount_offset+8].try_into().unwrap());
-                println!("\nMinimum burn amount to qualify for leaderboard: {} ({} tokens)", 
-                         min_amount, min_amount / 1_000_000_000);
-            } else {
-                println!("\nNo records yet - any burn will qualify for the leaderboard.");
-            }
+            println!("\nNote: Records are stored in circular buffer format.");
+            println!("Minimum burn amount to qualify: {} tokens", 42069);
 
             println!("\nAccount Info:");
             println!("Owner: {}", account.owner);
