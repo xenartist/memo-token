@@ -103,6 +103,15 @@ pub struct UserProfile {
     pub profile_image: String,    // 4 + 256 bytes - hex string of the profile image
     pub created_at: i64,          // 8 bytes - create timestamp
     pub last_updated: i64,        // 8 bytes - last updated timestamp
+    pub latest_burn_history_index: Option<u64>, // 9 bytes (1 byte for Option + 8 bytes for u64)
+}
+
+#[account]
+#[derive(Default)]
+pub struct UserBurnHistory {
+    pub owner: Pubkey,           // 32 bytes - user pubkey
+    pub index: u64,              // 8 bytes - history index
+    pub signatures: Vec<String>, // 4 + (92 * 100) bytes - max 100 signatures
 }
 
 #[program]
@@ -174,6 +183,7 @@ pub mod memo_token {
         user_profile.profile_image = profile_image;
         user_profile.created_at = clock.unix_timestamp;
         user_profile.last_updated = clock.unix_timestamp;
+        user_profile.latest_burn_history_index = None;
         
         msg!("User profile initialized for: {}", user_profile.username);
         Ok(())
@@ -340,30 +350,29 @@ pub mod memo_token {
         // get current clock information
         let clock = Clock::get()?;
         
-        // Try to convert to string and parse JSON
-        let signature = if let Ok(memo_str) = String::from_utf8(memo_data.clone()) {
-            let clean_str = memo_str
-                .trim_matches('"')
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\");
-            
-            // Try to parse JSON
-            let json_data = serde_json::from_str::<serde_json::Value>(&clean_str)
-                .map_err(|_| {
-                    msg!("Failed to parse JSON after cleaning");
-                    ErrorCode::InvalidMemoFormat
-                })?;
+        // parse memo JSON
+        let memo_str = String::from_utf8(memo_data.clone())
+            .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+        let clean_str = memo_str
+            .trim_matches('"')
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+        
+        // parse JSON
+        let json_data: Value = serde_json::from_str(&clean_str)
+            .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
-            msg!("Successfully parsed JSON: {}", json_data);
-            
-            // Extract signature as a String to avoid borrowing issues
-            json_data["signature"]
-                .as_str()
-                .ok_or(ErrorCode::MissingSignature)?
-                .to_string()
-        } else {
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        };
+        // get signature
+        let signature = json_data["signature"]
+            .as_str()
+            .ok_or(ErrorCode::MissingSignature)?
+            .to_string();
+
+        // check if should record burn history
+        let should_record_history = json_data["burn_history"]
+            .as_str()
+            .map(|v| v == "Y")
+            .unwrap_or(false);
 
         // burn tokens
         token::burn(
@@ -412,7 +421,7 @@ pub mod memo_token {
         // Create the burn record
         let record = BurnRecord {
             pubkey: ctx.accounts.user.key(),
-            signature,
+            signature: signature.clone(),
             slot: clock.slot,
             blocktime: clock.unix_timestamp,
             amount,
@@ -430,6 +439,37 @@ pub mod memo_token {
                 msg!("Added new burn record to top burn shard");
             } else {
                 msg!("Burn amount not high enough for top burn shard (minimum 42069 tokens)");
+            }
+        }
+
+        // check if should record history
+        if should_record_history {
+            if let Some(user_profile) = &mut ctx.accounts.user_profile {
+                // check user authority
+                if user_profile.pubkey != ctx.accounts.user.key() {
+                    return Err(ErrorCode::UnauthorizedUser.into());
+                }
+
+                // get current burn history account
+                if let Some(burn_history) = &mut ctx.accounts.burn_history {
+                    // check burn history account owner
+                    if burn_history.owner != ctx.accounts.user.key() {
+                        return Err(ErrorCode::UnauthorizedUser.into());
+                    }
+
+                    // check if burn history account is full
+                    if burn_history.signatures.len() >= 100 {
+                        // if full, return error, client needs to create new burn history account
+                        return Err(ErrorCode::BurnHistoryFull.into());
+                    }
+
+                    // add signature to history
+                    burn_history.signatures.push(signature);
+                    msg!("Added burn signature to history index: {}", burn_history.index);
+                } else {
+                    // if no burn history account provided, return error
+                    return Err(ErrorCode::BurnHistoryRequired.into());
+                }
             }
         }
 
@@ -502,6 +542,41 @@ pub mod memo_token {
         }
         
         msg!("Closing user profile for: {}", ctx.accounts.user_profile.username);
+        Ok(())
+    }
+
+    pub fn initialize_burn_history(
+        ctx: Context<InitializeUserBurnHistory>,
+        index: u64
+    ) -> Result<()> {
+        let burn_history = &mut ctx.accounts.burn_history;
+        let user_profile = &mut ctx.accounts.user_profile;
+        
+        // check index
+        match user_profile.latest_burn_history_index {
+            None => {
+                // first create, index must be 0
+                if index != 0 {
+                    return Err(ErrorCode::InvalidBurnHistoryIndex.into());
+                }
+            },
+            Some(latest_index) => {
+                // ensure new index is consecutive
+                if index != latest_index + 1 {
+                    return Err(ErrorCode::InvalidBurnHistoryIndex.into());
+                }
+            }
+        }
+        
+        // initialize burn history
+        burn_history.owner = ctx.accounts.user.key();
+        burn_history.index = index;
+        burn_history.signatures = Vec::new();
+        
+        // update user profile
+        user_profile.latest_burn_history_index = Some(index);
+        
+        msg!("Initialized burn history account with index: {}", index);
         Ok(())
     }
 }
@@ -620,6 +695,18 @@ pub struct ProcessBurn<'info> {
         bump,
     )]
     pub user_profile: Option<Account<'info, UserProfile>>,
+
+    // burn history (optional)
+    #[account(
+        mut,
+        seeds = [
+            b"burn_history",
+            user.key().as_ref(),
+            user_profile.as_ref().map(|p| p.latest_burn_history_index.unwrap_or(0)).unwrap_or(0).to_le_bytes().as_ref()
+        ],
+        bump
+    )]
+    pub burn_history: Option<Account<'info, UserBurnHistory>>,
 }
 
 #[derive(Accounts)]
@@ -811,6 +898,39 @@ pub struct CloseUserProfile<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+#[instruction(new_index: u64)]
+pub struct InitializeUserBurnHistory<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+        constraint = user_profile.pubkey == user.key() @ ErrorCode::UnauthorizedUser
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = 8 +    // discriminator
+               32 +    // owner
+               8 +     // index
+               4 + (92 * 100), // Vec<String> for signatures (100 signatures max)
+        seeds = [
+            b"burn_history",
+            user.key().as_ref(),
+            new_index.to_le_bytes().as_ref()
+        ],
+        bump
+    )]
+    pub burn_history: Account<'info, UserBurnHistory>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Memo is too short. Must be at least 69 bytes.")]
@@ -848,4 +968,16 @@ pub enum ErrorCode {
 
     #[msg("Invalid burn amount. Must be an integer multiple of 1 token (1,000,000,000 units).")]
     InvalidBurnAmount,
+
+    #[msg("Invalid burn history index")]
+    InvalidBurnHistoryIndex,
+    
+    #[msg("Burn history account is full")]
+    BurnHistoryFull,
+    
+    #[msg("Invalid signature length")]
+    InvalidSignatureLength,
+
+    #[msg("Burn history account is required for recording burn history")]
+    BurnHistoryRequired,
 }
