@@ -190,6 +190,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data[0], data[1], data[2], data[3], 
                 data[4], data[5], data[6], data[7]
             ]);
+            data = &data[8..];
+            
+            // Read latest burn history index (Option<u64>)
+            let latest_burn_history_index = if data[0] == 0 {
+                None
+            } else {
+                Some(u64::from_le_bytes([
+                    data[1], data[2], data[3], data[4],
+                    data[5], data[6], data[7], data[8]
+                ]))
+            };
             
             // Format timestamps as readable dates
             let format_timestamp = |timestamp: i64| -> String {
@@ -226,6 +237,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_burned as i64));
             println!("Mint Operations: {}", mint_count);
             println!("Burn Operations: {}", burn_count);
+            println!("Latest Burn History Index: {}", match latest_burn_history_index {
+                Some(index) => index.to_string(),
+                None => "None".to_string()
+            });
             println!("\n==== ACCOUNT INFO ====");
             println!("Owner: {}", pubkey);
             println!("Created: {}", format_timestamp(created_at));
