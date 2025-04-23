@@ -103,7 +103,7 @@ pub struct UserProfile {
     pub profile_image: String,    // 4 + 256 bytes - hex string of the profile image
     pub created_at: i64,          // 8 bytes - create timestamp
     pub last_updated: i64,        // 8 bytes - last updated timestamp
-    pub latest_burn_history_index: Option<u64>, // 9 bytes (1 byte for Option + 8 bytes for u64)
+    pub burn_history_index: Option<u64>, // 9 bytes (1 byte for Option + 8 bytes for u64)
 }
 
 #[account]
@@ -183,7 +183,7 @@ pub mod memo_token {
         user_profile.profile_image = profile_image;
         user_profile.created_at = clock.unix_timestamp;
         user_profile.last_updated = clock.unix_timestamp;
-        user_profile.latest_burn_history_index = None;
+        user_profile.burn_history_index = None;
         
         msg!("User profile initialized for: {}", user_profile.username);
         Ok(())
@@ -545,38 +545,30 @@ pub mod memo_token {
         Ok(())
     }
 
-    pub fn initialize_burn_history(
-        ctx: Context<InitializeUserBurnHistory>,
-        index: u64
-    ) -> Result<()> {
+    pub fn initialize_burn_history(ctx: Context<InitializeUserBurnHistory>) -> Result<()> {
+        // get burn history and user profile
         let burn_history = &mut ctx.accounts.burn_history;
         let user_profile = &mut ctx.accounts.user_profile;
         
-        // check index
-        match user_profile.latest_burn_history_index {
+        // automatically calculate new index
+        let new_index = match user_profile.burn_history_index {
             None => {
-                // first create, index must be 0
-                if index != 0 {
-                    return Err(ErrorCode::InvalidBurnHistoryIndex.into());
-                }
+                0
             },
             Some(latest_index) => {
-                // ensure new index is consecutive
-                if index != latest_index + 1 {
-                    return Err(ErrorCode::InvalidBurnHistoryIndex.into());
-                }
+                latest_index + 1
             }
-        }
+        };
         
         // initialize burn history
         burn_history.owner = ctx.accounts.user.key();
-        burn_history.index = index;
+        burn_history.index = new_index;
         burn_history.signatures = Vec::new();
         
         // update user profile
-        user_profile.latest_burn_history_index = Some(index);
+        user_profile.burn_history_index = Some(new_index);
         
-        msg!("Initialized burn history account with index: {}", index);
+        msg!("Initialized burn history account with index: {}", new_index);
         Ok(())
     }
 }
@@ -702,7 +694,7 @@ pub struct ProcessBurn<'info> {
         seeds = [
             b"burn_history",
             user.key().as_ref(),
-            user_profile.as_ref().map(|p| p.latest_burn_history_index.unwrap_or(0)).unwrap_or(0).to_le_bytes().as_ref()
+            user_profile.as_ref().map(|p| p.burn_history_index.unwrap_or(0)).unwrap_or(0).to_le_bytes().as_ref()
         ],
         bump
     )]
@@ -899,7 +891,6 @@ pub struct CloseUserProfile<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(new_index: u64)]
 pub struct InitializeUserBurnHistory<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -922,7 +913,7 @@ pub struct InitializeUserBurnHistory<'info> {
         seeds = [
             b"burn_history",
             user.key().as_ref(),
-            new_index.to_le_bytes().as_ref()
+            &user_profile.burn_history_index.map_or(0, |i| i + 1).to_le_bytes()
         ],
         bump
     )]

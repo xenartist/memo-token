@@ -24,6 +24,10 @@ name = "init-user-profile"
 path = "src/init-user-profile.rs"
 
 [[bin]]
+name = "init-user-profile-burn-history"
+path = "src/init-user-profile-burn-history.rs"
+
+[[bin]]
 name = "check-global-burn-index"
 path = "src/check-global-burn-index.rs"
 

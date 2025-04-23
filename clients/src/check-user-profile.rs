@@ -192,8 +192,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]);
             data = &data[8..];
             
-            // Read latest burn history index (Option<u64>)
-            let latest_burn_history_index = if data[0] == 0 {
+            // Read burn_history_index (Option<u64>)
+            let burn_history_index = if data[0] == 0 {
                 None
             } else {
                 Some(u64::from_le_bytes([
@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Net Balance from Mint/Burn: {} tokens", (total_minted as i64 - total_burned as i64));
             println!("Mint Operations: {}", mint_count);
             println!("Burn Operations: {}", burn_count);
-            println!("Latest Burn History Index: {}", match latest_burn_history_index {
+            println!("Burn History Index: {}", match burn_history_index {
                 Some(index) => index.to_string(),
                 None => "None".to_string()
             });

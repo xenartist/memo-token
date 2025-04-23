@@ -217,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 4 + profile_image.len() + // profile_image (String)
                 8 + // created_at
                 8 + // last_updated
-                9;  // latest_burn_history_index (Option<u64>: 1 byte for Option + 8 bytes for u64)
+                9;  // burn_history_index (Option<u64>: 1 byte for Option + 8 bytes for u64)
     
     // Calculate rent exempt minimum
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
