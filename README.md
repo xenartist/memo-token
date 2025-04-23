@@ -78,8 +78,20 @@ cargo run --bin mint
 cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
 ``` 
 - `burn.rs`: Token burning client
+
+##### default：add burn_history in memo and set it to "Y"
 ```
-cargo run --bin burn 400000 1 "$(printf 'a%.0s' {1..700})"
+cargo run --bin test-single-burn
+```
+
+##### add burn_history in memo and set it to "N"
+```
+cargo run --bin test-single-burn 440000 1 "My message" N
+```
+
+##### not add burn_history in memo
+```
+cargo run --bin test-single-burn 440000 1 "My message" NONE
 ```
 
 ## Security
