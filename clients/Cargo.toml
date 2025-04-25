@@ -64,6 +64,10 @@ name = "close-user-profile"
 path = "src/close-user-profile.rs"
 
 [[bin]]
+name = "close-user-profile-burn-history"
+path = "src/close-user-profile-burn-history.rs"
+
+[[bin]]
 name = "init-token-account"
 path = "src/init-token-account.rs"
 

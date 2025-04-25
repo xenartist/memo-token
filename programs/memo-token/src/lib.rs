@@ -571,6 +571,35 @@ pub mod memo_token {
         msg!("Initialized burn history account with index: {}", new_index);
         Ok(())
     }
+
+    // close user burn history
+    pub fn close_user_burn_history(ctx: Context<CloseUserBurnHistory>) -> Result<()> {
+        let user_profile = &mut ctx.accounts.user_profile;
+        let burn_history = &ctx.accounts.burn_history;
+
+        // ensure closing the current index burn history
+        if let Some(current_index) = user_profile.burn_history_index {
+            // verify current burn history index
+            if burn_history.index != current_index {
+                return Err(ErrorCode::InvalidBurnHistoryIndex.into());
+            }
+
+            // if current index is 0, set burn_history_index to None
+            if current_index == 0 {
+                user_profile.burn_history_index = None;
+                msg!("Closed last burn history account, burn_history_index set to None");
+            } else {
+                // otherwise, reduce index by 1
+                user_profile.burn_history_index = Some(current_index - 1);
+                msg!("Reduced burn_history_index to {}", current_index - 1);
+            }
+        } else {
+            return Err(ErrorCode::InvalidBurnHistoryIndex.into());
+        }
+
+        msg!("Closing burn history with index {}", burn_history.index);
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -916,6 +945,35 @@ pub struct InitializeUserBurnHistory<'info> {
             &user_profile.burn_history_index.map_or(0, |i| i + 1).to_le_bytes()
         ],
         bump
+    )]
+    pub burn_history: Account<'info, UserBurnHistory>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseUserBurnHistory<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+        constraint = user_profile.pubkey == user.key() @ ErrorCode::UnauthorizedUser
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    #[account(
+        mut,
+        seeds = [
+            b"burn_history", 
+            user.key().as_ref(),
+            &user_profile.burn_history_index.unwrap_or(0).to_le_bytes()
+        ],
+        bump,
+        constraint = burn_history.owner == user.key() @ ErrorCode::UnauthorizedUser,
+        close = user  // close account and return SOL to user
     )]
     pub burn_history: Account<'info, UserBurnHistory>,
     
