@@ -24,6 +24,10 @@ name = "init-user-profile"
 path = "src/init-user-profile.rs"
 
 [[bin]]
+name = "init-social-profile"
+path = "src/init-social-profile.rs"
+
+[[bin]]
 name = "init-user-profile-burn-history"
 path = "src/init-user-profile-burn-history.rs"
 

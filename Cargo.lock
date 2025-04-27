@@ -2385,6 +2385,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "memo-social"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-program",
+]
+
+[[package]]
 name = "memo-token"
 version = "0.1.0"
 dependencies = [
