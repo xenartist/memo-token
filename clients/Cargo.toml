@@ -56,6 +56,10 @@ name = "update-user-profile"
 path = "src/update-user-profile.rs"
 
 [[bin]]
+name = "update-social-profile"
+path = "src/update-social-profile.rs"
+
+[[bin]]
 name = "close-global-burn-index"
 path = "src/close-global-burn-index.rs"
 
@@ -70,6 +74,10 @@ path = "src/close-top-burn-shard.rs"
 [[bin]]
 name = "close-user-profile"
 path = "src/close-user-profile.rs"
+
+[[bin]]
+name = "close-social-profile"
+path = "src/close-social-profile.rs"
 
 [[bin]]
 name = "close-user-profile-burn-history"
