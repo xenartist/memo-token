@@ -48,6 +48,10 @@ name = "check-user-profile"
 path = "src/check-user-profile.rs"
 
 [[bin]]
+name = "check-social-profile"
+path = "src/check-social-profile.rs"
+
+[[bin]]
 name = "update-user-profile"
 path = "src/update-user-profile.rs"
 
@@ -115,3 +119,4 @@ borsh = "1.5.5"
 rand = "0.9.0"
 flate2 = "1.0"
 base64 = "0.13"
+chrono = "0.4"
