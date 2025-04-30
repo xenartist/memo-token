@@ -10,6 +10,9 @@ use solana_sdk::{
 use std::str::FromStr;
 use std::io;
 
+// Using discriminator value from IDL
+const CLOSE_USER_PROFILE_DISCRIMINATOR: [u8; 8] = [242, 80, 248, 79, 81, 251, 65, 113];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
@@ -38,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(account) => {
             println!("Found user profile at: {}", user_profile_pda);
             println!("Account rent-exempt balance: {} lamports", account.lamports);
-            println!("Note: This will permanently delete your profile, including your pixel art!");
+            println!("Note: This will permanently delete your token profile!");
             println!("Are you sure you want to continue? (y/n)");
 
             let mut input = String::new();
@@ -50,11 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Create instruction data
             let mut instruction_data = Vec::new();
-            
-            // Note: You'll need to replace this with the actual discriminator from your compiled program
-            // For 'close_user_profile', this will be the first 8 bytes of the SHA256 hash of "global:close_user_profile"
-            let data = vec![242,80,248,79,81,251,65,113]; // Example discriminator
-            instruction_data.extend_from_slice(&data);
+            instruction_data.extend_from_slice(&CLOSE_USER_PROFILE_DISCRIMINATOR);
             
             // Create the close instruction
             let accounts = vec![
@@ -98,6 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("User profile closed successfully!");
             println!("Transaction signature: {}", signature);
             println!("The SOL from this account has been returned to your wallet.");
+            println!("Note: This only closed your token profile.");
+            println!("If you have a social profile, you'll need to close it separately with memo-social client.");
         },
         Err(_) => {
             println!("No user profile found for this wallet.");

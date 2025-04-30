@@ -116,44 +116,6 @@ fn display_pixel_art(hex_string: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Get command line arguments
-    let args: Vec<String> = std::env::args().collect();
-    
-    // Parse username (required)
-    if args.len() < 2 {
-        println!("Usage: cargo run --bin init-user-profile <username> [profile_image_hex]");
-        println!("Example: cargo run --bin init-user-profile \"SolanaUser\" \"FF00FF00\"");
-        println!("Note: profile_image_hex should be a hex string representing pixel art (1=black, 0=white)");
-        println!("You can use img2hex tool to convert images to hex format");
-        println!("If no profile_image_hex is provided, a random pattern will be generated");
-        return Err("Username is required".into());
-    }
-    
-    let username = args[1].clone();
-    if username.len() > 32 {
-        return Err("Username too long. Maximum length is 32 characters.".into());
-    }
-    
-    // Parse or generate profile image hex string
-    let profile_image = if args.len() > 2 {
-        args[2].clone()
-    } else {
-        println!("No profile image provided, generating random pixel art...");
-        let random_art = generate_random_pixel_art();
-        println!("Generated random pixel art hex string: {}", random_art);
-        random_art
-    };
-    
-    // check profile image hex string length
-    if profile_image.len() > 256 {
-        return Err("Profile image string too long. Maximum length is 256 characters.".into());
-    }
-
-    // check format prefix
-    if !profile_image.starts_with("n:") && !profile_image.starts_with("c:") {
-        return Err("Profile image must start with 'n:' or 'c:' prefix.".into());
-    }
-    
     // Connect to network
     let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
@@ -190,31 +152,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prepare instruction data using IDL discriminator
     // 1. Create a buffer to store instruction data
     let mut instruction_data = Vec::with_capacity(
-        INIT_USER_PROFILE_DISCRIMINATOR.len() + 
-        4 + username.len() + 
-        4 + profile_image.len()
+        INIT_USER_PROFILE_DISCRIMINATOR.len()
     );
     
     // 2. Write discriminator
     instruction_data.extend_from_slice(&INIT_USER_PROFILE_DISCRIMINATOR);
     
-    // 3. Serialize username parameter (String)
-    instruction_data.extend_from_slice(&(username.len() as u32).to_le_bytes());
-    instruction_data.extend_from_slice(username.as_bytes());
-    
-    // 4. Serialize profile_image parameter (String)
-    instruction_data.extend_from_slice(&(profile_image.len() as u32).to_le_bytes());
-    instruction_data.extend_from_slice(profile_image.as_bytes());
-    
     // Calculate required space for the account
     let space = 8 + // discriminator
                 32 + // pubkey
-                4 + username.len() + // username (String)
                 8 + // total_minted
                 8 + // total_burned
                 8 + // mint_count
                 8 + // burn_count
-                4 + profile_image.len() + // profile_image (String)
                 8 + // created_at
                 8 + // last_updated
                 9;  // burn_history_index (Option<u64>: 1 byte for Option + 8 bytes for u64)
@@ -224,8 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Print initialization details
     println!("\nInitializing user profile with the following details:");
-    println!("Username: {}", username);
-    println!("Profile Image: {}", profile_image);
+    println!("User: {}", payer.pubkey());
     println!("Account Space: {} bytes", space);
     println!("Required Rent (lamports): {}", rent);
     println!("Burn History Index: None (will be set when first burn history is created)");
@@ -256,14 +205,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     
     // Send and confirm transaction
-    match client.send_and_confirm_transaction_with_spinner(&transaction) {
+    match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {
             println!("User profile initialized successfully!");
             println!("Transaction signature: {}", signature);
             println!("\nUser profile details:");
             println!("Owner: {}", payer.pubkey());
-            println!("Username: {}", username);
-            println!("Profile Image: {}", profile_image);
             println!("\nYou can now use your profile in mint and burn operations.");
             println!("The profile will automatically track your token statistics.");
         },

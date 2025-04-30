@@ -52,10 +52,6 @@ name = "check-social-profile"
 path = "src/check-social-profile.rs"
 
 [[bin]]
-name = "update-user-profile"
-path = "src/update-user-profile.rs"
-
-[[bin]]
 name = "update-social-profile"
 path = "src/update-social-profile.rs"
 
