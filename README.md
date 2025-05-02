@@ -29,6 +29,12 @@ cargo install anchor-cli
 ```bash
 anchor build
 ```
+```
+anchor build --program-name memo-token
+```
+```
+anchor build --program-name memo-social
+```
 
 ## Deployment Steps
 
@@ -36,6 +42,12 @@ anchor build
 
 ```bash
 anchor deploy
+```
+```
+ anchor deploy --program-name memo-token
+```
+```
+ anchor deploy --program-name memo-social
 ```
 
 2. Create the token (one-time operation by deployer):

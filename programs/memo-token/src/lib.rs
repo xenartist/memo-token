@@ -64,7 +64,7 @@ pub struct TopBurnShard {
 
 impl TopBurnShard {
     pub const MAX_RECORDS: usize = 69;
-    pub const MIN_BURN_AMOUNT: u64 = 42069 * 1_000_000_000; // 42069 tokens threshold
+    pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
     
     pub fn add_record(&mut self, record: BurnRecord) -> bool {
         // Check if the burn amount meets the minimum threshold
@@ -394,7 +394,7 @@ pub mod memo_token {
             if top_burn_shard.add_record(record) {
                 msg!("Added new burn record to top burn shard");
             } else {
-                msg!("Burn amount not high enough for top burn shard (minimum 42069 tokens)");
+                msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
             }
         }
 
