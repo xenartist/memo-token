@@ -43,17 +43,23 @@ anchor build --program-name memo-social
 ```bash
 anchor deploy
 ```
+
 ```
  anchor deploy --program-name memo-token
 ```
+
 ```
  anchor deploy --program-name memo-social
 ```
 
 2. Create the token (one-time operation by deployer):
+```bash
+chmod +x clients/src/admin-create-memo-token.sh
+clients/src/admin-create-memo-token.sh
+```
 
 ```bash
-cargo run --bin create_token
+cargo run --bin admin-transfer-memo-token-mint-authority <mint_keypair_path> <program_id>
 ```
 
 Save the output addresses:

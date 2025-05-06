@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount};
+use anchor_spl::token_2022::{self, Token2022};
 use solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
 use serde_json::Value;
@@ -232,10 +233,10 @@ pub mod memo_token {
         let amount = token_count * 1_000_000_000;
         
         // mint tokens
-        token::mint_to(
+        token_2022::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                token::MintTo {
+                token_2022::MintTo {
                     mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.token_account.to_account_info(),
                     authority: ctx.accounts.mint_authority.to_account_info(),
@@ -328,10 +329,10 @@ pub mod memo_token {
             .unwrap_or(false);
 
         // burn tokens
-        token::burn(
+        token_2022::burn(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
-                token::Burn {
+                token_2022::Burn {
                     mint: ctx.accounts.mint.to_account_info(),
                     from: ctx.accounts.token_account.to_account_info(),
                     authority: ctx.accounts.user.to_account_info(),
@@ -605,22 +606,22 @@ fn check_memo_instruction(instructions: &AccountInfo, min_length: usize) -> Resu
     Ok((false, vec![]))
 }
 
-// modify ProcessTransfer structure, add optional storage account
+// modify ProcessTransfer structure
 #[derive(Accounts)]
 pub struct ProcessTransfer<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
     #[account(mut)]
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     
     /// CHECK: PDA as mint authority
     pub mint_authority: AccountInfo<'info>,
     
     #[account(mut)]
-    pub token_account: Account<'info, TokenAccount>,
+    pub token_account: InterfaceAccount<'info, TokenAccount>,
     
-    pub token_program: Program<'info, Token>,
+    pub token_program: Program<'info, Token2022>,
     
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
@@ -642,16 +643,15 @@ pub struct ProcessBurn<'info> {
     pub user: Signer<'info>,
     
     #[account(mut)]
-    pub mint: Account<'info, Mint>,
+    pub mint: InterfaceAccount<'info, Mint>,
     
     #[account(
         mut,
-        associated_token::mint = mint,
-        associated_token::authority = user
+        constraint = token_account.mint == mint.key() && token_account.owner == user.key()
     )]
-    pub token_account: Account<'info, TokenAccount>,
+    pub token_account: InterfaceAccount<'info, TokenAccount>,
     
-    pub token_program: Program<'info, Token>,
+    pub token_program: Program<'info, Token2022>,
     
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]

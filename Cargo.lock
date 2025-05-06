@@ -2422,6 +2422,7 @@ dependencies = [
  "spl-associated-token-account 2.3.0",
  "spl-memo",
  "spl-token",
+ "spl-token-2022 3.0.5",
 ]
 
 [[package]]
