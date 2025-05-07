@@ -8,12 +8,15 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
 };
-use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use sha2::{Sha256, Digest};
 use serde_json;
+
+// Import token-2022 program ID
+use spl_token_2022::id as token_2022_id;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -51,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and token address
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")
+    let mint = Pubkey::from_str("MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7")
         .expect("Invalid mint address");
 
     // Calculate PDA for mint authority
@@ -61,9 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Get user's token account
-    let token_account = get_associated_token_address(
+    let token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),
         &mint,
+        &token_2022_id(),  // Use token-2022 program ID
     );
     
     // Calculate user profile PDA
@@ -140,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AccountMeta::new(mint, false),                  // mint
             AccountMeta::new(mint_authority_pda, false),    // mint_authority (PDA)
             AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new_readonly(token_2022_id(), false), // token_program (use token-2022)
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
         ];
         
