@@ -15,12 +15,10 @@ use borsh::{BorshDeserialize};
 #[derive(BorshDeserialize)]
 struct UserProfile {
     pubkey: Pubkey,
-    username: String,
     total_minted: u64,
     total_burned: u64,
     mint_count: u64,
     burn_count: u64,
-    profile_image: String,
     created_at: i64,
     last_updated: i64,
     burn_history_index: Option<u64>,

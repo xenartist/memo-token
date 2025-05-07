@@ -43,23 +43,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(account) => {
             println!("User profile found at: {}", user_profile_pda);
             
-            // 读取 burn_history_index
-            let mut data = &account.data[8..]; // skip discriminator
-            data = &data[32..]; // skip pubkey
+            // skip discriminator
+            let mut data = &account.data[8..];
             
-            // skip username
-            let username_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-            data = &data[4 + username_len..];
+            // skip owner pubkey
+            data = &data[32..];
             
-            // skip stats
-            data = &data[32..]; // skip total_minted, total_burned, mint_count, burn_count
-            
-            // skip profile_image
-            let profile_image_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-            data = &data[4 + profile_image_len..];
+            // skip total_minted, total_burned, mint_count, burn_count
+            data = &data[32..];
             
             // skip timestamps
-            data = &data[16..]; // skip created_at and last_updated
+            data = &data[16..];
             
             // read burn_history_index
             let has_burn_history = data[0] == 1;
