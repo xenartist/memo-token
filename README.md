@@ -45,11 +45,11 @@ anchor deploy
 ```
 
 ```
- anchor deploy --program-name memo-token
+anchor deploy --program-name memo-token
 ```
 
 ```
- anchor deploy --program-name memo-social
+anchor deploy --program-name memo-social
 ```
 
 2. Create the token (one-time operation by deployer):

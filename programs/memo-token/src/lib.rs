@@ -322,12 +322,6 @@ pub mod memo_token {
             .ok_or(ErrorCode::MissingSignature)?
             .to_string();
 
-        // check if should record burn history
-        let should_record_history = json_data["burn_history"]
-            .as_str()
-            .map(|v| v == "Y")
-            .unwrap_or(false);
-
         // burn tokens
         token_2022::burn(
             CpiContext::new(
@@ -396,37 +390,6 @@ pub mod memo_token {
                 msg!("Added new burn record to top burn shard");
             } else {
                 msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
-            }
-        }
-
-        // check if should record history
-        if should_record_history {
-            if let Some(user_profile) = &mut ctx.accounts.user_profile {
-                // check user authority
-                if user_profile.pubkey != ctx.accounts.user.key() {
-                    return Err(ErrorCode::UnauthorizedUser.into());
-                }
-
-                // get current burn history account
-                if let Some(burn_history) = &mut ctx.accounts.burn_history {
-                    // check burn history account owner
-                    if burn_history.owner != ctx.accounts.user.key() {
-                        return Err(ErrorCode::UnauthorizedUser.into());
-                    }
-
-                    // check if burn history account is full
-                    if burn_history.signatures.len() >= 100 {
-                        // if full, return error, client needs to create new burn history account
-                        return Err(ErrorCode::BurnHistoryFull.into());
-                    }
-
-                    // add signature to history
-                    burn_history.signatures.push(signature);
-                    msg!("Added burn signature to history index: {}", burn_history.index);
-                } else {
-                    // if no burn history account provided, return error
-                    return Err(ErrorCode::BurnHistoryRequired.into());
-                }
             }
         }
 
@@ -557,6 +520,138 @@ pub mod memo_token {
         msg!("Closing burn history with index {}", burn_history.index);
         Ok(())
     }
+
+    // 2. process burn with history
+    pub fn process_burn_with_history(ctx: Context<ProcessBurnWithHistory>, amount: u64) -> Result<()> {
+        // check burn amount is at least 1 token (10^9 units)
+        if amount < 1_000_000_000 {
+            return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+
+        // check burn amount is an integer multiple of 1 token (10^9 units)
+        if amount % 1_000_000_000 != 0 {
+            return Err(ErrorCode::InvalidBurnAmount.into());
+        }
+        
+        // check memo instruction
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
+        if !memo_found {
+            msg!("No memo instruction found");
+            return Err(ErrorCode::MemoRequired.into());
+        }
+        
+        // get current clock information
+        let clock = Clock::get()?;
+        
+        // parse memo JSON
+        let memo_str = String::from_utf8(memo_data.clone())
+            .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+        let clean_str = memo_str
+            .trim_matches('"')
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+        
+        // parse JSON
+        let json_data: Value = serde_json::from_str(&clean_str)
+            .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+
+        // get signature
+        let signature = json_data["signature"]
+            .as_str()
+            .ok_or(ErrorCode::MissingSignature)?
+            .to_string();
+
+        // burn tokens
+        token_2022::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                token_2022::Burn {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    from: ctx.accounts.token_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        msg!("Burned {} tokens", amount / 1_000_000_000);
+        
+        // update user profile stats (if user profile account exists)
+        if let Some(user_profile) = &mut ctx.accounts.user_profile {
+            // Check if user_profile.pubkey matches the signer's key
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+            
+            // Calculate tokens to add
+            let tokens_to_add = amount / 1_000_000_000;
+            
+            // Check if total_burned would overflow
+            if let Some(new_total) = user_profile.total_burned.checked_add(tokens_to_add) {
+                user_profile.total_burned = new_total;
+            } else {
+                msg!("Warning: Total burned would overflow, keeping at max value");
+                user_profile.total_burned = u64::MAX;
+            }
+            
+            // Check if burn_count would overflow
+            if let Some(new_count) = user_profile.burn_count.checked_add(1) {
+                user_profile.burn_count = new_count;
+            } else {
+                msg!("Warning: Burn count would overflow, keeping at max value");
+                user_profile.burn_count = u64::MAX;
+            }
+            
+            // Update last_updated timestamp
+            user_profile.last_updated = clock.unix_timestamp;
+            
+            msg!("Updated user profile stats for burn operation");
+        }
+        
+        // Create the burn record
+        let record = BurnRecord {
+            pubkey: ctx.accounts.user.key(),
+            signature: signature.clone(),
+            slot: clock.slot,
+            blocktime: clock.unix_timestamp,
+            amount,
+        };
+        
+        // update latest burn shard
+        if let Some(latest_burn_shard) = &mut ctx.accounts.latest_burn_shard {
+            latest_burn_shard.add_record(record.clone());
+            msg!("Added new burn record to latest burn shard");
+        }
+        
+        // update top burn shard
+        if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
+            if top_burn_shard.add_record(record) {
+                msg!("Added new burn record to top burn shard");
+            } else {
+                msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
+            }
+        }
+
+        // process burn history
+        let burn_history = &mut ctx.accounts.burn_history;
+        
+        // check burn history account owner
+        if burn_history.owner != ctx.accounts.user.key() {
+            return Err(ErrorCode::UnauthorizedUser.into());
+        }
+
+        // check if burn history account is full
+        if burn_history.signatures.len() >= 100 {
+            // if full, return error, client needs to create new burn history account
+            return Err(ErrorCode::BurnHistoryFull.into());
+        }
+
+        // add signature to history
+        burn_history.signatures.push(signature);
+        msg!("Added burn signature to history index: {}", burn_history.index);
+
+        Ok(())
+    }
 }
 
 // Optimized but still somewhat flexible approach
@@ -672,8 +767,45 @@ pub struct ProcessBurn<'info> {
         bump,
     )]
     pub user_profile: Option<Account<'info, UserProfile>>,
+}
 
-    // burn history (optional)
+#[derive(Accounts)]
+pub struct ProcessBurnWithHistory<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(mut)]
+    pub mint: InterfaceAccount<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = token_account.mint == mint.key() && token_account.owner == user.key()
+    )]
+    pub token_account: InterfaceAccount<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token2022>,
+    
+    /// CHECK: Instructions sysvar
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>,
+    
+    /// Latest burn shard (optional)
+    #[account(mut)]
+    pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
+    
+    /// Top burn shard (optional)
+    #[account(mut)]
+    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    
+    // user profile (optional)
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump,
+    )]
+    pub user_profile: Option<Account<'info, UserProfile>>,
+
+    // burn history (required for this instruction)
     #[account(
         mut,
         seeds = [
@@ -683,7 +815,7 @@ pub struct ProcessBurn<'info> {
         ],
         bump
     )]
-    pub burn_history: Option<Account<'info, UserBurnHistory>>,
+    pub burn_history: Account<'info, UserBurnHistory>,
 }
 
 #[derive(Accounts)]
