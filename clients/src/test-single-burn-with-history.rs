@@ -1,10 +1,14 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcSimulateTransactionConfig, RpcSendTransactionConfig},
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
+    commitment_config::CommitmentConfig,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
@@ -19,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     
     // parse compute units (default: 440_000)
-    let compute_units = if args.len() > 1 {
+    let initial_compute_units = if args.len() > 1 {
         args[1].parse().unwrap_or(440_000)
     } else {
         440_000
@@ -294,22 +298,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // add burn amount parameter
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
 
-    // create compute budget instruction
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
-    
-    // Convert JSON to bytes directly without any extra escaping
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
-    
-    // print information
-    let memo_length = memo_text.as_bytes().len();
-    println!("Memo length: {} bytes", memo_length);
-    println!("Raw memo content: {}", memo_text);
-    println!("Setting compute budget: {} CUs", compute_units);
-    println!("Burning {} tokens with history", burn_amount / 1_000_000_000);
-    
     // Create burn instruction - include user profile account if it exists
     let mut accounts = vec![
         AccountMeta::new(payer.pubkey(), true),         // user
@@ -349,16 +337,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                i, account.pubkey, account.is_signer, account.is_writable);
     }
     
+    // Convert JSON to bytes directly without any extra escaping
+    let memo_ix = spl_memo::build_memo(
+        memo_text.as_bytes(),
+        &[&payer.pubkey()],
+    );
+    
     let burn_ix = Instruction::new_with_bytes(
         program_id,
         &instruction_data,
-        accounts,
+        accounts.clone(),  // Clone here to avoid moving ownership
     );
 
     // get latest blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
+
+    // create a transaction without compute budget instruction for simulation
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[memo_ix.clone(), burn_ix.clone()],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    // simulate transaction to determine required compute units
+    println!("Simulating transaction to determine required compute units...");
+    let compute_units = match client.simulate_transaction_with_config(
+        &sim_transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::confirmed()),
+            encoding: None,
+            accounts: None,
+            min_context_slot: None,
+            inner_instructions: true,
+        },
+    ) {
+        Ok(result) => {
+            if let Some(err) = result.value.err {
+                println!("Warning: Transaction simulation failed: {:?}", err);
+                println!("Using default compute units: {}", initial_compute_units);
+                initial_compute_units
+            } else if let Some(units_consumed) = result.value.units_consumed {
+                // add 10% safety margin
+                let required_cu = (units_consumed as f64 * 1.1) as u32;
+                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
+                    units_consumed, required_cu);
+                required_cu
+            } else {
+                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
+                initial_compute_units
+            }
+        },
+        Err(err) => {
+            println!("Failed to simulate transaction: {}", err);
+            println!("Using default compute units: {}", initial_compute_units);
+            initial_compute_units
+        }
+    };
+
+    // create compute budget instruction with dynamically calculated CU
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    println!("Setting compute budget: {} CUs", compute_units);
+    println!("Burning {} tokens with history", burn_amount / 1_000_000_000);
 
     // create and send transaction with instruction order:
     // 1. compute budget instruction
@@ -410,39 +454,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("To view your profile stats, run: cargo run --bin check-user-profile");
             }
             
-            // If burn history exists, show info about burn being recorded
-            if burn_history_exists {
-                println!("This burn has been recorded in your burn history.");
-                println!("You can view your burn history records by inspecting the burn history account.");
+            // check if burn history was updated
+            if burn_history_exists && burn_history_pda.is_some() {
+                match client.get_account(&burn_history_pda.unwrap()) {
+                    Ok(burn_history_account) => {
+                        // parse burn history data, check signature count
+                        let burn_history_data = &burn_history_account.data[8..]; // skip discriminator
+                        
+                        // skip owner and index
+                        let data = &burn_history_data[40..]; // 32 bytes owner + 8 bytes index
+                        
+                        // read signature array length
+                        let signatures_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                        
+                        println!("Burn history updated - now contains {} signatures.", signatures_len);
+                    },
+                    Err(err) => {
+                        println!("Warning: Could not verify burn history update: {}", err);
+                    }
+                }
             }
         }
         Err(err) => {
-            println!("Failed to burn tokens with history: {}", err);
+            println!("Failed to burn tokens: {}", err);
             println!("This may happen if:");
             println!("1. The burn shards don't exist - run initialization scripts first");
             println!("2. Insufficient token balance");
             println!("3. Issues with the memo format");
             println!("4. Burn amount is less than the minimum required (1 token)");
             println!("5. Burn amount is not an integer multiple of 1 token");
-            println!("6. Burn history account doesn't exist or is full");
-            
-            if err.to_string().contains("BurnHistoryFull") {
-                println!("\nError: Current burn history is full (100 signatures).");
-                println!("Run 'cargo run --bin init-user-profile-burn-history' to create a new burn history account.");
-            }
-    
-            // overflow error
-            if err.to_string().contains("would overflow") {
-                println!("\nWARNING: The burn operation would cause a counter overflow.");
-                println!("The system has protection against this, but it indicates you've reached");
-                println!("a maximum limit for burning tokens. Your statistics will be capped at the maximum value.");
-            }
-            
-            // Provide more specific advice based on error
-            if err.to_string().contains("AccountNotEnoughKeys") {
-                println!("\nThe contract is expecting more accounts than provided.");
-                println!("To fix this, either create a user profile or update this script to include all required accounts.");
-            }
+            println!("6. Compute units might be insufficient: {}", compute_units);
+            println!("7. No valid burn history account, or it's full (100 signatures)");
             
             // try to get transaction logs
             if let Some(sig_str) = err.to_string().split("signature ").nth(1) {

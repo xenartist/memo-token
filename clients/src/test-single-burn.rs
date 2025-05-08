@@ -1,10 +1,14 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::RpcSimulateTransactionConfig,
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
+    commitment_config::CommitmentConfig,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
@@ -19,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     
     // parse compute units (default: 440_000)
-    let compute_units = if args.len() > 1 {
+    let initial_compute_units = if args.len() > 1 {
         args[1].parse().unwrap_or(440_000)
     } else {
         440_000
@@ -180,22 +184,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // add burn amount parameter
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
 
-    // create compute budget instruction
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
-    
-    // Convert JSON to bytes directly without any extra escaping
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
-    
-    // print information
-    let memo_length = memo_text.as_bytes().len();
-    println!("Memo length: {} bytes", memo_length);
-    println!("Raw memo content: {}", memo_text);
-    println!("Setting compute budget: {} CUs", compute_units);
-    println!("Burning {} tokens", burn_amount / 1_000_000_000);
-    
     // Create burn instruction - include user profile account if it exists
     let mut accounts = vec![
         AccountMeta::new(payer.pubkey(), true),         // user
@@ -218,17 +206,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Account {}: {} (is_signer: {}, is_writable: {})",
                i, account.pubkey, account.is_signer, account.is_writable);
     }
+
+    // Convert JSON to bytes directly without any extra escaping
+    let memo_ix = spl_memo::build_memo(
+        memo_text.as_bytes(),
+        &[&payer.pubkey()],
+    );
     
     let burn_ix = Instruction::new_with_bytes(
         program_id,
         &instruction_data,
-        accounts,
+        accounts.clone(),  // Clone here to avoid moving ownership
     );
 
     // get latest blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
+
+    // create a transaction without compute budget instruction for simulation
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[memo_ix.clone(), burn_ix.clone()],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    // simulate transaction to determine required compute units
+    println!("Simulating transaction to determine required compute units...");
+    let compute_units = match client.simulate_transaction_with_config(
+        &sim_transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::confirmed()),
+            encoding: None,
+            accounts: None,
+            min_context_slot: None,
+            inner_instructions: true,
+        },
+    ) {
+        Ok(result) => {
+            if let Some(err) = result.value.err {
+                println!("Warning: Transaction simulation failed: {:?}", err);
+                println!("Using default compute units: {}", initial_compute_units);
+                initial_compute_units
+            } else if let Some(units_consumed) = result.value.units_consumed {
+                // add 10% safety margin
+                let required_cu = (units_consumed as f64 * 1.1) as u32;
+                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
+                    units_consumed, required_cu);
+                required_cu
+            } else {
+                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
+                initial_compute_units
+            }
+        },
+        Err(err) => {
+            println!("Failed to simulate transaction: {}", err);
+            println!("Using default compute units: {}", initial_compute_units);
+            initial_compute_units
+        }
+    };
+
+    // create compute budget instruction with dynamically calculated CU
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    println!("Setting compute budget: {} CUs", compute_units);
+    println!("Burning {} tokens", burn_amount / 1_000_000_000);
 
     // create and send transaction with instruction order:
     // 1. compute budget instruction
@@ -288,6 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("3. Issues with the memo format");
             println!("4. Burn amount is less than the minimum required (1 token)");
             println!("5. Burn amount is not an integer multiple of 1 token");
+            println!("6. Compute units might be insufficient: {}", compute_units);
             
             // try to get transaction logs
             if let Some(sig_str) = err.to_string().split("signature ").nth(1) {
