@@ -1,10 +1,14 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcSimulateTransactionConfig, RpcSendTransactionConfig},
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
+    commitment_config::CommitmentConfig,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
@@ -66,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Parse compute units from args (default: 440_000)
     // Now it's the first parameter
-    let compute_units = if args.len() > 1 {
+    let initial_compute_units = if args.len() > 1 {
         match args[1].parse::<u32>() {
             Ok(cu) => cu,
             Err(_) => {
@@ -181,10 +185,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let memo_length = memo_text.as_bytes().len();
     println!("Memo length: {} bytes", memo_length);
     println!("Memo content: {}", memo_text);
-    println!("Setting compute budget: {} CUs", compute_units);
 
-    // Create compute budget instruction to set CU limit
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    // Create memo instruction with JSON content
+    let memo_ix = spl_memo::build_memo(
+        memo_text.as_bytes(),
+        &[&payer.pubkey()],
+    );
     
     // Create mint instruction - use token-2022 program ID
     let mut accounts = vec![
@@ -207,21 +213,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         accounts,
     );
 
-    // Create memo instruction with JSON content
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
-    
     // Get recent blockhash
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // Create and send transaction with new instruction order:
-    // 1. Compute budget instruction
-    // 2. Memo instruction
-    // 3. Mint instruction
+    // create a transaction without compute budget instruction for simulation
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[memo_ix.clone(), mint_ix.clone()],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    // simulate transaction to determine required compute units
+    println!("Simulating transaction to determine required compute units...");
+    let compute_units = match client.simulate_transaction_with_config(
+        &sim_transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::confirmed()),
+            encoding: None,
+            accounts: None,
+            min_context_slot: None,
+            inner_instructions: true,
+        },
+    ) {
+        Ok(result) => {
+            if let Some(err) = result.value.err {
+                println!("Warning: Transaction simulation failed: {:?}", err);
+                println!("Using default compute units: {}", initial_compute_units);
+                initial_compute_units
+            } else if let Some(units_consumed) = result.value.units_consumed {
+                // safety margin 10%
+                let required_cu = (units_consumed as f64 * 1.1) as u32;
+                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
+                    units_consumed, required_cu);
+                required_cu
+            } else {
+                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
+                initial_compute_units
+            }
+        },
+        Err(err) => {
+            println!("Failed to simulate transaction: {}", err);
+            println!("Using default compute units: {}", initial_compute_units);
+            initial_compute_units
+        }
+    };
+
+    // create compute budget instruction with dynamic compute units
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    println!("Setting compute budget: {} CUs", compute_units);
+
+    // create final transaction, including compute budget instruction
     let transaction = Transaction::new_signed_with_payer(
         &[compute_budget_ix, memo_ix, mint_ix],
         Some(&payer.pubkey()),
@@ -263,11 +309,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("1. If you've created a user profile, make sure to include it in the transaction");
             println!("2. If you don't have a user profile, the contract expects the account list to be exactly 6 accounts");
             println!("3. Memo length must be at least 69 bytes");
+            println!("4. Compute units might be insufficient: {}", compute_units);
             
             // Provide more specific advice based on error
             if err.to_string().contains("AccountNotEnoughKeys") {
                 println!("\nThe contract is expecting more accounts than provided.");
                 println!("To fix this, either create a user profile or update this script to include a dummy user profile account.");
+            }
+            
+            if err.to_string().contains("ComputeBudgetExceeded") {
+                println!("\nCompute budget exceeded even with {} CUs.", compute_units);
+                println!("Try manually specifying a higher CU limit as the first argument.");
             }
             
             return Err(err.into());
