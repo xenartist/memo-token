@@ -134,6 +134,120 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // try to read burn_history_index and find current burn_history account
+    let mut burn_history_pda = None;
+    let mut burn_history_exists = false;
+
+    if user_profile_exists {
+        match client.get_account(&user_profile_pda) {
+            Ok(account) => {
+                // read burn_history_index
+                let mut data = &account.data[8..]; // skip discriminator
+                data = &data[32..]; // skip pubkey
+                
+                // skip total_minted, total_burned, mint_count, burn_count
+                data = &data[32..];
+                
+                // skip timestamps
+                data = &data[16..]; // skip created_at and last_updated
+                
+                // read burn_history_index
+                let has_burn_history = data[0] == 1;
+                if has_burn_history {
+                    let current_index = u64::from_le_bytes([
+                        data[1], data[2], data[3], data[4],
+                        data[5], data[6], data[7], data[8]
+                    ]);
+                    
+                    // calculate current burn_history PDA
+                    let (current_burn_history_pda, _) = Pubkey::find_program_address(
+                        &[
+                            b"burn_history",
+                            payer.pubkey().as_ref(),
+                            &current_index.to_le_bytes()
+                        ],
+                        &program_id,
+                    );
+                    
+                    burn_history_pda = Some(current_burn_history_pda);
+                    
+                    // check if current burn history exists
+                    match client.get_account(&current_burn_history_pda) {
+                        Ok(burn_history_account) => {
+                            // parse burn history data, check signature count
+                            let burn_history_data = &burn_history_account.data[8..]; // skip discriminator
+                            
+                            // skip owner and index
+                            let data = &burn_history_data[40..]; // 32 bytes owner + 8 bytes index
+                            
+                            // read signature array length
+                            let signatures_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                            
+                            println!("Current burn history (index {}) has {} signatures.", current_index, signatures_len);
+                            
+                            // check if signature count reaches maximum
+                            if signatures_len >= 100 {
+                                println!("Warning: Current burn history is full (100 signatures).");
+                                println!("Create a new burn history using init-user-profile-burn-history.");
+                                println!("This burn will fail unless you create a new burn history.");
+                                println!("Continue anyway? (y/n)");
+                                
+                                let mut input = String::new();
+                                std::io::stdin().read_line(&mut input)?;
+                                if !input.trim().eq_ignore_ascii_case("y") {
+                                    return Ok(());
+                                }
+                            } else {
+                                burn_history_exists = true;
+                                println!("Found valid burn history account.");
+                                println!("Burn will be recorded in burn history (index: {}).", current_index);
+                            }
+                        },
+                        Err(_) => {
+                            println!("Warning: Burn history index exists in profile, but the burn history account doesn't exist.");
+                            println!("Run init-user-profile-burn-history to create the burn history account.");
+                            println!("This burn will fail unless you create a burn history account.");
+                            println!("Continue anyway? (y/n)");
+                            
+                            let mut input = String::new();
+                            std::io::stdin().read_line(&mut input)?;
+                            if !input.trim().eq_ignore_ascii_case("y") {
+                                return Ok(());
+                            }
+                        }
+                    }
+                } else {
+                    println!("No burn history index found in user profile.");
+                    println!("Run init-user-profile-burn-history to create a burn history account.");
+                    println!("This burn will fail unless you create a burn history account.");
+                    println!("Continue anyway? (y/n)");
+                    
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if !input.trim().eq_ignore_ascii_case("y") {
+                        return Ok(());
+                    }
+                }
+            },
+            Err(_) => {
+                println!("Failed to read user profile account.");
+            }
+        }
+    }
+    
+    if !burn_history_exists {
+        println!("\nWARNING: No valid burn history account found.");
+        println!("This burn with history operation will likely fail.");
+        println!("Please run 'cargo run --bin init-user-profile-burn-history' first.");
+        println!("Continue anyway? (y/n)");
+        
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            return Ok(());
+        }
+    }
+
     // Check if shards exist
     match client.get_account(&latest_burn_shard_pda) {
         Ok(_) => {
@@ -171,9 +285,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // calculate Anchor instruction sighash for process_burn
+    // calculate Anchor instruction sighash for process_burn_with_history
     let mut hasher = Sha256::new();
-    hasher.update(b"global:process_burn");
+    hasher.update(b"global:process_burn_with_history");
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
@@ -194,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo length: {} bytes", memo_length);
     println!("Raw memo content: {}", memo_text);
     println!("Setting compute budget: {} CUs", compute_units);
-    println!("Burning {} tokens", burn_amount / 1_000_000_000);
+    println!("Burning {} tokens with history", burn_amount / 1_000_000_000);
     
     // Create burn instruction - include user profile account if it exists
     let mut accounts = vec![
@@ -210,6 +324,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add user profile PDA to account list if it exists
     if user_profile_exists {
         accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
+    }
+    
+    // This function requires burn_history account to be provided
+    if burn_history_exists && burn_history_pda.is_some() {
+        accounts.push(AccountMeta::new(burn_history_pda.unwrap(), false)); // burn_history
+        println!("Added burn_history account to transaction");
+    } else {
+        println!("WARNING: No valid burn history account found to add to transaction.");
+        println!("This transaction will fail - you must create a burn history account first.");
+        println!("Continue anyway? (y/n)");
+        
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            return Ok(());
+        }
     }
     
     // print account information for debugging
@@ -244,7 +374,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // send and confirm transaction
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {
-            println!("Burn successful! Signature: {}", signature);
+            println!("Burn with history successful! Signature: {}", signature);
             println!("Memo: {}", memo_text);
 
             // print token balance
@@ -279,15 +409,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\nYour burn statistics have been updated in your user profile.");
                 println!("To view your profile stats, run: cargo run --bin check-user-profile");
             }
+            
+            // If burn history exists, show info about burn being recorded
+            if burn_history_exists {
+                println!("This burn has been recorded in your burn history.");
+                println!("You can view your burn history records by inspecting the burn history account.");
+            }
         }
         Err(err) => {
-            println!("Failed to burn tokens: {}", err);
+            println!("Failed to burn tokens with history: {}", err);
             println!("This may happen if:");
             println!("1. The burn shards don't exist - run initialization scripts first");
             println!("2. Insufficient token balance");
             println!("3. Issues with the memo format");
             println!("4. Burn amount is less than the minimum required (1 token)");
             println!("5. Burn amount is not an integer multiple of 1 token");
+            println!("6. Burn history account doesn't exist or is full");
+            
+            if err.to_string().contains("BurnHistoryFull") {
+                println!("\nError: Current burn history is full (100 signatures).");
+                println!("Run 'cargo run --bin init-user-profile-burn-history' to create a new burn history account.");
+            }
+    
+            // overflow error
+            if err.to_string().contains("would overflow") {
+                println!("\nWARNING: The burn operation would cause a counter overflow.");
+                println!("The system has protection against this, but it indicates you've reached");
+                println!("a maximum limit for burning tokens. Your statistics will be capped at the maximum value.");
+            }
+            
+            // Provide more specific advice based on error
+            if err.to_string().contains("AccountNotEnoughKeys") {
+                println!("\nThe contract is expecting more accounts than provided.");
+                println!("To fix this, either create a user profile or update this script to include all required accounts.");
+            }
             
             // try to get transaction logs
             if let Some(sig_str) = err.to_string().split("signature ").nth(1) {

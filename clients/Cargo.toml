@@ -96,6 +96,10 @@ name = "test-single-burn"
 path = "src/test-single-burn.rs"
 
 [[bin]]
+name = "test-single-burn-with-history"
+path = "src/test-single-burn-with-history.rs"
+
+[[bin]]
 name = "test-batch-burn"
 path = "src/test-batch-burn.rs"
 
