@@ -1,5 +1,8 @@
 // clients/src/test-batch-mint.rs
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcSimulateTransactionConfig, RpcSendTransactionConfig},
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer, Keypair},
     pubkey::Pubkey,
@@ -29,8 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         10
     };
     
-    // Parse compute units (default: 200_000)
-    let compute_units = if args.len() > 2 {
+    // Parse initial compute units (default: 200_000) - used as fallback
+    let initial_compute_units = if args.len() > 2 {
         args[2].parse().unwrap_or(200_000)
     } else {
         200_000
@@ -39,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // display input information
     println!("Batch mint configuration:");
     println!("  Number of mints: {}", mint_count);
-    println!("  Compute units:   {}", compute_units);
+    println!("  Initial compute units: {}", initial_compute_units);
     println!();
 
     // Connect to network
@@ -97,7 +100,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start batch minting
     println!("\nStarting batch mint test with {} mints", mint_count);
-    println!("Compute units per transaction: {}", compute_units);
     println!("----------------------------------------\n");
 
     let mut successful_mints = 0;
@@ -128,9 +130,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // Create process_transfer instruction
         let instruction_data = sighash_result.clone();
-
-        // Create compute budget instruction
-        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
         
         // Create memo instruction
         let memo_ix = spl_memo::build_memo(
@@ -156,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mint_ix = Instruction::new_with_bytes(
             program_id,
             &instruction_data,
-            accounts,
+            accounts.clone(), // Clone to keep ownership
         );
 
         // Get latest blockhash
@@ -164,7 +163,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get_latest_blockhash()
             .expect("Failed to get recent blockhash");
 
-        // Create transaction
+        // Create simulation transaction without compute budget instruction
+        let sim_transaction = Transaction::new_signed_with_payer(
+            &[memo_ix.clone(), mint_ix.clone()],
+            Some(&payer.pubkey()),
+            &[&payer],
+            recent_blockhash,
+        );
+
+        // Simulate transaction to determine required compute units
+        println!("Simulating transaction to determine required compute units...");
+        let compute_units = match client.simulate_transaction_with_config(
+            &sim_transaction,
+            RpcSimulateTransactionConfig {
+                sig_verify: false,
+                replace_recent_blockhash: false,
+                commitment: Some(CommitmentConfig::confirmed()),
+                encoding: None,
+                accounts: None,
+                min_context_slot: None,
+                inner_instructions: true,
+            },
+        ) {
+            Ok(result) => {
+                if let Some(err) = result.value.err {
+                    println!("Warning: Transaction simulation failed: {:?}", err);
+                    println!("Using default compute units: {}", initial_compute_units);
+                    initial_compute_units
+                } else if let Some(units_consumed) = result.value.units_consumed {
+                    // Add 10% safety margin
+                    let required_cu = (units_consumed as f64 * 1.1) as u32;
+                    println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
+                        units_consumed, required_cu);
+                    required_cu
+                } else {
+                    println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
+                    initial_compute_units
+                }
+            },
+            Err(err) => {
+                println!("Failed to simulate transaction: {}", err);
+                println!("Using default compute units: {}", initial_compute_units);
+                initial_compute_units
+            }
+        };
+
+        // Create compute budget instruction with dynamic compute units
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+        println!("Setting compute budget: {} CUs", compute_units);
+        
+        // Create transaction with appropriate instructions
         let transaction = Transaction::new_signed_with_payer(
             &[compute_budget_ix, memo_ix, mint_ix],
             Some(&payer.pubkey()),
@@ -176,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match client.send_and_confirm_transaction_with_spinner_and_config(
             &transaction,
             CommitmentConfig::confirmed(),
-            solana_client::rpc_config::RpcSendTransactionConfig {
+            RpcSendTransactionConfig {
                 skip_preflight: true,
                 preflight_commitment: None,
                 encoding: None,
