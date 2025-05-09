@@ -17,6 +17,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use sha2::{Sha256, Digest};
 use serde_json;
+use rand::Rng;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -105,15 +106,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut successful_mints = 0;
     let mut failed_mints = 0;
     let delay = Duration::from_secs(1); // 1 second delay between transactions
+    let mut rng = rand::thread_rng();
 
     for i in 1..=mint_count {
         println!("Processing mint #{}/{}...", i, mint_count);
         
-        // Generate a unique message for each mint to track it
-        let message = format!("Batch mint #{} of {}", i, mint_count);
-        
         // Use a deterministic signature for testing
         let signature = format!("BatchMintSig{}", i);
+        
+        // Generate a random length between 26 and 659 for the message
+        let message_length = rng.gen_range(26..=659);
+        
+        // Generate a unique message for each mint with random padding to achieve target length
+        let base_message = format!("Batch mint #{} of {}", i, mint_count);
+        let padding_length = message_length - base_message.len();
+        let padding = if padding_length > 0 {
+            " ".repeat(padding_length)
+        } else {
+            "".to_string()
+        };
+        let message = format!("{}{}", base_message, padding);
         
         // Build JSON memo
         let memo_json = serde_json::json!({
@@ -125,8 +137,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let memo_text = serde_json::to_string(&memo_json)
             .expect("Failed to serialize JSON");
 
-        // Ensure memo length is at least 69 bytes
-        let memo_text = ensure_min_length(memo_text, 69);
+        // Print memo text length
+        let memo_length = memo_text.as_bytes().len();
+        println!("Memo text length: {} bytes", memo_length);
+        if memo_length < 69 || memo_length > 700 {
+            println!("Warning: Memo length {} is outside target range 69-700 bytes", memo_length);
+        }
         
         // Create process_transfer instruction
         let instruction_data = sighash_result.clone();
@@ -281,35 +297,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-// Function to ensure minimum memo length while preserving JSON format
-fn ensure_min_length(text: String, min_length: usize) -> String {
-    if text.as_bytes().len() >= min_length {
-        return text;
-    }
-    
-    // Parse existing JSON
-    let mut json: serde_json::Value = serde_json::from_str(&text)
-        .expect("Failed to parse JSON");
-    
-    // Get existing message
-    let message = json["message"].as_str().unwrap_or("");
-    
-    // Calculate padding length needed
-    let current_length = text.as_bytes().len();
-    let padding_needed = min_length - current_length;
-    
-    // Create padding with periods
-    let padding = ".".repeat(padding_needed);
-    
-    // Update message field with padding
-    let new_message = format!("{}{}", message, padding);
-    json["message"] = serde_json::Value::String(new_message);
-    
-    // Convert back to string with compact formatting
-    let result = serde_json::to_string(&json)
-        .expect("Failed to serialize JSON");
-    
-    result
 }
