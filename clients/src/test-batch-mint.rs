@@ -39,11 +39,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         200_000
     };
+    
+    // Parse initial balance check delay in seconds (default: 30 seconds)
+    let initial_balance_check_delay_sec = if args.len() > 3 {
+        args[3].parse().unwrap_or(30)
+    } else {
+        30
+    };
+    
+    // Parse max retry count for balance checks (default: 5)
+    let max_balance_check_retries = if args.len() > 4 {
+        args[4].parse().unwrap_or(5)
+    } else {
+        5
+    };
 
     // display input information
     println!("Batch mint configuration:");
     println!("  Number of mints: {}", mint_count);
     println!("  Initial compute units: {}", initial_compute_units);
+    println!("  Initial balance check delay: {} seconds", initial_balance_check_delay_sec);
+    println!("  Max balance check retries: {}", max_balance_check_retries);
     println!();
 
     // Connect to network
@@ -99,13 +115,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     hasher.update(b"global:process_transfer");
     let sighash_result = hasher.finalize()[..8].to_vec();
 
+    // Get initial token balance
+    let initial_balance = match client.get_token_account_balance(&token_account) {
+        Ok(balance) => balance.ui_amount.unwrap_or(0.0),
+        Err(_) => {
+            println!("Warning: Could not get initial token balance. Creating token account...");
+            // 如果需要创建token账户，这里可以添加创建逻辑
+            0.0
+        }
+    };
+    
+    println!("Initial token balance: {} tokens", initial_balance);
+
     // Start batch minting
     println!("\nStarting batch mint test with {} mints", mint_count);
     println!("----------------------------------------\n");
 
     let mut successful_mints = 0;
     let mut failed_mints = 0;
-    let delay = Duration::from_secs(1); // 1 second delay between transactions
+    let mut total_tokens_minted = 0.0;
+    let mut total_compute_units_simulated = 0;
+    let mut compute_units_per_mint = Vec::new();
+    let mut tokens_per_mint = Vec::new();
+    let mut current_balance = initial_balance;
+    let tx_delay = Duration::from_secs(1); // 1 second delay between transactions
     let mut rng = rand::thread_rng();
 
     for i in 1..=mint_count {
@@ -189,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Simulate transaction to determine required compute units
         println!("Simulating transaction to determine required compute units...");
-        let compute_units = match client.simulate_transaction_with_config(
+        let (compute_units, sim_units_consumed) = match client.simulate_transaction_with_config(
             &sim_transaction,
             RpcSimulateTransactionConfig {
                 sig_verify: false,
@@ -205,24 +238,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(err) = result.value.err {
                     println!("Warning: Transaction simulation failed: {:?}", err);
                     println!("Using default compute units: {}", initial_compute_units);
-                    initial_compute_units
+                    (initial_compute_units, None)
                 } else if let Some(units_consumed) = result.value.units_consumed {
                     // Add 10% safety margin
                     let required_cu = (units_consumed as f64 * 1.1) as u32;
                     println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
                         units_consumed, required_cu);
-                    required_cu
+                    (required_cu, Some(units_consumed))
                 } else {
                     println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
-                    initial_compute_units
+                    (initial_compute_units, None)
                 }
             },
             Err(err) => {
                 println!("Failed to simulate transaction: {}", err);
                 println!("Using default compute units: {}", initial_compute_units);
-                initial_compute_units
+                (initial_compute_units, None)
             }
         };
+
+        // Update total compute units if simulation was successful
+        if let Some(units) = sim_units_consumed {
+            total_compute_units_simulated += units;
+            compute_units_per_mint.push((i, units));
+        }
 
         // Create compute budget instruction with dynamic compute units
         let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
@@ -252,10 +291,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 successful_mints += 1;
                 println!("Mint #{} successful: {}", i, sig);
                 
-                // Check current balance periodically
-                if i % 10 == 0 || i == mint_count {
-                    if let Ok(balance) = client.get_token_account_balance(&token_account) {
-                        println!("Current token balance: {} tokens", balance.ui_amount.unwrap());
+                // Use advanced balance checking with exponential backoff
+                let new_balance = wait_for_token_balance_change(
+                    &client, 
+                    &token_account,
+                    current_balance,
+                    initial_balance_check_delay_sec,
+                    max_balance_check_retries
+                );
+                
+                let tokens_minted = new_balance - current_balance;
+                println!("Tokens minted in this transaction: {} tokens", tokens_minted);
+                
+                // If tokens_minted is still 0, warn the user
+                if tokens_minted <= 0.0 {
+                    println!("WARNING: No tokens appear to have been minted despite waiting and retrying.");
+                    println!("This could be due to RPC node delays or issues with the contract.");
+                }
+                
+                // Update totals and tracking
+                total_tokens_minted += tokens_minted;
+                tokens_per_mint.push((i, tokens_minted));
+                
+                // Update current balance for next iteration
+                current_balance = new_balance;
+                
+                // If we have simulation data for this mint, update the compute units per token ratio
+                if let Some(units) = sim_units_consumed {
+                    if tokens_minted > 0.0 {
+                        println!("Compute units per token for this mint: {:.2} CUs/token", 
+                               units as f64 / tokens_minted);
                     }
                 }
             }
@@ -273,21 +338,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Small delay between transactions to avoid rate limiting
         if i < mint_count {
-            sleep(delay);
+            sleep(tx_delay);
         }
     }
+
+    // Calculate SOL costs
+    // 1 CU = 0.0000001 SOL
+    const SOL_PER_COMPUTE_UNIT: f64 = 0.0000001;
+    let total_sol_cost = total_compute_units_simulated as f64 * SOL_PER_COMPUTE_UNIT;
+    
+    let avg_cu_per_mint = if successful_mints > 0 {
+        total_compute_units_simulated as f64 / successful_mints as f64
+    } else {
+        0.0
+    };
+    
+    let avg_sol_per_mint = avg_cu_per_mint * SOL_PER_COMPUTE_UNIT;
+    
+    let avg_cu_per_token = if total_tokens_minted > 0.0 {
+        total_compute_units_simulated as f64 / total_tokens_minted
+    } else {
+        0.0
+    };
+    
+    let avg_sol_per_token = avg_cu_per_token * SOL_PER_COMPUTE_UNIT;
 
     // Print summary
     println!("\n----------------------------------------");
     println!("Batch Mint Test Summary:");
-    println!("Total mints attempted: {}", mint_count);
-    println!("Successful mints: {}", successful_mints);
-    println!("Failed mints: {}", failed_mints);
+    println!("----------------------------------------");
+    println!("1. Total mints attempted: {}", mint_count);
+    println!("   - Successful mints: {}", successful_mints);
+    println!("   - Failed mints: {}", failed_mints);
+    println!("2. Total tokens minted: {:.2} tokens", total_tokens_minted);
+    println!("3. Total simulated compute units: {} CUs", total_compute_units_simulated);
+    println!("   - Equivalent cost in SOL: {:.8} SOL", total_sol_cost);
+    println!("4. Average compute units per mint: {:.2} CUs", avg_cu_per_mint);
+    println!("   - Equivalent cost in SOL: {:.8} SOL", avg_sol_per_mint);
+    println!("5. Average compute units per token: {:.2} CUs", avg_cu_per_token);
+    println!("   - Equivalent cost in SOL: {:.8} SOL", avg_sol_per_token);
+    println!("----------------------------------------");
+
+    // Print detailed token minting results
+    println!("\nDetailed Token Minting Results:");
+    println!("----------------------------------------");
+    for (mint_num, tokens) in &tokens_per_mint {
+        println!("Mint #{}: {:.2} tokens", mint_num, tokens);
+    }
+    println!("----------------------------------------");
+
+    // Print detailed compute unit usage
+    println!("\nDetailed Compute Unit Usage:");
+    println!("----------------------------------------");
+    for (mint_num, units) in &compute_units_per_mint {
+        println!("Mint #{}: {} CUs", mint_num, units);
+    }
     println!("----------------------------------------");
 
     // Check final token balance
     if let Ok(balance) = client.get_token_account_balance(&token_account) {
-        println!("Final token balance: {} tokens", balance.ui_amount.unwrap());
+        let final_balance = balance.ui_amount.unwrap_or(0.0);
+        println!("Final token balance: {} tokens", final_balance);
+        println!("Net change from initial balance: +{:.2} tokens", final_balance - initial_balance);
     }
     
     // Check user profile if it exists
@@ -297,4 +409,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// Advanced function to wait for token balance changes with exponential backoff
+fn wait_for_token_balance_change(
+    client: &RpcClient, 
+    token_account: &Pubkey, 
+    current_balance: f64,
+    initial_delay_seconds: u64,
+    max_retries: u64
+) -> f64 {
+    let mut delay_seconds = initial_delay_seconds;
+    let mut total_wait_time = 0;
+    
+    // Initial wait after transaction confirmation
+    println!("Waiting {} seconds for initial balance check...", delay_seconds);
+    sleep(Duration::from_secs(delay_seconds));
+    total_wait_time += delay_seconds;
+    
+    // Check balance
+    match client.get_token_account_balance(token_account) {
+        Ok(balance) => {
+            let new_balance = balance.ui_amount.unwrap_or(current_balance);
+            
+            // If balance has changed, we're done
+            if new_balance > current_balance {
+                println!("Balance updated after {} seconds", total_wait_time);
+                return new_balance;
+            }
+            
+            // Otherwise, start retrying with exponential backoff
+            println!("No balance change detected, starting retry sequence...");
+            
+            for retry in 1..=max_retries {
+                // Double the delay for each retry (exponential backoff)
+                delay_seconds = std::cmp::min(delay_seconds * 2, 60); // Cap at 60 seconds
+                println!("Retry {}/{}: Waiting {} seconds...", retry, max_retries, delay_seconds);
+                sleep(Duration::from_secs(delay_seconds));
+                total_wait_time += delay_seconds;
+                
+                match client.get_token_account_balance(token_account) {
+                    Ok(balance) => {
+                        let new_balance = balance.ui_amount.unwrap_or(current_balance);
+                        if new_balance > current_balance {
+                            println!("Balance updated after {} seconds and {} retries", total_wait_time, retry);
+                            return new_balance;
+                        }
+                    },
+                    Err(err) => {
+                        println!("Error checking balance on retry {}: {}", retry, err);
+                    }
+                }
+            }
+            
+            println!("Maximum retries ({}) reached. No balance change detected after {} seconds.", 
+                    max_retries, total_wait_time);
+            return current_balance; // Return original balance if no change detected
+        },
+        Err(err) => {
+            println!("Error during initial balance check: {}", err);
+            println!("Returning original balance");
+            return current_balance;
+        }
+    }
 }
