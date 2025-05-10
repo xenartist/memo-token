@@ -1,6 +1,6 @@
 # Memo Token
 
-A Solana program for creating and minting tokens using a Program Derived Address (PDA) as the mint authority.
+X1
 
 ## Overview
 
@@ -29,6 +29,12 @@ cargo install anchor-cli
 ```bash
 anchor build
 ```
+```
+anchor build --program-name memo-token
+```
+```
+anchor build --program-name memo-social
+```
 
 ## Deployment Steps
 
@@ -38,10 +44,22 @@ anchor build
 anchor deploy
 ```
 
+```
+anchor deploy --program-name memo-token
+```
+
+```
+anchor deploy --program-name memo-social
+```
+
 2. Create the token (one-time operation by deployer):
+```bash
+chmod +x clients/src/admin-create-memo-token.sh
+clients/src/admin-create-memo-token.sh
+```
 
 ```bash
-cargo run --bin create_token
+cargo run --bin admin-transfer-memo-token-mint-authority <mint_keypair_path> <program_id>
 ```
 
 Save the output addresses:
@@ -71,9 +89,28 @@ cargo run --bin mint
 ## Architecture
 
 - `lib.rs`: Main program logic with PDA-based mint authority
-- `create_token.rs`: Token creation utility
+- `create-token.rs`: Token creation utility
 - `init.rs`: Token account initialization
 - `mint.rs`: Token minting client
+```
+cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
+``` 
+- `burn.rs`: Token burning client
+
+##### default：add burn_history in memo and set it to "Y"
+```
+cargo run --bin test-single-burn
+```
+
+##### add burn_history in memo and set it to "N"
+```
+cargo run --bin test-single-burn 440000 1 "My message" N
+```
+
+##### not add burn_history in memo
+```
+cargo run --bin test-single-burn 440000 1 "My message" NONE
+```
 
 ## Security
 

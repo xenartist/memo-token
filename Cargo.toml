@@ -1,11 +1,7 @@
 [workspace]
 members = [
-    "programs/*"
-]
-
-exclude = [
-    "clients",
-    "app"
+    "programs/*",
+    "clients"
 ]
 
 resolver = "2"
