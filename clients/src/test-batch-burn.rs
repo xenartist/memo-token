@@ -8,13 +8,16 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
 };
-use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use sha2::{Sha256, Digest};
 use serde_json;
 use rand::Rng;
+
+// Import token-2022 program ID
+use spl_token_2022::id as token_2022_id;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -78,13 +81,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and token address
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("CrfhYtP7XtqFyHTWMyXp25CCzhjhzojngrPCZJ7RarUz")
+    let mint = Pubkey::from_str("MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7")
         .expect("Invalid mint address");
 
     // Get user's token account
-    let token_account = get_associated_token_address(
+    let token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),
         &mint,
+        &token_2022_id(),  // Use token-2022 program ID
     );
 
     // Calculate PDAs
@@ -211,7 +215,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              base_burn_amount, use_random_amount, compute_units)
 }
 
-// extract the burn logic into a separate function, for easy adjustment of the burn count
+// Add this new function after the imports
+fn simulate_transaction(
+    client: &RpcClient,
+    transaction: &Transaction,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    // Simulate the transaction
+    let simulation = client.simulate_transaction(transaction)?;
+    
+    // Get the compute units used from the simulation result
+    if let Some(units) = simulation.value.units_consumed {
+        // Add 10% buffer to the simulated units
+        let units_with_buffer = (units as f64 * 1.1) as u32;
+        Ok(units_with_buffer)
+    } else {
+        Err("Failed to get compute units from simulation".into())
+    }
+}
+
+// Modify the run_burns function to use dynamic compute units
 fn run_burns(
     client: &RpcClient,
     payer: &Keypair,
@@ -225,7 +247,7 @@ fn run_burns(
     burn_count: usize,
     base_burn_amount: u64,
     use_random_amount: bool,
-    compute_units: u32
+    compute_units: u32  // This will now be used as a fallback value
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create random number generator
     let mut rng = rand::thread_rng();
@@ -307,7 +329,7 @@ fn run_burns(
             AccountMeta::new(payer.pubkey(), true),         // user
             AccountMeta::new(mint, false),                  // mint
             AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new_readonly(token_2022_id(), false), // token_program (use token-2022)
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
             AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
             AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
@@ -329,8 +351,32 @@ fn run_burns(
             .get_latest_blockhash()
             .expect("Failed to get recent blockhash");
 
-        // Create transaction
-        let transaction = Transaction::new_signed_with_payer(
+        // Create initial transaction with default compute units for simulation
+        let initial_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+        let mut transaction = Transaction::new_signed_with_payer(
+            &[initial_compute_budget_ix, memo_ix.clone(), burn_ix.clone()],
+            Some(&payer.pubkey()),
+            &[payer],
+            recent_blockhash,
+        );
+
+        // Simulate the transaction to get required compute units
+        let required_units = match simulate_transaction(client, &transaction) {
+            Ok(units) => {
+                println!("Simulated compute units for burn #{}: {}", i, units);
+                units
+            }
+            Err(err) => {
+                println!("Warning: Failed to simulate transaction: {}. Using default compute units: {}", err, compute_units);
+                compute_units
+            }
+        };
+
+        // Create new compute budget instruction with simulated units
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(required_units);
+
+        // Create new transaction with updated compute units
+        transaction = Transaction::new_signed_with_payer(
             &[compute_budget_ix, memo_ix, burn_ix],
             Some(&payer.pubkey()),
             &[payer],
