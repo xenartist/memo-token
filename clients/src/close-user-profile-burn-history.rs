@@ -1,10 +1,14 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient, 
+    rpc_config::RpcSimulateTransactionConfig,
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
     commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
 };
 use std::str::FromStr;
 use std::thread::sleep;
@@ -93,7 +97,7 @@ fn main() {
             return;
         }
         
-        sleep(Duration::from_secs(2)); // 等待状态更新
+        sleep(Duration::from_secs(2)); // Wait for state update
         iteration += 1;
     }
     
@@ -126,6 +130,9 @@ fn close_burn_history(
     burn_history_pda: &Pubkey,
     close_discriminator: &Vec<u8>
 ) -> bool {
+    // Default compute units as fallback
+    let initial_compute_units = 200_000;
+    
     for attempt in 1..=3 {
         println!("Attempt {}/3 to close burn history...", attempt);
         
@@ -154,9 +161,58 @@ fn close_burn_history(
             data: close_discriminator.clone(),
         };
         
-        // build transaction
+        // Create transaction without compute budget instruction for simulation
+        let sim_transaction = Transaction::new_signed_with_payer(
+            &[instruction.clone()],
+            Some(&wallet.pubkey()),
+            &[wallet],
+            recent_blockhash,
+        );
+        
+        // Simulate transaction to determine required compute units
+        println!("Simulating transaction to determine required compute units...");
+        let compute_units = match client.simulate_transaction_with_config(
+            &sim_transaction,
+            RpcSimulateTransactionConfig {
+                sig_verify: false,
+                replace_recent_blockhash: false,
+                commitment: Some(CommitmentConfig::confirmed()),
+                encoding: None,
+                accounts: None,
+                min_context_slot: None,
+                inner_instructions: true,
+            },
+        ) {
+            Ok(result) => {
+                if let Some(err) = result.value.err {
+                    println!("Warning: Transaction simulation failed: {:?}", err);
+                    println!("Using default compute units: {}", initial_compute_units);
+                    initial_compute_units
+                } else if let Some(units_consumed) = result.value.units_consumed {
+                    // Add 10% safety margin
+                    let required_cu = (units_consumed as f64 * 1.1) as u32;
+                    println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
+                        units_consumed, required_cu);
+                    required_cu
+                } else {
+                    println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
+                    initial_compute_units
+                }
+            },
+            Err(err) => {
+                println!("Failed to simulate transaction: {}", err);
+                println!("Using default compute units: {}", initial_compute_units);
+                initial_compute_units
+            }
+        };
+        
+        // Create compute budget instruction with dynamically calculated CU
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+        println!("Setting compute budget: {} CUs", compute_units);
+        
+        // build transaction with compute budget instruction
         let transaction = Transaction::new_signed_with_payer(
-            &[instruction],
+            &[compute_budget_ix, instruction],
             Some(&wallet.pubkey()),
             &[wallet],
             recent_blockhash,
