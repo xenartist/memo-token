@@ -105,8 +105,8 @@ pub struct UserBurnHistory {
 #[account]
 #[derive(Default)]
 pub struct GlobalTopBurnIndex {
-    pub top_burn_shard_total_count: u64,     // Total count of allocated shards
-    pub top_burn_shard_current_index: u64,   // Current index with available space
+    pub top_burn_shard_total_count: u64,       // Total count of allocated shards
+    pub top_burn_shard_current_index: Option<u64>,  // Current index with available space, None if no shards exist
 }
 
 #[program]
@@ -397,12 +397,8 @@ pub mod memo_token {
             return Err(ErrorCode::CounterOverflow.into());
         }
         
-        // If this is the first shard or current index is pointing to a full shard,
-        // update the current index to point to this new shard
-        if global_top_burn_index.top_burn_shard_current_index == 0 || 
-           global_top_burn_index.top_burn_shard_current_index < top_burn_shard.index {
-            global_top_burn_index.top_burn_shard_current_index = top_burn_shard.index;
-        }
+        // Always update the current index to point to this new shard, since it's empty
+        global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
         
         // Optional: Reward the user with tokens for creating a new shard
         if ctx.accounts.user_token_account.is_some() && 
@@ -450,12 +446,17 @@ pub mod memo_token {
         let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
         let top_burn_shard = &ctx.accounts.top_burn_shard;
         
-        // If this is the current index, we need to update it
-        if global_top_burn_index.top_burn_shard_current_index == top_burn_shard.index {
-            // Find the highest index that still exists and is not full
-            // This would require more complex logic in a real implementation
-            // For simplicity, we're just setting it to 0 here
-            global_top_burn_index.top_burn_shard_current_index = 0;
+        // If the current index points to this shard, we need to update it
+        if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+            if current_index == top_burn_shard.index {
+                // If this is the only shard, set to None
+                if global_top_burn_index.top_burn_shard_total_count <= 1 {
+                    global_top_burn_index.top_burn_shard_current_index = None;
+                } else {
+                    // Otherwise, simply set to 0 (should be more intelligently finding the next available shard in a real implementation)
+                    global_top_burn_index.top_burn_shard_current_index = Some(0);
+                }
+            }
         }
         
         msg!("Closing top burn shard with index {}", top_burn_shard.index);
@@ -672,7 +673,7 @@ pub mod memo_token {
             payer = payer,
             space = 8 + // discriminator
                    8 + // top_burn_shard_total_count
-                   8,  // top_burn_shard_current_index
+                   9,  // top_burn_shard_current_index (Option<u64>: 1 byte for Option tag + 8 bytes for u64)
             seeds = [b"global_top_burn_index"],
             bump
         )]
@@ -690,7 +691,7 @@ pub mod memo_token {
         
         let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
         global_top_burn_index.top_burn_shard_total_count = 0;
-        global_top_burn_index.top_burn_shard_current_index = 0;
+        global_top_burn_index.top_burn_shard_current_index = None; // initialize to None
         
         msg!("Global top burn index initialized");
         Ok(())

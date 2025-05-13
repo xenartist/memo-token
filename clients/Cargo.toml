@@ -40,6 +40,10 @@ name = "check-global-burn-index"
 path = "src/check-global-burn-index.rs"
 
 [[bin]]
+name = "check-global-top-burn-index"
+path = "src/check-global-top-burn-index.rs"
+
+[[bin]]
 name = "check-latest-burn-shard"
 path = "src/check-latest-burn-shard.rs"
 
