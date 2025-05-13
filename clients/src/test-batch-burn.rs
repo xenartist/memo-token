@@ -92,19 +92,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Calculate PDAs
-    let (global_burn_index_pda, _) = Pubkey::find_program_address(
-        &[b"global_burn_index"],
+    let (global_top_burn_index_pda, _) = Pubkey::find_program_address(
+        &[b"global_top_burn_index"],
         &program_id,
     );
     
     let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
         &[b"latest_burn_shard"],
-        &program_id,
-    );
-    
-    // calculate top_burn_shard_pda
-    let (top_burn_shard_pda, _) = Pubkey::find_program_address(
-        &[b"top_burn_shard"],
         &program_id,
     );
     
@@ -146,22 +140,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // check if top burn shard exists
-    match client.get_account(&top_burn_shard_pda) {
+    // check if global top burn index exists
+    match client.get_account(&global_top_burn_index_pda) {
         Ok(_) => {
-            println!("Found top burn shard");
+            println!("Found global top burn index");
         },
         Err(_) => {
-            println!("Warning: Top burn shard does not exist.");
-            println!("Burns will be recorded in latest burn shard, but not in top burn shard.");
-            println!("To enable top burn tracking, initialize the shard using init-top-burn-shard.");
-            println!("Continue anyway? (y/n)");
-            
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                return Ok(());
-            }
+            println!("Warning: Global top burn index does not exist.");
+            println!("Burns with amount 420+ tokens won't be tracked in top burn shards.");
+            println!("Initialize global top burn index using init-global-top-burn-index.");
         }
     }
 
@@ -195,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Reducing burn count from {} to {}", old_burn_count, adjusted_burn_count);
                 // use this new variable instead of burn_count
                 return run_burns(&client, &payer, program_id, mint, token_account, 
-                                latest_burn_shard_pda, top_burn_shard_pda, user_profile_pda, 
+                                latest_burn_shard_pda, global_top_burn_index_pda, user_profile_pda, 
                                 user_profile_exists, adjusted_burn_count, 
                                 base_burn_amount, use_random_amount, compute_units);
             } else {
@@ -210,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // perform the burn operation
     run_burns(&client, &payer, program_id, mint, token_account, 
-             latest_burn_shard_pda, top_burn_shard_pda, user_profile_pda,
+             latest_burn_shard_pda, global_top_burn_index_pda, user_profile_pda,
              user_profile_exists, burn_count, 
              base_burn_amount, use_random_amount, compute_units)
 }
@@ -241,7 +228,7 @@ fn run_burns(
     mint: Pubkey,
     token_account: Pubkey,
     latest_burn_shard_pda: Pubkey,
-    top_burn_shard_pda: Pubkey,
+    global_top_burn_index_pda: Pubkey,
     user_profile_pda: Pubkey,
     user_profile_exists: bool,
     burn_count: usize,
@@ -324,20 +311,85 @@ fn run_burns(
             &[&payer.pubkey()],
         );
         
-        // Create burn instruction with accounts
+        // when the burn amount is greater than 420 tokens, get the latest primary and backup shard
+        // especially for burns with amount greater than 420 tokens, they may fill the shard and update the index
+        let using_top_burn = burn_amount >= 420 * 1_000_000_000;
+        let mut primary_shard_pda = None;
+        let mut backup_shard_pda = None;
+        
+        if using_top_burn {
+            // get the latest GlobalTopBurnIndex state
+            match client.get_account(&global_top_burn_index_pda) {
+                Ok(account) => {
+                    if account.data.len() >= 17 {
+                        let data = &account.data[8..]; // 跳过discriminator
+                        
+                        // parse total_count
+                        let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+                        
+                        // parse current_index
+                        let option_tag = data[8];
+                        
+                        if option_tag == 1 && data.len() >= 17 {
+                            let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
+                            
+                            // calculate the primary shard PDA
+                            let (primary_pda, _) = Pubkey::find_program_address(
+                                &[b"top_burn_shard", &current_index.to_le_bytes()],
+                                &program_id,
+                            );
+                            primary_shard_pda = Some(primary_pda);
+                            
+                            // if there is a next shard, calculate the backup shard PDA
+                            if current_index + 1 < total_count {
+                                let next_index = current_index + 1;
+                                let (backup_pda, _) = Pubkey::find_program_address(
+                                    &[b"top_burn_shard", &next_index.to_le_bytes()],
+                                    &program_id,
+                                );
+                                backup_shard_pda = Some(backup_pda);
+                            }
+                        }
+                    }
+                },
+                Err(_) => {
+                    // if the global index cannot be obtained, continue execution but do not use top burn shard
+                }
+            }
+            
+            if primary_shard_pda.is_some() {
+                println!("Burn #{} amount {} tokens qualifies for top burn shard", 
+                        i, burn_amount / 1_000_000_000);
+            }
+        }
+        
+        // create the account list for the burn instruction
         let mut accounts = vec![
             AccountMeta::new(payer.pubkey(), true),         // user
             AccountMeta::new(mint, false),                  // mint
             AccountMeta::new(token_account, false),         // token_account
-            AccountMeta::new_readonly(token_2022_id(), false), // token_program (use token-2022)
+            AccountMeta::new_readonly(token_2022_id(), false), // token_program
             AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
-            AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
-            AccountMeta::new(top_burn_shard_pda, false),    // top burn shard
+            AccountMeta::new(latest_burn_shard_pda, false), // latest_burn_shard
         ];
         
-        // Add user profile to accounts if it exists
+        // add global_top_burn_index
+        if client.get_account(&global_top_burn_index_pda).is_ok() {
+            accounts.push(AccountMeta::new(global_top_burn_index_pda, false));
+        }
+        
+        // add user_profile if it exists
         if user_profile_exists {
-            accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
+            accounts.push(AccountMeta::new(user_profile_pda, false));
+        }
+        
+        // add primary and backup shard if available
+        if let Some(primary_pda) = primary_shard_pda {
+            accounts.push(AccountMeta::new(primary_pda, false));
+        }
+        
+        if let Some(backup_pda) = backup_shard_pda {
+            accounts.push(AccountMeta::new(backup_pda, false));
         }
         
         let burn_ix = Instruction::new_with_bytes(
@@ -470,19 +522,6 @@ fn run_burns(
         },
         Err(err) => {
             println!("Failed to get latest burn shard account: {}", err);
-        }
-    }
-    
-    // check if top burn shard exists
-    println!("\nChecking top burn shard state...");
-    match client.get_account(&top_burn_shard_pda) {
-        Ok(account) => {
-            println!("Top burn shard has {} bytes of data", account.data.len());
-            println!("To view the leaderboard, run: cargo run --bin check-top-burn-shard");
-            println!("The top burn shard should contain the highest amount burns in descending order");
-        },
-        Err(err) => {
-            println!("Failed to get top burn shard account: {}", err);
         }
     }
     

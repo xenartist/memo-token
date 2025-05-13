@@ -359,31 +359,63 @@ pub mod memo_token {
             msg!("Added new burn record to latest burn shard");
         }
         
-        // update top burn shard
-        if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
-            // if current shard is full, we need to try to update global_top_burn_index's current_index
-            if top_burn_shard.is_full() && record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
-                if let Some(global_top_burn_index) = &mut ctx.accounts.global_top_burn_index {
-                    if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
-                        // if current shard is the shard that current_index points to
-                        if current_index == top_burn_shard.index {
-                            // check if there is a next shard available
-                            if current_index + 1 < global_top_burn_index.top_burn_shard_total_count {
-                                // update current_index to the next shard
-                                global_top_burn_index.top_burn_shard_current_index = Some(current_index + 1);
-                                msg!("Updated current index to {} as current shard is full", current_index + 1);
-                            } else {
-                                msg!("Current shard is full but no next shard available");
+        // proces top burn shards - only process burn records greater than threshold
+        if record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
+            let mut record_added = false;
+            
+            // try to write to primary shard
+            if let Some(primary_shard) = &mut ctx.accounts.primary_top_burn_shard {
+                if !primary_shard.is_full() {
+                    if primary_shard.add_record(record.clone()) {
+                        record_added = true;
+                        msg!("Added new burn record to primary top burn shard with index {}", primary_shard.index);
+                    }
+                } else {
+                    msg!("Primary top burn shard with index {} is full", primary_shard.index);
+                    
+                    // primary shard is full, try to update global index to backup shard
+                    if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
+                        if let Some(current_index) = global_index.top_burn_shard_current_index {
+                            // if primary shard is the shard that current_index points to
+                            if current_index == primary_shard.index {
+                                // check if backup shard is available
+                                if let Some(backup_shard) = &ctx.accounts.backup_top_burn_shard {
+                                    // update global index to point to backup shard
+                                    global_index.top_burn_shard_current_index = Some(backup_shard.index);
+                                    msg!("Updated global index to point to backup shard with index {}", backup_shard.index);
+                                }
                             }
                         }
                     }
                 }
-                msg!("Top burn shard with index {} is full", top_burn_shard.index);
-            } else if top_burn_shard.add_record(record) {
-                msg!("Added new burn record to top burn shard with index {}", top_burn_shard.index);
-            } else {
-                msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
             }
+            
+            // if primary shard cannot add record, try backup shard
+            if !record_added {
+                if let Some(backup_shard) = &mut ctx.accounts.backup_top_burn_shard {
+                    if !backup_shard.is_full() {
+                        if backup_shard.add_record(record.clone()) {
+                            record_added = true;
+                            msg!("Added new burn record to backup top burn shard with index {}", backup_shard.index);
+                            
+                            // update global index to point to backup shard
+                            if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
+                                global_index.top_burn_shard_current_index = Some(backup_shard.index);
+                                msg!("Updated global index to point to backup shard with index {}", backup_shard.index);
+                            }
+                        }
+                    } else {
+                        msg!("Backup top burn shard with index {} is also full", backup_shard.index);
+                    }
+                }
+            }
+            
+            // if all shards are full, emit warning
+            if !record_added {
+                msg!("All provided top burn shards are full. This burn record exceeds threshold but couldn't be stored.");
+            }
+        } else {
+            msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
         }
 
         Ok(())
@@ -827,10 +859,6 @@ pub struct ProcessBurn<'info> {
     #[account(mut)]
     pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
     
-    /// Top burn shard (optional)
-    #[account(mut)]
-    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
-    
     /// Global top burn index (optional)
     #[account(mut)]
     pub global_top_burn_index: Option<Account<'info, GlobalTopBurnIndex>>,
@@ -842,6 +870,15 @@ pub struct ProcessBurn<'info> {
         bump,
     )]
     pub user_profile: Option<Account<'info, UserProfile>>,
+    
+    // support multiple candidate top burn shards
+    /// Primary top burn shard (optional) - current shard
+    #[account(mut)]
+    pub primary_top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    
+    /// Backup top burn shard (optional) - backup shard
+    #[account(mut)]
+    pub backup_top_burn_shard: Option<Account<'info, TopBurnShard>>,
 }
 
 #[derive(Accounts)]
