@@ -59,8 +59,9 @@ impl LatestBurnShard {
 #[account]
 #[derive(Default)]
 pub struct TopBurnShard {
-    pub current_index: u8,    // current index
-    pub records: Vec<BurnRecord>, // burn records
+    pub index: u64,           // Index of this shard in the global index
+    pub creator: Pubkey,      // Creator's public key
+    pub records: Vec<BurnRecord>, // Burn records
 }
 
 impl TopBurnShard {
@@ -76,18 +77,19 @@ impl TopBurnShard {
             return false;
         }
 
-        // Add record using circular buffer logic
+        // Only add if there's still space
         if self.records.len() < Self::MAX_RECORDS {
             self.records.push(record);
+            msg!("Added record to top burn shard at index {}", self.index);
+            true
         } else {
-            self.records[self.current_index as usize] = record;
+            msg!("Top burn shard at index {} is full", self.index);
+            false
         }
-        
-        // Update current_index
-        self.current_index = ((self.current_index as usize + 1) % Self::MAX_RECORDS) as u8;
-        
-        msg!("Added record to top burn shard at index {}", self.current_index);
-        true
+    }
+    
+    pub fn is_full(&self) -> bool {
+        self.records.len() >= Self::MAX_RECORDS
     }
 }
 
@@ -111,6 +113,14 @@ pub struct UserBurnHistory {
     pub owner: Pubkey,           // 32 bytes - user pubkey
     pub index: u64,              // 8 bytes - history index
     pub signatures: Vec<String>, // 4 + (92 * 100) bytes - max 100 signatures
+}
+
+// First, add the new GlobalTopBurnIndex structure
+#[account]
+#[derive(Default)]
+pub struct GlobalTopBurnIndex {
+    pub top_burn_shard_total_count: u64,     // Total count of allocated shards
+    pub top_burn_shard_current_index: u64,   // Current index with available space
 }
 
 #[program]
@@ -171,7 +181,7 @@ pub mod memo_token {
         msg!("User profile initialized for user: {}", ctx.accounts.user.key());
         Ok(())
     }
-    
+
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
@@ -419,38 +429,85 @@ pub mod memo_token {
 
     // initialize top burn shard
     pub fn initialize_top_burn_shard(ctx: Context<InitializeTopBurnShard>) -> Result<()> {
-        // check if caller is admin
-        if ctx.accounts.payer.key().to_string() != ADMIN_PUBKEY {
-            return Err(ErrorCode::UnauthorizedAdmin.into());
+        // Initialize shard
+        let top_burn_shard = &mut ctx.accounts.top_burn_shard;
+        let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
+        
+        // Set the shard index to the current total count
+        top_burn_shard.index = global_top_burn_index.top_burn_shard_total_count;
+        // Set the creator to the user's public key
+        top_burn_shard.creator = ctx.accounts.user.key();
+        top_burn_shard.records = Vec::new();
+        
+        // Update the global index with overflow check
+        if let Some(new_count) = global_top_burn_index.top_burn_shard_total_count.checked_add(1) {
+            global_top_burn_index.top_burn_shard_total_count = new_count;
+        } else {
+            return Err(ErrorCode::CounterOverflow.into());
         }
-
-        // initialize shard
-        let burn_shard = &mut ctx.accounts.top_burn_shard;
-        burn_shard.current_index = 0;
-        burn_shard.records = Vec::new();
-
-        // update global burn index
-        let burn_index = &mut ctx.accounts.global_burn_index;
-        burn_index.shard_count += 1;
-        burn_index.shards.push(ShardInfo {
-            pubkey: ctx.accounts.top_burn_shard.key(),
-        });
-
-        msg!("Top burn shard initialized");
+        
+        // If this is the first shard or current index is pointing to a full shard,
+        // update the current index to point to this new shard
+        if global_top_burn_index.top_burn_shard_current_index == 0 || 
+           global_top_burn_index.top_burn_shard_current_index < top_burn_shard.index {
+            global_top_burn_index.top_burn_shard_current_index = top_burn_shard.index;
+        }
+        
+        // Optional: Reward the user with tokens for creating a new shard
+        if ctx.accounts.user_token_account.is_some() && 
+           ctx.accounts.mint.is_some() && 
+           ctx.accounts.mint_authority.is_some() && 
+           ctx.accounts.token_program.is_some() {
+            
+            // Get PDA and bump
+            let (mint_authority, bump) = Pubkey::find_program_address(
+                &[b"mint_authority"],
+                ctx.program_id
+            );
+            
+            // Verify PDA
+            if mint_authority != ctx.accounts.mint_authority.as_ref().unwrap().key() {
+                return Err(ProgramError::InvalidSeeds.into());
+            }
+            
+            // Reward amount (e.g., 10 tokens)
+            let reward_amount = 10 * 1_000_000_000;
+            
+            // Mint reward tokens
+            token_2022::mint_to(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.as_ref().unwrap().to_account_info(),
+                    token_2022::MintTo {
+                        mint: ctx.accounts.mint.as_ref().unwrap().to_account_info(),
+                        to: ctx.accounts.user_token_account.as_ref().unwrap().to_account_info(),
+                        authority: ctx.accounts.mint_authority.as_ref().unwrap().to_account_info(),
+                    },
+                    &[&[b"mint_authority".as_ref(), &[bump]]]
+                ),
+                reward_amount
+            )?;
+            
+            msg!("Rewarded user with {} tokens for creating top burn shard", reward_amount / 1_000_000_000);
+        }
+        
+        msg!("Top burn shard initialized with index {} by creator {}", top_burn_shard.index, top_burn_shard.creator);
         Ok(())
     }
 
     // Close top burn shard account
     pub fn close_top_burn_shard(ctx: Context<CloseTopBurnShard>) -> Result<()> {
-        // Authority check is handled in the account validation
-        // Remove shard info from index
-        let burn_index = &mut ctx.accounts.global_burn_index;
-        if let Some(pos) = burn_index.shards.iter().position(|x| x.pubkey == ctx.accounts.top_burn_shard.key()) {
-            burn_index.shards.remove(pos);
-            burn_index.shard_count -= 1;
+        let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
+        let top_burn_shard = &ctx.accounts.top_burn_shard;
+        
+        // If this is the current index, we need to update it
+        if global_top_burn_index.top_burn_shard_current_index == top_burn_shard.index {
+            // Find the highest index that still exists and is not full
+            // This would require more complex logic in a real implementation
+            // For simplicity, we're just setting it to 0 here
+            global_top_burn_index.top_burn_shard_current_index = 0;
         }
         
-        msg!("Closing top burn shard account");
+        msg!("Closing top burn shard with index {}", top_burn_shard.index);
         Ok(())
     }
 
@@ -477,7 +534,7 @@ pub mod memo_token {
             },
             Some(latest_index) => {
                 latest_index + 1
-            }
+                }
         };
         
         // initialize burn history
@@ -651,6 +708,66 @@ pub mod memo_token {
         msg!("Added burn signature to history index: {}", burn_history.index);
 
         Ok(())
+    }
+
+    // InitializeGlobalBurnIndex
+    #[derive(Accounts)]
+    pub struct InitializeGlobalTopBurnIndex<'info> {
+        #[account(mut)]
+        pub payer: Signer<'info>,
+        
+        #[account(
+            init,
+            payer = payer,
+            space = 8 + // discriminator
+                   8 + // top_burn_shard_total_count
+                   8,  // top_burn_shard_current_index
+            seeds = [b"global_top_burn_index"],
+            bump
+        )]
+        pub global_top_burn_index: Account<'info, GlobalTopBurnIndex>,
+        
+        pub system_program: Program<'info, System>,
+    }
+
+    // initialize global top burn index
+    pub fn initialize_global_top_burn_index(ctx: Context<InitializeGlobalTopBurnIndex>) -> Result<()> {
+        // check if caller is admin
+        if ctx.accounts.payer.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+        
+        let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
+        global_top_burn_index.top_burn_shard_total_count = 0;
+        global_top_burn_index.top_burn_shard_current_index = 0;
+        
+        msg!("Global top burn index initialized");
+        Ok(())
+    }
+
+    // close global top burn index
+    pub fn close_global_top_burn_index(ctx: Context<CloseGlobalTopBurnIndex>) -> Result<()> {
+        // Authority check is handled in the account validation
+        
+        msg!("Closing global top burn index account");
+        Ok(())
+    }
+
+    // close global top burn index
+    #[derive(Accounts)]
+    pub struct CloseGlobalTopBurnIndex<'info> {
+        #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
+        pub recipient: Signer<'info>,
+        
+        #[account(
+            mut,
+            seeds = [b"global_top_burn_index"],
+            bump,
+            close = recipient
+        )]
+        pub global_top_burn_index: Account<'info, GlobalTopBurnIndex>,
+        
+        pub system_program: Program<'info, System>,
     }
 }
 
@@ -905,44 +1022,69 @@ pub struct CloseLatestBurnShard<'info> {
 #[derive(Accounts)]
 pub struct InitializeTopBurnShard<'info> {
     #[account(mut)]
-    pub payer: Signer<'info>,
+    pub user: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [b"global_burn_index"],
+        seeds = [b"global_top_burn_index"],
         bump
     )]
-    pub global_burn_index: Account<'info, GlobalBurnIndex>,
+    pub global_top_burn_index: Account<'info, GlobalTopBurnIndex>,
     
     #[account(
         init,
-        payer = payer,
+        payer = user,
         space = 8 + // discriminator
+               8 + // index
+               32 + // creator (Pubkey is 32 bytes)
                4 + // vec len
                (69 * (32 + 88 + 8 + 8 + 8)), // 69 records
-        seeds = [b"top_burn_shard"],
+        seeds = [
+            b"top_burn_shard", 
+            global_top_burn_index.top_burn_shard_total_count.to_le_bytes().as_ref()
+        ],
         bump
     )]
     pub top_burn_shard: Account<'info, TopBurnShard>,
+    
+    // Optional: Token account for rewards
+    #[account(mut)]
+    pub user_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
+    
+    // Optional: Mint account for rewards
+    #[account(mut)]
+    pub mint: Option<InterfaceAccount<'info, Mint>>,
+    
+    // Optional: Mint authority for rewards
+    /// CHECK: PDA as mint authority
+    pub mint_authority: Option<AccountInfo<'info>>,
+    
+    // Optional: Token program for rewards
+    pub token_program: Option<Program<'info, Token2022>>,
     
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct CloseTopBurnShard<'info> {
-    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
-    pub recipient: Signer<'info>,
+    #[account(mut)]
+    pub user: Signer<'info>,
     
     #[account(
         mut,
-        seeds = [b"global_burn_index"],
+        seeds = [b"global_top_burn_index"],
         bump
     )]
-    pub global_burn_index: Account<'info, GlobalBurnIndex>,
+    pub global_top_burn_index: Account<'info, GlobalTopBurnIndex>,
     
     #[account(
         mut,
-        close = recipient
+        seeds = [
+            b"top_burn_shard", 
+            top_burn_shard.index.to_le_bytes().as_ref()
+        ],
+        bump,
+        close = user
     )]
     pub top_burn_shard: Account<'info, TopBurnShard>,
     
@@ -1038,7 +1180,7 @@ pub struct CloseUserBurnHistory<'info> {
     #[account(
         mut,
         seeds = [
-            b"burn_history", 
+            b"burn_history",
             user.key().as_ref(),
             &user_profile.burn_history_index.unwrap_or(0).to_le_bytes()
         ],
@@ -1094,4 +1236,7 @@ pub enum ErrorCode {
 
     #[msg("Burn history account is required for recording burn history")]
     BurnHistoryRequired,
+
+    #[msg("Counter overflow: maximum number of shards reached")]
+    CounterOverflow,
 }

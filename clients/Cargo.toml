@@ -12,6 +12,10 @@ name = "init-global-burn-index"
 path = "src/init-global-burn-index.rs"
 
 [[bin]]
+name = "init-global-top-burn-index"
+path = "src/init-global-top-burn-index.rs"
+
+[[bin]]
 name = "init-latest-burn-shard"
 path = "src/init-latest-burn-shard.rs"
 
