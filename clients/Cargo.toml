@@ -64,6 +64,10 @@ name = "close-global-burn-index"
 path = "src/close-global-burn-index.rs"
 
 [[bin]]
+name = "close-global-top-burn-index"
+path = "src/close-global-top-burn-index.rs"
+
+[[bin]]
 name = "close-latest-burn-shard"
 path = "src/close-latest-burn-shard.rs"
 
