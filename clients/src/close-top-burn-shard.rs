@@ -1,6 +1,6 @@
 use solana_client::{
     rpc_client::RpcClient,
-    rpc_config::RpcSimulateTransactionConfig,
+    rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
 };
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -9,9 +9,36 @@ use solana_sdk::{
     transaction::Transaction,
     system_program,
     commitment_config::CommitmentConfig,
-    compute_budget::ComputeBudgetInstruction,
+    compute_budget,
 };
-use std::str::FromStr;
+use std::{str::FromStr, thread::sleep, time::Duration};
+use borsh::{BorshDeserialize, BorshSerialize};
+
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+#[repr(C)]
+struct OptionU64 {
+    tag: u8,
+    value: Option<u64>,
+}
+
+impl OptionU64 {
+    fn from_bytes(data: &[u8]) -> Self {
+        let tag = data[0];
+        if tag == 0 {
+            OptionU64 { tag: 0, value: None }
+        } else {
+            let value = u64::from_le_bytes(data[1..9].try_into().unwrap());
+            OptionU64 { tag: 1, value: Some(value) }
+        }
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+#[repr(C)]
+struct GlobalTopBurnIndex {
+    top_burn_shard_total_count: u64,
+    top_burn_shard_current_index: OptionU64,
+}
 
 fn main() {
     // Connect to network
@@ -19,159 +46,173 @@ fn main() {
     let client = RpcClient::new(rpc_url);
 
     // Load wallet
-    let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
-    ).expect("Failed to read keypair file");
+    let payer = read_keypair_file(shellexpand::tilde("~/.config/solana/id.json").to_string())
+        .expect("Failed to read keypair file");
 
-    // Add admin wallet verification logic
-    // Check admin pubkey
-    let admin_pubkey = Pubkey::from_str("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn")
-        .expect("Invalid admin pubkey string");
-
-    // Check if current wallet matches admin pubkey
-    if payer.pubkey() != admin_pubkey {
-        println!("Warning: Current wallet is not the admin wallet.");
-        println!("Current wallet: {}", payer.pubkey());
-        println!("Admin pubkey: {}", admin_pubkey);
-        println!("Continue? (y/n)");
-        
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).expect("Failed to read input");
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Operation cancelled");
-            return;
-        }
-    } else {
-        println!("Confirmed: Current wallet is the admin wallet");
-    }
+    // Check payer balance
+    let balance = client
+        .get_balance(&payer.pubkey())
+        .expect("Failed to get payer balance");
+    println!("Payer balance: {} SOL", balance as f64 / 1_000_000_000.0);
 
     // Program ID
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
     // Calculate PDAs
-    let (global_burn_index_pda, _) = Pubkey::find_program_address(&[b"global_burn_index"], &program_id);
-    let (top_burn_shard_pda, _bump) = Pubkey::find_program_address(
-        &[b"top_burn_shard"],
-        &program_id,
+    let (global_top_burn_index_pda, _) = Pubkey::find_program_address(
+        &[b"global_top_burn_index"], 
+        &program_id
     );
 
-    println!("Global Burn Index PDA: {}", global_burn_index_pda);
-    println!("Top Burn Shard PDA to close: {}", top_burn_shard_pda);
+    println!("Global Top Burn Index PDA: {}", global_top_burn_index_pda);
 
-    // Create instruction
-    let accounts = vec![
-        AccountMeta::new(payer.pubkey(), true),      // recipient (writable, signer)
-        AccountMeta::new(global_burn_index_pda, false),    // global_burn_index account (writable)
-        AccountMeta::new(top_burn_shard_pda, false),    // top_burn_shard account (writable)
-        AccountMeta::new_readonly(system_program::id(), false), // system program
-    ];
-
-    // Prepare instruction data - Discriminator for 'close_top_burn_shard'
-    // Note: You'll need to replace this with the actual discriminator from your compiled program
-    let data = vec![252,203,86,232,209,69,97,14]; 
-
-    let instruction = Instruction {
-        program_id,
-        accounts,
-        data,
+    // Get global top burn index account
+    let global_top_burn_index_account = match client.get_account(&global_top_burn_index_pda) {
+        Ok(account) => account,
+        Err(err) => {
+            println!("Error fetching global top burn index account: {}", err);
+            return;
+        }
     };
 
-    // Default compute units as fallback
-    let initial_compute_units = 200_000;
+    // Parse global top burn index data
+    if global_top_burn_index_account.data.len() < 17 {
+        println!("Global top burn index account data is too small");
+        return;
+    }
 
-    // Get recent blockhash
+    // Skip the 8-byte discriminator
+    let data = &global_top_burn_index_account.data[8..];
+    let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let current_index_option = OptionU64::from_bytes(&data[8..]);
+
+    println!("Total top burn shard count: {}", total_count);
+    println!("Current top burn shard index: {:?}", current_index_option.value);
+
+    if total_count == 0 {
+        println!("No top burn shards to close");
+        return;
+    }
+
+    // Get recent blockhash for all transactions
     let recent_blockhash = client
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // Create transaction without compute budget instruction for simulation
-    let sim_transaction = Transaction::new_signed_with_payer(
-        &[instruction.clone()],
-        Some(&payer.pubkey()),
-        &[&payer],
-        recent_blockhash,
-    );
+    // Default compute units
+    let compute_units = 200_000;
 
-    // Simulate transaction to determine required compute units
-    println!("Simulating transaction to determine required compute units...");
-    let compute_units = match client.simulate_transaction_with_config(
-        &sim_transaction,
-        RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: false,
-            commitment: Some(CommitmentConfig::confirmed()),
-            encoding: None,
-            accounts: None,
-            min_context_slot: None,
-            inner_instructions: true,
-        },
-    ) {
-        Ok(result) => {
-            if let Some(err) = result.value.err {
-                println!("Warning: Transaction simulation failed: {:?}", err);
-                println!("Using default compute units: {}", initial_compute_units);
-                initial_compute_units
-            } else if let Some(units_consumed) = result.value.units_consumed {
-                // Add 10% safety margin
-                let required_cu = (units_consumed as f64 * 1.1) as u32;
-                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
-                    units_consumed, required_cu);
-                required_cu
-            } else {
-                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
-                initial_compute_units
+    // Close top burn shards from newest to oldest
+    for i in (0..total_count).rev() {
+        let (top_burn_shard_pda, _) = Pubkey::find_program_address(
+            &[b"top_burn_shard", &i.to_le_bytes()],
+            &program_id
+        );
+
+        println!("\nProcessing top burn shard with index {}", i);
+        println!("PDA address: {}", top_burn_shard_pda);
+
+        // Check if the account exists
+        match client.get_account(&top_burn_shard_pda) {
+            Ok(account) => {
+                println!("Shard exists, preparing to close");
+                // Prepare close instruction
+                let accounts = vec![
+                    AccountMeta::new(payer.pubkey(), true),
+                    AccountMeta::new(global_top_burn_index_pda, false),
+                    AccountMeta::new(top_burn_shard_pda, false),
+                    AccountMeta::new_readonly(system_program::id(), false),
+                ];
+
+                // Prepare instruction data - Discriminator for 'close_top_burn_shard'
+                let data = vec![252, 203, 86, 232, 209, 69, 97, 14]; // Replace with the actual discriminator from your IDL
+
+                let close_instruction = Instruction {
+                    program_id,
+                    accounts,
+                    data,
+                };
+
+                // Create the compute budget instruction inside the loop
+                let compute_budget_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+
+                // Create transaction
+                let transaction = Transaction::new_signed_with_payer(
+                    &[compute_budget_ix, close_instruction],
+                    Some(&payer.pubkey()),
+                    &[&payer],
+                    recent_blockhash,
+                );
+
+                // Send transaction
+                println!("Sending close transaction for shard index {}...", i);
+                match client.send_and_confirm_transaction_with_spinner_and_config(
+                    &transaction,
+                    CommitmentConfig::confirmed(),
+                    RpcSendTransactionConfig {
+                        skip_preflight: true,
+                        preflight_commitment: None,
+                        encoding: None,
+                        max_retries: Some(3),
+                        min_context_slot: None,
+                    },
+                ) {
+                    Ok(signature) => {
+                        println!("Successfully closed shard with index {}!", i);
+                        println!("Transaction signature: {}", signature);
+
+                        // Get transaction logs for more detailed info
+                        if let Ok(tx_data) = client.get_transaction_with_config(
+                            &signature,
+                            solana_client::rpc_config::RpcTransactionConfig {
+                                encoding: None,
+                                commitment: Some(CommitmentConfig::confirmed()),
+                                max_supported_transaction_version: None,
+                            },
+                        ) {
+                            if let Some(meta) = tx_data.transaction.meta {
+                                println!("Transaction logs:");
+                                if let solana_transaction_status::option_serializer::OptionSerializer::Some(logs) = meta.log_messages {
+                                    for log in logs {
+                                        println!("  {}", log);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Wait a bit before proceeding to the next shard
+                        sleep(Duration::from_millis(1000));
+                    }
+                    Err(err) => {
+                        println!("Failed to close shard with index {}: {}", i, err);
+                        // Continue with the next shard anyway
+                    }
+                }
             }
-        },
-        Err(err) => {
-            println!("Failed to simulate transaction: {}", err);
-            println!("Using default compute units: {}", initial_compute_units);
-            initial_compute_units
+            Err(err) => {
+                println!("Shard with index {} does not exist or cannot be fetched: {}", i, err);
+                // Continue with the next shard
+            }
         }
-    };
-
-    // Create compute budget instruction with dynamically calculated CU
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
-    println!("Setting compute budget: {} CUs", compute_units);
-
-    // Create transaction with updated compute units
-    let transaction = Transaction::new_signed_with_payer(
-        &[compute_budget_ix, instruction],
-        Some(&payer.pubkey()),
-        &[&payer],
-        recent_blockhash,
-    );
-
-    println!("Sending transaction to close top burn shard account...");
-
-    // add warning information
-    println!("\nWarning: This will permanently delete the top burn shard!");
-    println!("All {} record slots will be lost.", 69);
-    println!("Are you sure you want to continue? (y/n)");
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).expect("Failed to read input");
-    if !input.trim().eq_ignore_ascii_case("y") {
-        println!("Operation cancelled");
-        return;
     }
 
-    // add confirmation information after successful closure
-    match client.send_and_confirm_transaction(&transaction) {
-        Ok(signature) => {
-            println!("Top burn shard account closed successfully!");
-            println!("Transaction signature: {}", signature);
-            println!("✓ All burn records have been cleared");
-            println!("✓ Account lamports returned to admin");
-            
-            // Verify account closure
-            match client.get_account(&top_burn_shard_pda) {
-                Ok(_) => println!("Warning: Account still exists"),
-                Err(_) => println!("✓ Account successfully closed"),
-            }
-        },
+    // Final check of the global top burn index
+    match client.get_account(&global_top_burn_index_pda) {
+        Ok(account) => {
+            // Skip the 8-byte discriminator
+            let data = &account.data[8..];
+            let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+            let current_index_option = OptionU64::from_bytes(&data[8..]);
+
+            println!("\nFinal global top burn index state:");
+            println!("Total top burn shard count: {}", total_count);
+            println!("Current top burn shard index: {:?}", current_index_option.value);
+        }
         Err(err) => {
-            println!("Failed to close top burn shard account: {}", err);
+            println!("Error fetching final global top burn index state: {}", err);
         }
     }
+
+    println!("\nOperation completed! All top burn shards have been processed.");
 }

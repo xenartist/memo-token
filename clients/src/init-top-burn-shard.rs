@@ -28,42 +28,52 @@ fn main() {
         .expect("Failed to get payer balance");
     println!("Payer balance: {} SOL", balance as f64 / 1_000_000_000.0);
 
-    // Add admin wallet verification logic
-    // Check admin pubkey
-    let admin_pubkey = Pubkey::from_str("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn")
-        .expect("Invalid admin pubkey string");
-
-    // Check if current wallet matches admin pubkey
-    if payer.pubkey() != admin_pubkey {
-        println!("Warning: Current wallet is not the admin wallet.");
-        println!("Current wallet: {}", payer.pubkey());
-        println!("Admin pubkey: {}", admin_pubkey);
-        println!("Continue? (y/n)");
-        
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).expect("Failed to read input");
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Operation cancelled");
-            return;
-        }
-    } else {
-        println!("Confirmed: Current wallet is the admin wallet");
-    }
-
     // Program ID
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
     // Calculate PDAs
-    let (global_burn_index_pda, _) = Pubkey::find_program_address(&[b"global_burn_index"], &program_id);
-    let (top_burn_shard_pda, bump) = Pubkey::find_program_address(
-        &[b"top_burn_shard"],
+    let (global_top_burn_index_pda, _) = Pubkey::find_program_address(
+        &[b"global_top_burn_index"], 
         &program_id
     );
 
-    println!("Global Burn Index PDA: {}", global_burn_index_pda);
+    // initalize total_count
+    let mut shard_total_count: u64 = 0;
+
+    // Check if global top burn index account exists
+    match client.get_account(&global_top_burn_index_pda) {
+        Ok(account) => {
+            println!("Global top burn index account exists, continuing...");
+            // parse account data to get current shard count
+            if account.data.len() >= 16 {
+                shard_total_count = u64::from_le_bytes(account.data[8..16].try_into().unwrap());
+                println!("Current total count: {}", shard_total_count);
+                
+                if shard_total_count == 0 {
+                    println!("Creating the first top burn shard");
+                }
+            }
+        },
+        Err(err) => {
+            println!("Global top burn index account doesn't exist or cannot be fetched: {}", err);
+            println!("Please initialize the global top burn index first.");
+            return;
+        }
+    }
+
+    // Calculate the TopBurnShard PDA using the total count
+    let (top_burn_shard_pda, _) = Pubkey::find_program_address(
+        &[
+            b"top_burn_shard", 
+            &shard_total_count.to_le_bytes()
+        ],
+        &program_id
+    );
+
+    println!("Global Top Burn Index PDA: {}", global_top_burn_index_pda);
     println!("Top Burn Shard PDA: {}", top_burn_shard_pda);
-    println!("Shard bump seed: {}", bump);
+    println!("Creating shard with index: {}", shard_total_count);
 
     // Double-check shard account status
     match client.get_account(&top_burn_shard_pda) {
@@ -84,7 +94,8 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
-                1 + // current_index
+                8 + // index
+                32 + // creator pubkey
                 4 + // vec len
                 (69 * (32 + 88 + 8 + 8 + 8)); // 69 records (pubkey + signature + slot + blocktime + amount)
 
@@ -99,17 +110,17 @@ fn main() {
         rent as f64 / 1_000_000_000.0
     );
 
-    // Create instruction
+    // create accounts list for instruction, only include required four accounts
     let accounts = vec![
         AccountMeta::new(payer.pubkey(), true),
-        AccountMeta::new(global_burn_index_pda, false),
+        AccountMeta::new(global_top_burn_index_pda, false),
         AccountMeta::new(top_burn_shard_pda, false),
         AccountMeta::new_readonly(system_program::id(), false),
     ];
 
     // Prepare instruction data - Discriminator for 'initialize_top_burn_shard'
-    // Note: You'll need to replace this with the actual discriminator from your compiled program
-    let data = vec![100,156,197,248,154,101,107,185]; 
+    // This is the correct discriminator from the IDL
+    let data = vec![100, 156, 197, 248, 154, 101, 107, 185]; 
 
     let instruction = Instruction {
         program_id,
@@ -206,9 +217,9 @@ fn main() {
             println!("\nTop Burn Shard Account Info:");
             println!("Program ID: {}", program_id);
             println!("Top Burn Shard PDA: {}", top_burn_shard_pda);
-            println!("Your wallet (payer): {}", payer.pubkey());
+            println!("Creator: {}", payer.pubkey());
             println!("Account size: {} bytes", space);
-            println!("Minimum burn amount to qualify: {} tokens", 42069);
+            println!("Minimum burn amount to qualify: {} tokens", 420);
 
             // Get transaction logs
             if let Ok(tx_data) = client.get_transaction_with_config(

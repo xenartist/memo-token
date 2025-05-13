@@ -361,8 +361,26 @@ pub mod memo_token {
         
         // update top burn shard
         if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
-            if top_burn_shard.add_record(record) {
-                msg!("Added new burn record to top burn shard");
+            // if current shard is full, we need to try to update global_top_burn_index's current_index
+            if top_burn_shard.is_full() && record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
+                if let Some(global_top_burn_index) = &mut ctx.accounts.global_top_burn_index {
+                    if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+                        // if current shard is the shard that current_index points to
+                        if current_index == top_burn_shard.index {
+                            // check if there is a next shard available
+                            if current_index + 1 < global_top_burn_index.top_burn_shard_total_count {
+                                // update current_index to the next shard
+                                global_top_burn_index.top_burn_shard_current_index = Some(current_index + 1);
+                                msg!("Updated current index to {} as current shard is full", current_index + 1);
+                            } else {
+                                msg!("Current shard is full but no next shard available");
+                            }
+                        }
+                    }
+                }
+                msg!("Top burn shard with index {} is full", top_burn_shard.index);
+            } else if top_burn_shard.add_record(record) {
+                msg!("Added new burn record to top burn shard with index {}", top_burn_shard.index);
             } else {
                 msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
             }
@@ -397,44 +415,10 @@ pub mod memo_token {
             return Err(ErrorCode::CounterOverflow.into());
         }
         
-        // Always update the current index to point to this new shard, since it's empty
-        global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
-        
-        // Optional: Reward the user with tokens for creating a new shard
-        if ctx.accounts.user_token_account.is_some() && 
-           ctx.accounts.mint.is_some() && 
-           ctx.accounts.mint_authority.is_some() && 
-           ctx.accounts.token_program.is_some() {
-            
-            // Get PDA and bump
-            let (mint_authority, bump) = Pubkey::find_program_address(
-                &[b"mint_authority"],
-                ctx.program_id
-            );
-            
-            // Verify PDA
-            if mint_authority != ctx.accounts.mint_authority.as_ref().unwrap().key() {
-                return Err(ProgramError::InvalidSeeds.into());
-            }
-            
-            // Reward amount (e.g., 10 tokens)
-            let reward_amount = 10 * 1_000_000_000;
-            
-            // Mint reward tokens
-            token_2022::mint_to(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.as_ref().unwrap().to_account_info(),
-                    token_2022::MintTo {
-                        mint: ctx.accounts.mint.as_ref().unwrap().to_account_info(),
-                        to: ctx.accounts.user_token_account.as_ref().unwrap().to_account_info(),
-                        authority: ctx.accounts.mint_authority.as_ref().unwrap().to_account_info(),
-                    },
-                    &[&[b"mint_authority".as_ref(), &[bump]]]
-                ),
-                reward_amount
-            )?;
-            
-            msg!("Rewarded user with {} tokens for creating top burn shard", reward_amount / 1_000_000_000);
+        // only set current_index if this is the first shard or current_index is not set
+        if global_top_burn_index.top_burn_shard_current_index.is_none() {
+            global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+            msg!("Set initial current index to {}", top_burn_shard.index);
         }
         
         msg!("Top burn shard initialized with index {} by creator {}", top_burn_shard.index, top_burn_shard.creator);
@@ -634,8 +618,26 @@ pub mod memo_token {
         
         // update top burn shard
         if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
-            if top_burn_shard.add_record(record) {
-                msg!("Added new burn record to top burn shard");
+            // if current shard is full, we need to try to update global_top_burn_index's current_index
+            if top_burn_shard.is_full() && record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
+                if let Some(global_top_burn_index) = &mut ctx.accounts.global_top_burn_index {
+                    if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+                        // if current shard is the shard that current_index points to
+                        if current_index == top_burn_shard.index {
+                            // check if there is a next shard available
+                            if current_index + 1 < global_top_burn_index.top_burn_shard_total_count {
+                                // update current_index to the next shard
+                                global_top_burn_index.top_burn_shard_current_index = Some(current_index + 1);
+                                msg!("Updated current index to {} as current shard is full", current_index + 1);
+                            } else {
+                                msg!("Current shard is full but no next shard available");
+                            }
+                        }
+                    }
+                }
+                msg!("Top burn shard with index {} is full", top_burn_shard.index);
+            } else if top_burn_shard.add_record(record) {
+                msg!("Added new burn record to top burn shard with index {}", top_burn_shard.index);
             } else {
                 msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
             }
@@ -829,6 +831,10 @@ pub struct ProcessBurn<'info> {
     #[account(mut)]
     pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
     
+    /// Global top burn index (optional)
+    #[account(mut)]
+    pub global_top_burn_index: Option<Account<'info, GlobalTopBurnIndex>>,
+    
     // user profile (optional)
     #[account(
         mut,
@@ -865,6 +871,10 @@ pub struct ProcessBurnWithHistory<'info> {
     /// Top burn shard (optional)
     #[account(mut)]
     pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    
+    /// Global top burn index (optional)
+    #[account(mut)]
+    pub global_top_burn_index: Option<Account<'info, GlobalTopBurnIndex>>,
     
     // user profile (optional)
     #[account(
@@ -950,21 +960,6 @@ pub struct InitializeTopBurnShard<'info> {
         bump
     )]
     pub top_burn_shard: Account<'info, TopBurnShard>,
-    
-    // Optional: Token account for rewards
-    #[account(mut)]
-    pub user_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
-    
-    // Optional: Mint account for rewards
-    #[account(mut)]
-    pub mint: Option<InterfaceAccount<'info, Mint>>,
-    
-    // Optional: Mint authority for rewards
-    /// CHECK: PDA as mint authority
-    pub mint_authority: Option<AccountInfo<'info>>,
-    
-    // Optional: Token program for rewards
-    pub token_program: Option<Program<'info, Token2022>>,
     
     pub system_program: Program<'info, System>,
 }
