@@ -49,20 +49,17 @@ fn main() {
     let program_id = Pubkey::from_str("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw")
         .expect("Invalid program ID");
 
-    // Calculate PDAs
-    let (global_burn_index_pda, _) = Pubkey::find_program_address(&[b"global_burn_index"], &program_id);
+    // Calculate PDA
     let (latest_burn_shard_pda, _bump) = Pubkey::find_program_address(
         &[b"latest_burn_shard"],
         &program_id,
     );
 
-    println!("Global Burn Index PDA: {}", global_burn_index_pda);
     println!("Latest Burn Shard PDA to close: {}", latest_burn_shard_pda);
 
     // Create instruction
     let accounts = vec![
         AccountMeta::new(payer.pubkey(), true),      // recipient (writable, signer)
-        AccountMeta::new(global_burn_index_pda, false),    // global_burn_index account (writable)
         AccountMeta::new(latest_burn_shard_pda, false),    // latest_burn_shard account (writable)
         AccountMeta::new_readonly(system_program::id(), false), // system program
     ];
