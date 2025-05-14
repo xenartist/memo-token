@@ -51,8 +51,10 @@ pub struct TopBurnShard {
 }
 
 impl TopBurnShard {
-    pub const MAX_RECORDS: usize = 69;
-    pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
+    //pub const MAX_RECORDS: usize = 69;
+    //pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
+    pub const MAX_RECORDS: usize = 6; // 6 records for testing ONLY
+    pub const MIN_BURN_AMOUNT: u64 = 4 * 1_000_000_000; // 4 tokens threshold for testing ONLY
     
     pub fn add_record(&mut self, record: BurnRecord) -> bool {
         // Check if the burn amount meets the minimum threshold
@@ -359,63 +361,42 @@ pub mod memo_token {
             msg!("Added new burn record to latest burn shard");
         }
         
-        // proces top burn shards - only process burn records greater than threshold
+        // if burn amount is enough
         if record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
-            let mut record_added = false;
-            
-            // try to write to primary shard
-            if let Some(primary_shard) = &mut ctx.accounts.primary_top_burn_shard {
-                if !primary_shard.is_full() {
-                    if primary_shard.add_record(record.clone()) {
-                        record_added = true;
-                        msg!("Added new burn record to primary top burn shard with index {}", primary_shard.index);
-                    }
-                } else {
-                    msg!("Primary top burn shard with index {} is full", primary_shard.index);
-                    
-                    // primary shard is full, try to update global index to backup shard
+            // if there is current top burn shard
+            if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
+                // check if it is full
+                if top_burn_shard.is_full() {
+                    // current shard is full, check if there is any pre-allocated idle shard
                     if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
                         if let Some(current_index) = global_index.top_burn_shard_current_index {
-                            // if primary shard is the shard that current_index points to
-                            if current_index == primary_shard.index {
-                                // check if backup shard is available
-                                if let Some(backup_shard) = &ctx.accounts.backup_top_burn_shard {
-                                    // update global index to point to backup shard
-                                    global_index.top_burn_shard_current_index = Some(backup_shard.index);
-                                    msg!("Updated global index to point to backup shard with index {}", backup_shard.index);
-                                }
+                            // check if there is any pre-allocated idle shard
+                            if current_index + 1 < global_index.top_burn_shard_total_count {
+                                // update the global index to point to the next shard
+                                global_index.top_burn_shard_current_index = Some(current_index + 1);
+                                msg!("Current shard is full. Updated global index to point to next shard with index {}", current_index + 1);
+                                
+                                // return a clear error, tell the user to use a new shard
+                                return Err(ErrorCode::NeedToUseDifferentShard.into());
+                            } else {
+                                // no more pre-allocated shards available
+                                msg!("Current shard is full and no more pre-allocated shards available");
+                                return Err(ErrorCode::NoMoreShardsAvailable.into());
                             }
                         }
                     }
+                    
+                    // if there is no global_index, also return an error
+                    return Err(ErrorCode::TopBurnShardFull.into());
                 }
+                
+                // current shard has space, add the record
+                top_burn_shard.add_record(record.clone());
+                msg!("Added burn record to top burn shard with index {}", top_burn_shard.index);
+            } else {
+                // no top burn shard provided
+                msg!("No top burn shard provided. This burn exceeds threshold but can't be recorded in top burns");
             }
-            
-            // if primary shard cannot add record, try backup shard
-            if !record_added {
-                if let Some(backup_shard) = &mut ctx.accounts.backup_top_burn_shard {
-                    if !backup_shard.is_full() {
-                        if backup_shard.add_record(record.clone()) {
-                            record_added = true;
-                            msg!("Added new burn record to backup top burn shard with index {}", backup_shard.index);
-                            
-                            // update global index to point to backup shard
-                            if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
-                                global_index.top_burn_shard_current_index = Some(backup_shard.index);
-                                msg!("Updated global index to point to backup shard with index {}", backup_shard.index);
-                            }
-                        }
-                    } else {
-                        msg!("Backup top burn shard with index {} is also full", backup_shard.index);
-                    }
-                }
-            }
-            
-            // if all shards are full, emit warning
-            if !record_added {
-                msg!("All provided top burn shards are full. This burn record exceeds threshold but couldn't be stored.");
-            }
-        } else {
-            msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
         }
 
         Ok(())
@@ -871,14 +852,10 @@ pub struct ProcessBurn<'info> {
     )]
     pub user_profile: Option<Account<'info, UserProfile>>,
     
-    // support multiple candidate top burn shards
-    /// Primary top burn shard (optional) - current shard
+    // only need the current top burn shard
+    /// Current top burn shard (optional)
     #[account(mut)]
-    pub primary_top_burn_shard: Option<Account<'info, TopBurnShard>>,
-    
-    /// Backup top burn shard (optional) - backup shard
-    #[account(mut)]
-    pub backup_top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
 }
 
 #[derive(Accounts)]
@@ -1175,4 +1152,16 @@ pub enum ErrorCode {
 
     #[msg("Counter overflow: maximum number of shards reached")]
     CounterOverflow,
+
+    #[msg("Top burn shard is full")]
+    TopBurnShardFull,
+
+    #[msg("Top burn shard is full. Need to use a different shard.")]
+    NeedToUseDifferentShard,
+    
+    #[msg("No more pre-allocated shards available. Create new shards first.")]
+    NoMoreShardsAvailable,
+    
+    #[msg("Retry with the next shard. Global index has been updated.")]
+    RetryWithNextShard,
 }
