@@ -367,12 +367,17 @@ pub mod memo_token {
             if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
                 // check if it is full
                 if top_burn_shard.is_full() {
-                    // current shard is full, check if there is any pre-allocated idle shard
-                    if let Some(global_index) = &ctx.accounts.global_top_burn_index {
+                    // if there is a next available shard
+                    if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
                         if let Some(current_index) = global_index.top_burn_shard_current_index {
+                            // check if there is a next available shard
                             if current_index + 1 < global_index.top_burn_shard_total_count {
-                                msg!("Please use the next available shard (index: {})", current_index + 1);
-                                return Err(ErrorCode::TopBurnShardFull.into());
+                                // update the global index to point to the next shard
+                                global_index.top_burn_shard_current_index = Some(current_index + 1);
+                                msg!("Found full shard. Updated global index to point to next available shard with index {}", current_index + 1);
+                                
+                                // return a clear error, tell the user to use a new shard
+                                return Err(ErrorCode::NeedToUseDifferentShard.into());
                             } else {
                                 msg!("No more pre-allocated shards available. Please create a new shard first.");
                                 return Err(ErrorCode::NoMoreShardsAvailable.into());
