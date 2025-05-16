@@ -106,16 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[b"global_top_burn_index"],
         &program_id,
     );
-
+    
     let (latest_burn_shard_pda, _) = Pubkey::find_program_address(
         &[b"latest_burn_shard"],
         &program_id,
     );
-
-    // get the current top_burn_shard and backup shard
+    
+    // get the current top_burn_shard
     // first check the GlobalTopBurnIndex account
-    let mut primary_shard_pda = None;
-    let mut backup_shard_pda = None;
+    let mut current_top_burn_shard_pda = None;
 
     match client.get_account(&global_top_burn_index_pda) {
         Ok(account) => {
@@ -135,26 +134,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
                     println!("Current top burn shard index: {}", current_index);
                     
-                    // calculate the primary shard PDA using the current index
+                    // calculate the current shard PDA using the current index
                     let (shard_pda, _) = Pubkey::find_program_address(
                         &[b"top_burn_shard", &current_index.to_le_bytes()],
-                        &program_id,
-                    );
-                    primary_shard_pda = Some(shard_pda);
-                    println!("Primary top burn shard PDA: {}", shard_pda);
-                    
-                    // if there is a next shard available, calculate the backup shard PDA
-                    if current_index + 1 < total_count {
-                        let next_index = current_index + 1;
-                        let (next_shard_pda, _) = Pubkey::find_program_address(
-                            &[b"top_burn_shard", &next_index.to_le_bytes()],
-                            &program_id,
-                        );
-                        backup_shard_pda = Some(next_shard_pda);
-                        println!("Backup top burn shard PDA: {}", next_shard_pda);
-                    } else {
-                        println!("No backup shard available. All shards allocated.");
-                    }
+        &program_id,
+    );
+                    current_top_burn_shard_pda = Some(shard_pda);
+                    println!("Current top burn shard PDA: {}", shard_pda);
                 } else if option_tag == 0 { // Option::None
                     println!("No active top burn shard. Need to initialize one first.");
                 }
@@ -172,8 +158,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Burn amount ({} tokens) meets threshold for top burn shard (420+ tokens)", 
                  burn_amount / 1_000_000_000);
         
-        if primary_shard_pda.is_none() {
-            println!("Warning: No primary top burn shard available.");
+        if current_top_burn_shard_pda.is_none() {
+            println!("Warning: No current top burn shard available.");
             println!("Burn will succeed but won't be recorded in top burn shards.");
             println!("Initialize top burn shards using init-global-top-burn-index and init-top-burn-shard.");
         }
@@ -181,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Burn amount ({} tokens) is below threshold for top burn shard (420+ tokens)", 
                  burn_amount / 1_000_000_000);
     }
-
+    
     // Calculate user profile PDA
     let (user_profile_pda, _) = Pubkey::find_program_address(
         &[b"user_profile", payer.pubkey().as_ref()],
@@ -221,12 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // check if top burn shard exists
-    match client.get_account(&primary_shard_pda.unwrap_or_default()) {
+    if let Some(top_burn_shard_pda) = current_top_burn_shard_pda {
+    match client.get_account(&top_burn_shard_pda) {
         Ok(_) => {
-            println!("Found primary top burn shard");
+                println!("Found current top burn shard");
         },
         Err(_) => {
-            println!("Warning: Primary top burn shard does not exist.");
+                println!("Warning: Current top burn shard does not exist.");
             println!("Burns will be recorded in latest burn shard, but not in top burn shard.");
             println!("To enable top burn tracking, initialize the shard using init-top-burn-shard.");
             println!("Continue anyway? (y/n)");
@@ -235,6 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::io::stdin().read_line(&mut input)?;
             if !input.trim().eq_ignore_ascii_case("y") {
                 return Ok(());
+                }
             }
         }
     }
@@ -256,6 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccountMeta::new_readonly(token_2022_id(), false), // token_program (use token-2022)
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
         AccountMeta::new(latest_burn_shard_pda, false), // latest burn shard
+        AccountMeta::new(global_top_burn_index_pda, false), // global_top_burn_index
     ];
     
     // Add user profile PDA to account list if it exists
@@ -263,13 +252,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
     }
 
-    // add primary and backup shard (if available)
-    if let Some(primary_pda) = primary_shard_pda {
-        accounts.push(AccountMeta::new(primary_pda, false)); // primary_top_burn_shard
-    }
-
-    if let Some(backup_pda) = backup_shard_pda {
-        accounts.push(AccountMeta::new(backup_pda, false)); // backup_top_burn_shard
+    // add current top burn shard if available
+    if let Some(top_burn_shard_pda) = current_top_burn_shard_pda {
+        accounts.push(AccountMeta::new(top_burn_shard_pda, false)); // top_burn_shard
     }
     
     // print account information for debugging
@@ -321,6 +306,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(result) => {
             if let Some(err) = result.value.err {
                 println!("Warning: Transaction simulation failed: {:?}", err);
+                
+                // check if it's NoMoreShardsAvailable error
+                if err.to_string().contains("Custom(6017)") {
+                    println!("ERROR: The current top burn shard is full and there are no more pre-allocated shards available.");
+                    println!("Please create a new shard first using: cargo run --bin init-top-burn-shard");
+                    println!("Then try your burn operation again.");
+                    return Ok(());  // return early, don't attempt to send a doomed transaction
+                }
+                
                 println!("Using default compute units: {}", initial_compute_units);
                 initial_compute_units
             } else if let Some(units_consumed) = result.value.units_consumed {
@@ -379,14 +373,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             
             // check if record was added to top burn shard
-            match client.get_account(&primary_shard_pda.unwrap_or_default()) {
+            if let Some(top_burn_shard_pda) = current_top_burn_shard_pda {
+            match client.get_account(&top_burn_shard_pda) {
                 Ok(_) => {
-                    // check if burn is added to top burn shard (depends on amount)
-                    println!("Top burn shard updated. Use check-top-burn-shard to see if your burn qualified for the leaderboard.");
-                    println!("Note: Burn is only added to top burn shard if amount is high enough to qualify.");
+                        if using_top_burn {
+                            println!("Top burn shard updated. Use check-top-burn-shard to see your burn on the leaderboard.");
+                        } else {
+                            println!("Note: Burn amount was below threshold (420 tokens) for top burn shard.");
+                        }
                 },
                 Err(err) => {
                     println!("Warning: Could not verify top burn shard update: {}", err);
+                    }
                 }
             }
             
@@ -395,50 +393,189 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\nYour burn statistics have been updated in your user profile.");
                 println!("To view your profile stats, run: cargo run --bin check-user-profile");
             }
-        }
+        },
         Err(err) => {
-            println!("Failed to burn tokens: {}", err);
-            println!("This may happen if:");
-            println!("1. The burn shards don't exist - run initialization scripts first");
-            println!("2. Insufficient token balance");
-            println!("3. Issues with the memo format");
-            println!("4. Burn amount is less than the minimum required (1 token)");
-            println!("5. Burn amount is not an integer multiple of 1 token");
-            println!("6. Compute units might be insufficient: {}", compute_units);
+            let err_string = err.to_string();
+            println!("Failed to burn tokens: {}", err_string);
             
-            // try to get transaction logs
-            if let Some(sig_str) = err.to_string().split("signature ").nth(1) {
-                if let Some(signature) = sig_str.split_whitespace().next() {
-                    println!("\nAttempting to get logs for failed transaction: {}", signature);
-                    if let Ok(sig) = signature.parse::<solana_sdk::signature::Signature>() {
-                        if let Ok(tx_data) = client.get_transaction_with_config(
+            // extract error code - improved extraction method
+            let mut error_code = None;
+            
+            // method 1: find "custom program error: 0x" format
+            if let Some(i) = err_string.find("custom program error: 0x") {
+                let code_part = &err_string[i + 22..];
+                let end = code_part.find(' ').unwrap_or(code_part.len());
+                let hex_code = &code_part[..end];
+                if let Ok(code) = u64::from_str_radix(hex_code, 16) {
+                    error_code = Some(code);
+                    println!("Error hex code: 0x{} ({})", hex_code, code);
+                }
+            }
+            
+            // method 2: find any 0x-prefixed hex error code
+            if error_code.is_none() {
+                for word in err_string.split_whitespace() {
+                    if word.starts_with("0x") {
+                        let hex_code = &word[2..];
+                        if let Ok(code) = u64::from_str_radix(hex_code, 16) {
+                            error_code = Some(code);
+                            println!("Error hex code: {} ({})", word, code);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // try to extract signature from error - improved extraction logic
+            let mut signature_str = None;
+            
+            // method 1: find line containing "signature"
+            for line in err_string.lines() {
+                if line.contains("signature") {
+                    for word in line.split_whitespace() {
+                        if word.len() >= 86 && word.len() <= 88 {
+                            signature_str = Some(word.to_string());
+                            break;
+                        }
+                    }
+                }
+                if signature_str.is_some() {
+                    break;
+                }
+            }
+            
+            // method 2: find any long string that looks like a signature (base58 encoded, 87-88 characters)
+            if signature_str.is_none() {
+                for word in err_string.split_whitespace() {
+                    if word.len() >= 86 && word.len() <= 88 && !word.contains(":") {
+                        // simple check if it might be base58 encoded
+                        if word.chars().all(|c| c.is_ascii_alphanumeric()) {
+                            signature_str = Some(word.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // handle extracted signature
+            if let Some(sig_str) = signature_str {
+                println!("\nDetected transaction signature: {}", sig_str);
+                
+                println!("Fetching detailed logs for the failed transaction...");
+                
+                match sig_str.parse::<solana_sdk::signature::Signature>() {
+                    Ok(sig) => {
+                        // use RPC to get more detailed transaction info, including all logs
+                        let tx_result = client.get_transaction_with_config(
                             &sig,
                             solana_client::rpc_config::RpcTransactionConfig {
                                 encoding: None,
                                 commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
                                 max_supported_transaction_version: None,
                             },
-                        ) {
-                            if let Some(meta) = tx_data.transaction.meta {
-                                println!("\nTransaction logs:");
-                                match meta.log_messages {
-                                    solana_transaction_status::option_serializer::OptionSerializer::Some(logs) => {
-                                        for log in logs {
-                                            println!("{}", log);
-                                        }
-                                    },
-                                    solana_transaction_status::option_serializer::OptionSerializer::None => {
-                                        println!("No logs available");
-                                    },
-                                    solana_transaction_status::option_serializer::OptionSerializer::Skip => {
-                                        println!("Transaction logs skipped");
+                        );
+                        
+                        match tx_result {
+                            Ok(tx_data) => {
+                                println!("\n=== TRANSACTION DETAILS ===");
+                                
+                                // extract transaction metadata
+                                if let Some(meta) = &tx_data.transaction.meta {
+                                    // print error info
+                                    if let Some(err) = &meta.err {
+                                        println!("\nTransaction Error: {:?}", err);
                                     }
+                                    
+                                    // print all logs
+                                    println!("\n=== FULL TRANSACTION LOGS ===");
+                                    match &meta.log_messages {
+                                        solana_transaction_status::option_serializer::OptionSerializer::Some(logs) => {
+                                            for (i, log) in logs.iter().enumerate() {
+                                                println!("{:3}: {}", i, log);
+                                            }
+                                        },
+                                        solana_transaction_status::option_serializer::OptionSerializer::None => {
+                                            println!("No logs available");
+                                        },
+                                        solana_transaction_status::option_serializer::OptionSerializer::Skip => {
+                                            println!("Transaction logs skipped");
+                                        }
+                                    }
+                                    
+                                    // try to parse custom program error code
+                                    let error_code = err_string.find("custom program error: 0x").map(|i| {
+                                        let code_part = &err_string[i + 22..];
+                                        let end = code_part.find(' ').unwrap_or(code_part.len());
+                                        let hex_code = &code_part[..end];
+                                        u64::from_str_radix(hex_code, 16).ok()
+                                    }).flatten();
+                                    
+                                    if let Some(code) = error_code {
+                                        println!("\n=== PROGRAM ERROR INTERPRETATION ===");
+                                        match code {
+                                            6001 => println!("Error: MemoTooShort - Memo is too short. Must be at least 69 bytes."),
+                                            6002 => println!("Error: MemoTooLong - Memo is too long. Must be at most 700 bytes."),
+                                            6003 => println!("Error: MemoRequired - Transaction must include a memo."),
+                                            6004 => println!("Error: InvalidMemoFormat - Invalid memo format. Expected JSON format."),
+                                            6005 => println!("Error: MissingSignature - Missing signature field in memo JSON."),
+                                            6006 => println!("Error: UnauthorizedAuthority - Unauthorized: Only the authority can perform this action"),
+                                            6007 => println!("Error: UnauthorizedAdmin - Unauthorized: Only the admin can perform this action"),
+                                            6008 => println!("Error: BurnAmountTooSmall - Burn amount too small. Must burn at least 1 token."),
+                                            6009 => println!("Error: UnauthorizedUser - Unauthorized: Only the user can update their own profile"),
+                                            6010 => println!("Error: InvalidBurnAmount - Invalid burn amount. Must be an integer multiple of 1 token."),
+                                            6011 => println!("Error: InvalidBurnHistoryIndex - Invalid burn history index"),
+                                            6012 => println!("Error: BurnHistoryFull - Burn history account is full"),
+                                            6013 => println!("Error: InvalidSignatureLength - Invalid signature length"),
+                                            6014 => println!("Error: BurnHistoryRequired - Burn history account is required for recording burn history"),
+                                            6015 => println!("Error: CounterOverflow - Counter overflow: maximum number of shards reached"),
+                                            6016 => println!("Error: TopBurnShardFull - Top burn shard is full. Try using the next available shard."),
+                                            6017 => println!("Error: NoMoreShardsAvailable - No more pre-allocated shards available."),
+                                            6018 => println!("Error: NeedToUseDifferentShard - Need to use a different shard. The current shard is full."),
+                                            _ => println!("Unknown error code: 0x{:x} ({})", code, code),
+                                        }
+                                    }
+                                } else {
+                                    println!("No transaction metadata available");
                                 }
+                            },
+                            Err(error) => {
+                                println!("Failed to get transaction details: {}", error);
                             }
                         }
+                    },
+                    Err(_) => {
+                        println!("Could not parse transaction signature from error message");
                     }
                 }
+            } else {
+                println!("Could not extract transaction signature from error");
             }
+            
+            // even if there's no signature, parse and print error code info
+            println!("\n=== PROGRAM ERROR INTERPRETATION ===");
+            match error_code {
+                Some(6001) => println!("Error: MemoTooShort - Memo is too short. Must be at least 69 bytes."),
+                Some(6002) => println!("Error: MemoTooLong - Memo is too long. Must be at most 700 bytes."),
+                // ... other error codes ...
+                Some(6017) => {
+                    println!("Error: NoMoreShardsAvailable - No more pre-allocated shards available.");
+                    println!("Solution: Create new shards first using 'cargo run --bin init-top-burn-shard'");
+                    println!("Then try your burn operation again.");
+                },
+                Some(6018) => println!("Error: NeedToUseDifferentShard - Need to use a different shard. The current shard is full."),
+                Some(101) => println!("Error: InstructionFallbackNotFound (0x65) - Anchor could not match your instruction to any defined in the program."),
+                Some(code) => println!("Unknown error code: 0x{:x} ({})", code, code),
+                None => println!("Could not extract specific error code from the error message.")
+            }
+            
+            println!("\n=== TROUBLESHOOTING GUIDE ===");
+            println!("1. The burn shards don't exist - run initialization scripts first");
+            println!("2. Insufficient token balance");
+            println!("3. Issues with the memo format - ensure it's valid JSON with required fields");
+            println!("4. Burn amount too small (< 1 token) or not an integer multiple of 1 token");
+            println!("5. Current top burn shard may be full - create a new shard with init-top-burn-shard");
+            println!("6. Global top burn index may need initialization");
+            println!("7. Compute units might be insufficient (currently set to: {})", compute_units);
         }
     }
 
