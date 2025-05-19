@@ -54,7 +54,7 @@ impl TopBurnShard {
     //pub const MAX_RECORDS: usize = 69;
     //pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
     pub const MAX_RECORDS: usize = 6; // 6 records for testing ONLY
-    pub const MIN_BURN_AMOUNT: u64 = 4 * 1_000_000_000; // 4 tokens threshold for testing ONLY
+    pub const MIN_BURN_AMOUNT: u64 = 1 * 1_000_000_000; // 1 tokens threshold for testing ONLY
     
     pub fn add_record(&mut self, record: BurnRecord) -> bool {
         // Check if the burn amount meets the minimum threshold
@@ -367,24 +367,7 @@ pub mod memo_token {
             if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
                 // check if it is full
                 if top_burn_shard.is_full() {
-                    // if there is a next available shard
-                    if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
-                        if let Some(current_index) = global_index.top_burn_shard_current_index {
-                            // check if there is a next available shard
-                            if current_index + 1 < global_index.top_burn_shard_total_count {
-                                // update the global index to point to the next shard
-                                global_index.top_burn_shard_current_index = Some(current_index + 1);
-                                msg!("Found full shard. Updated global index to point to next available shard with index {}", current_index + 1);
-                                
-                                // return a clear error, tell the user to use a new shard
-                                return Err(ErrorCode::NeedToUseDifferentShard.into());
-                            } else {
-                                msg!("No more pre-allocated shards available. Please create a new shard first.");
-                                return Err(ErrorCode::NoMoreShardsAvailable.into());
-                            }
-                        }
-                    }
-                    
+                    msg!("Current top burn shard is full. Please create more shards with init-top-burn-shard.");
                     return Err(ErrorCode::TopBurnShardFull.into());
                 }
                 
@@ -448,9 +431,38 @@ pub mod memo_token {
         if global_top_burn_index.top_burn_shard_current_index.is_none() {
             global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
             msg!("Set initial current index to {}", top_burn_shard.index);
+        } else if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+            // check if current shard is provided
+            if let Some(current_shard) = &ctx.accounts.current_top_burn_shard {
+                // check if current shard is full
+                if current_shard.is_full() {
+                    // current shard is full, increase index to next shard
+                    let next_index = current_index + 1;
+                    
+                    // if next index is less than total count, use it
+                    if next_index < global_top_burn_index.top_burn_shard_total_count {
+                        global_top_burn_index.top_burn_shard_current_index = Some(next_index);
+                        msg!("Current shard (index {}) is full, updated current index to next shard {}", 
+                             current_index, next_index);
+                    } else {
+                        // if no more pre-allocated shards, use the new shard
+                        global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                        msg!("Current shard (index {}) is full and no more pre-allocated shards, updated to new shard {}", 
+                             current_index, top_burn_shard.index);
+                    }
+                } else {
+                    // current shard is not full, keep current index
+                    msg!("Current shard (index {}) still has space ({}/{}), keeping current index", 
+                         current_index, current_shard.records.len(), TopBurnShard::MAX_RECORDS);
+                }
+            } else {
+                // no current shard provided, update to new shard
+                global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                msg!("No current shard provided, updated to new shard {}", top_burn_shard.index);
+            }
         }
         
-        msg!("Top burn shard initialized with index {} by creator {}", top_burn_shard.index, top_burn_shard.creator);
+        msg!("Top burn shard initialized with index {}", top_burn_shard.index);
         Ok(())
     }
 
@@ -859,6 +871,11 @@ pub struct ProcessBurn<'info> {
     /// Global top burn index (optional)
     #[account(mut)]
     pub global_top_burn_index: Option<Account<'info, GlobalTopBurnIndex>>,
+
+    // only need the current top burn shard
+    /// Current top burn shard (optional)
+    #[account(mut)]
+    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
     
     // user profile (optional)
     #[account(
@@ -867,11 +884,6 @@ pub struct ProcessBurn<'info> {
         bump,
     )]
     pub user_profile: Option<Account<'info, UserProfile>>,
-    
-    // only need the current top burn shard
-    /// Current top burn shard (optional)
-    #[account(mut)]
-    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
 }
 
 #[derive(Accounts)]
@@ -898,13 +910,13 @@ pub struct ProcessBurnWithHistory<'info> {
     #[account(mut)]
     pub latest_burn_shard: Option<Account<'info, LatestBurnShard>>,
     
-    /// Top burn shard (optional)
-    #[account(mut)]
-    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
-    
     /// Global top burn index (optional)
     #[account(mut)]
     pub global_top_burn_index: Option<Account<'info, GlobalTopBurnIndex>>,
+
+    /// Top burn shard (optional)
+    #[account(mut)]
+    pub top_burn_shard: Option<Account<'info, TopBurnShard>>,
     
     // user profile (optional)
     #[account(
@@ -990,6 +1002,23 @@ pub struct InitializeTopBurnShard<'info> {
         bump
     )]
     pub top_burn_shard: Account<'info, TopBurnShard>,
+    
+    // add current index's top burn shard as optional parameter
+    // check if address matches current index
+    #[account(
+        constraint = 
+            if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+                let (expected_pda, _) = Pubkey::find_program_address(
+                    &[b"top_burn_shard", &current_index.to_le_bytes()],
+                    &crate::ID
+                );
+                current_top_burn_shard.key() == expected_pda
+            } else {
+                true // if no current index, do not validate
+            }
+        @ ErrorCode::InvalidTopBurnShardAccount
+    )]
+    pub current_top_burn_shard: Option<Account<'info, TopBurnShard>>,
     
     pub system_program: Program<'info, System>,
 }
@@ -1180,4 +1209,7 @@ pub enum ErrorCode {
     
     #[msg("Retry with the next shard. Global index has been updated.")]
     RetryWithNextShard,
+
+    #[msg("Invalid top burn shard account. Account doesn't match the current index.")]
+    InvalidTopBurnShardAccount,
 }
