@@ -29,10 +29,10 @@ cargo install anchor-cli
 ```bash
 anchor build
 ```
-```
+```bash
 anchor build --program-name memo-token
 ```
-```
+```bash
 anchor build --program-name memo-social
 ```
 
