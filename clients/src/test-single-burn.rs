@@ -247,14 +247,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccountMeta::new(global_top_burn_index_pda, false), // global_top_burn_index
     ];
     
-    // Add user profile PDA to account list if it exists
-    if user_profile_exists {
-        accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
-    }
-
     // add current top burn shard if available
     if let Some(top_burn_shard_pda) = current_top_burn_shard_pda {
         accounts.push(AccountMeta::new(top_burn_shard_pda, false)); // top_burn_shard
+    }
+    
+    // Add user profile PDA to account list if it exists
+    if user_profile_exists {
+        accounts.push(AccountMeta::new(user_profile_pda, false)); // user_profile
     }
     
     // print account information for debugging
@@ -556,7 +556,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match error_code {
                 Some(6001) => println!("Error: MemoTooShort - Memo is too short. Must be at least 69 bytes."),
                 Some(6002) => println!("Error: MemoTooLong - Memo is too long. Must be at most 700 bytes."),
-                // ... other error codes ...
+                Some(6003) => println!("Error: MemoRequired - Transaction must include a memo."),
+                Some(6004) => println!("Error: InvalidMemoFormat - Invalid memo format. Expected JSON format."),
+                Some(6005) => println!("Error: MissingSignature - Missing signature field in memo JSON."),
+                Some(6006) => println!("Error: UnauthorizedAuthority - Unauthorized: Only the authority can perform this action"),
+                Some(6007) => println!("Error: UnauthorizedAdmin - Unauthorized: Only the admin can perform this action"),
+                Some(6008) => println!("Error: BurnAmountTooSmall - Burn amount too small. Must burn at least 1 token."),
+                Some(6009) => println!("Error: UnauthorizedUser - Unauthorized: Only the user can update their own profile"),
+                Some(6010) => println!("Error: InvalidBurnAmount - Invalid burn amount. Must be an integer multiple of 1 token."),
+                Some(6011) => println!("Error: InvalidBurnHistoryIndex - Invalid burn history index"),
+                Some(6012) => println!("Error: BurnHistoryFull - Burn history account is full"),
+                Some(6013) => println!("Error: InvalidSignatureLength - Invalid signature length"),
+                Some(6014) => println!("Error: BurnHistoryRequired - Burn history account is required for recording burn history"),
+                Some(6015) => println!("Error: CounterOverflow - Counter overflow: maximum number of shards reached"),
+                Some(6016) => {
+                    println!("Error: TopBurnShardFull - Top burn shard is full. Try using the next available shard.");
+                    println!("Solution: Use a different shard or create a new shard with 'cargo run --bin init-top-burn-shard'");
+                },
                 Some(6017) => {
                     println!("Error: NoMoreShardsAvailable - No more pre-allocated shards available.");
                     println!("Solution: Create new shards first using 'cargo run --bin init-top-burn-shard'");
