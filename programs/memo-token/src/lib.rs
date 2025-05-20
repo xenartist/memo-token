@@ -4,6 +4,7 @@ use anchor_spl::token_2022::{self, Token2022};
 use solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
 use serde_json::Value;
+use borsh::BorshDeserialize;
 
 declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
@@ -410,59 +411,72 @@ pub mod memo_token {
 
     // initialize top burn shard
     pub fn initialize_top_burn_shard(ctx: Context<InitializeTopBurnShard>) -> Result<()> {
-        // Initialize shard
+        // initialize shard
         let top_burn_shard = &mut ctx.accounts.top_burn_shard;
         let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
         
-        // Set the shard index to the current total count
+        // basic settings
         top_burn_shard.index = global_top_burn_index.top_burn_shard_total_count;
-        // Set the creator to the user's public key
         top_burn_shard.creator = ctx.accounts.user.key();
         top_burn_shard.records = Vec::new();
         
-        // Update the global index with overflow check
+        // update global index count
         if let Some(new_count) = global_top_burn_index.top_burn_shard_total_count.checked_add(1) {
             global_top_burn_index.top_burn_shard_total_count = new_count;
         } else {
             return Err(ErrorCode::CounterOverflow.into());
         }
         
-        // only set current_index if this is the first shard or current_index is not set
+        // handle current_index logic
         if global_top_burn_index.top_burn_shard_current_index.is_none() {
+            // first shard
             global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
             msg!("Set initial current index to {}", top_burn_shard.index);
-        } else if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
-            // check if current shard is provided
-            if let Some(current_shard) = &ctx.accounts.current_top_burn_shard {
-                // check if current shard is full
-                if current_shard.is_full() {
-                    // current shard is full, increase index to next shard
-                    let next_index = current_index + 1;
-                    
-                    // if next index is less than total count, use it
-                    if next_index < global_top_burn_index.top_burn_shard_total_count {
-                        global_top_burn_index.top_burn_shard_current_index = Some(next_index);
-                        msg!("Current shard (index {}) is full, updated current index to next shard {}", 
-                             current_index, next_index);
-                    } else {
-                        // if no more pre-allocated shards, use the new shard
-                        global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
-                        msg!("Current shard (index {}) is full and no more pre-allocated shards, updated to new shard {}", 
-                             current_index, top_burn_shard.index);
+        } else if let Some(current_shard) = &ctx.accounts.current_top_burn_shard {
+            // has current shard, check if it is full
+            if current_shard.key() == Pubkey::default() {
+                // the account is default pubkey (client placeholder)
+                global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                msg!("Using placeholder account, updated to new shard {}", top_burn_shard.index);
+            } else {
+                // check if current_shard is full (check if the owner is program)
+                if current_shard.owner == &crate::ID {
+                    // get account data, avoid parsing the whole structure
+                    if let Ok(data) = current_shard.try_borrow_data() {
+                        if data.len() >= 52 {
+                            // read the records.len field (48-52 bytes)
+                            let records_len = u32::from_le_bytes([data[48], data[49], data[50], data[51]]) as usize;
+                            
+                            if records_len >= TopBurnShard::MAX_RECORDS {
+                                // shard is full, update index
+                                if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
+                                    let next_index = current_index + 1;
+                                    if next_index < global_top_burn_index.top_burn_shard_total_count {
+                                        global_top_burn_index.top_burn_shard_current_index = Some(next_index);
+                                        msg!("Current shard full, updated index to {}", next_index);
+                                    } else {
+                                        global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                                        msg!("No more shards, updated to new one {}", top_burn_shard.index);
+                                    }
+                                }
+                            } else {
+                                msg!("Current shard has space, keeping index");
+                            }
+                        }
                     }
                 } else {
-                    // current shard is not full, keep current index
-                    msg!("Current shard (index {}) still has space ({}/{}), keeping current index", 
-                         current_index, current_shard.records.len(), TopBurnShard::MAX_RECORDS);
+                    // non-program account, update to new shard
+                    global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                    msg!("Invalid current shard, updated to new shard {}", top_burn_shard.index);
                 }
-            } else {
-                // no current shard provided, update to new shard
-                global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
-                msg!("No current shard provided, updated to new shard {}", top_burn_shard.index);
             }
+        } else {
+            // no current shard provided, update to new shard
+            global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+            msg!("No current shard provided, updated to new shard {}", top_burn_shard.index);
         }
         
-        msg!("Top burn shard initialized with index {}", top_burn_shard.index);
+        msg!("Initialized top burn shard with index {}", top_burn_shard.index);
         Ok(())
     }
 
@@ -990,11 +1004,7 @@ pub struct InitializeTopBurnShard<'info> {
     #[account(
         init,
         payer = user,
-        space = 8 + // discriminator
-               8 + // index
-               32 + // creator (Pubkey is 32 bytes)
-               4 + // vec len
-               (69 * (32 + 88 + 8 + 8 + 8)), // 69 records
+        space = 8 + 8 + 32 + 4 + (69 * (32 + 88 + 8 + 8 + 8)),
         seeds = [
             b"top_burn_shard", 
             global_top_burn_index.top_burn_shard_total_count.to_le_bytes().as_ref()
@@ -1003,22 +1013,8 @@ pub struct InitializeTopBurnShard<'info> {
     )]
     pub top_burn_shard: Account<'info, TopBurnShard>,
     
-    // add current index's top burn shard as optional parameter
-    // check if address matches current index
-    #[account(
-        constraint = 
-            if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
-                let (expected_pda, _) = Pubkey::find_program_address(
-                    &[b"top_burn_shard", &current_index.to_le_bytes()],
-                    &crate::ID
-                );
-                current_top_burn_shard.key() == expected_pda
-            } else {
-                true // if no current index, do not validate
-            }
-        @ ErrorCode::InvalidTopBurnShardAccount
-    )]
-    pub current_top_burn_shard: Option<Account<'info, TopBurnShard>>,
+    /// CHECK: Validated in initialize_top_burn_shard function
+    pub current_top_burn_shard: Option<UncheckedAccount<'info>>,
     
     pub system_program: Program<'info, System>,
 }

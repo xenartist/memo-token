@@ -138,41 +138,61 @@ fn main() {
     }
 
     // create accounts list
-    let accounts = match current_top_burn_shard_pda {
-        Some(current_shard_pda) => {
-            // check if current index's shard exists
-            match client.get_account(&current_shard_pda) {
-                Ok(_) => {
-                    println!("Current top burn shard account found, including it in transaction");
-                    vec![
-                        AccountMeta::new(payer.pubkey(), true),                  // user
-                        AccountMeta::new(global_top_burn_index_pda, false),      // global_top_burn_index
-                        AccountMeta::new(top_burn_shard_pda, false),             // top_burn_shard
-                        AccountMeta::new_readonly(current_shard_pda, false),     // current_top_burn_shard
-                        AccountMeta::new_readonly(system_program::id(), false),  // system_program
-                    ]
-                },
-                Err(_) => {
-                    println!("Current top burn shard account not found or cannot be fetched");
-                    vec![
-                        AccountMeta::new(payer.pubkey(), true),
-                        AccountMeta::new(global_top_burn_index_pda, false),
-                        AccountMeta::new(top_burn_shard_pda, false),
-                        AccountMeta::new_readonly(system_program::id(), false),  // system_program
-                    ]
-                }
-            }
-        },
-        None => {
-            println!("No current top burn shard index found");
-            vec![
-                AccountMeta::new(payer.pubkey(), true),
-                AccountMeta::new(global_top_burn_index_pda, false),
-                AccountMeta::new(top_burn_shard_pda, false),
-                AccountMeta::new_readonly(system_program::id(), false),  // system_program
-            ]
+    let mut accounts = vec![
+        AccountMeta::new(payer.pubkey(), true),
+        AccountMeta::new(global_top_burn_index_pda, false),
+        AccountMeta::new(top_burn_shard_pda, false),
+    ];
+
+    // check current_index status
+    let has_current_index = if let Ok(account_data) = client.get_account(&global_top_burn_index_pda) {
+        if account_data.data.len() >= 17 {
+            account_data.data[16] == 1 // 1 represents Some, 0 represents None
+        } else {
+            false
         }
+    } else {
+        false
     };
+
+    // when there is current_index
+    if has_current_index {
+        // read current_index value
+        let current_index = if let Ok(account_data) = client.get_account(&global_top_burn_index_pda) {
+            u64::from_le_bytes(account_data.data[17..25].try_into().unwrap())
+        } else {
+            0 // theoretically not here
+        };
+        println!("Current top burn shard index: {}", current_index);
+        
+        // calculate current_shard's PDA
+        let (current_shard_pda, _) = Pubkey::find_program_address(
+            &[b"top_burn_shard", &current_index.to_le_bytes()],
+            &program_id
+        );
+        
+        // check if the account exists
+        match client.get_account(&current_shard_pda) {
+            Ok(_) => {
+                // account exists, add to parameters
+                println!("Current top burn shard account found (index {})", current_index);
+                accounts.push(AccountMeta::new_readonly(current_shard_pda, false));
+            },
+            Err(_) => {
+                // account does not exist, use default pubkey as placeholder
+                println!("Current top burn shard not found, using default pubkey");
+                accounts.push(AccountMeta::new_readonly(Pubkey::default(), false));
+            }
+        }
+    } else {
+        // no current_index, first shard
+        println!("No current index found (first shard)");
+        // use default pubkey as placeholder
+        accounts.push(AccountMeta::new_readonly(Pubkey::default(), false));
+    }
+
+    // add system program
+    accounts.push(AccountMeta::new_readonly(system_program::id(), false));
 
     // Prepare instruction data - Discriminator for 'initialize_top_burn_shard'
     // This is the correct discriminator from the IDL

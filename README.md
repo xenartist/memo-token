@@ -44,11 +44,11 @@ anchor build --program-name memo-social
 anchor deploy
 ```
 
-```
+```bash
 anchor deploy --program-name memo-token
 ```
 
-```
+```bash
 anchor deploy --program-name memo-social
 ```
 
