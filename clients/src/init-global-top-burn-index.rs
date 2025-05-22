@@ -57,8 +57,8 @@ fn main() {
 
     // Calculate required space
     let space = 8 + // discriminator
-                8 + // top_burn_shard_total_count
-                8;  // top_burn_shard_current_index
+                16 + // top_burn_shard_total_count (u128 needs 16 bytes)
+                17;  // top_burn_shard_current_index (Option<u128>: 1 byte for Option tag + 16 bytes for u128)
 
     // Calculate required lamports for rent exemption
     let rent = client

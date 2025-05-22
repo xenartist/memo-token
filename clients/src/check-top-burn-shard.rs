@@ -34,10 +34,16 @@ fn main() {
             
             let mut offset = 0;
             
-            // read current_index (1 byte)
-            let current_index = data[offset];
-            offset += 1;
-            println!("\nCurrent Index: {}", current_index);
+            // read index (16 bytes for u128)
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&data[offset..offset+16]);
+            let index = u128::from_le_bytes(bytes);
+            offset += 16;
+            println!("\nShard Index: {}", index);
+            
+            // read creator (32 bytes)
+            let creator = Pubkey::new(&data[offset..offset+32]);
+            offset += 32;
             
             // parse records vector
             let vec_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
@@ -76,7 +82,7 @@ fn main() {
                 println!("  Amount: {} ({} tokens)", amount, amount / 1_000_000_000);
                 
                 // current index position
-                if i == current_index as usize {
+                if i == index as usize {
                     println!("  ** Current Index Position **");
                 }
             }

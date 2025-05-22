@@ -120,23 +120,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(account) => {
             println!("Found global top burn index account");
             // Parse the data to find the current index and total count
-            if account.data.len() >= 17 { // 8 bytes discriminator + 8 bytes total_count + 1 byte option tag
+            if account.data.len() >= 25 { // 8 bytes discriminator + 16 bytes total_count + 1 byte option tag
                 let data = &account.data[8..]; // skip discriminator
                 
-                // Parse total_count
-                let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+                // Parse total_count - now u128 (16 bytes)
+                let total_count = u128::from_le_bytes(data[0..16].try_into().unwrap());
                 println!("Top burn shard total count: {}", total_count);
                 
-                // Parse current_index (Option<u64>)
-                let option_tag = data[8];
+                // Parse current_index (Option<u128>) - 1 byte for option tag
+                let option_tag = data[16];
                 
-                if option_tag == 1 && data.len() >= 17 { // Option::Some
-                    let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
+                if option_tag == 1 && data.len() >= 33 { // Option::Some (8 + 16 + 1 + 16 = 41)
+                    let current_index = u128::from_le_bytes(data[17..33].try_into().unwrap());
                     println!("Current top burn shard index: {}", current_index);
                     
-                    // Calculate the current shard PDA using the current index
+                    // Calculate the current shard PDA using the current index (16 bytes)
                     let (shard_pda, _) = Pubkey::find_program_address(
-                        &[b"top_burn_shard", &current_index.to_le_bytes()],
+                        &[b"top_burn_shard", &current_index.to_le_bytes()[..]],
                         &program_id,
                     );
                     current_top_burn_shard_pda = Some(shard_pda);
@@ -659,49 +659,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            
-            // Even if there's no signature, parse and print error code info
-            println!("\n=== PROGRAM ERROR INTERPRETATION ===");
-            match error_code {
-                Some(6001) => println!("Error: MemoTooShort - Memo is too short. Must be at least 69 bytes."),
-                Some(6002) => println!("Error: MemoTooLong - Memo is too long. Must be at most 700 bytes."),
-                Some(6003) => println!("Error: MemoRequired - Transaction must include a memo."),
-                Some(6004) => println!("Error: InvalidMemoFormat - Invalid memo format. Expected JSON format."),
-                Some(6005) => println!("Error: MissingSignature - Missing signature field in memo JSON."),
-                Some(6006) => println!("Error: UnauthorizedAuthority - Unauthorized: Only the authority can perform this action"),
-                Some(6007) => println!("Error: UnauthorizedAdmin - Unauthorized: Only the admin can perform this action"),
-                Some(6008) => println!("Error: BurnAmountTooSmall - Burn amount too small. Must burn at least 1 token."),
-                Some(6009) => println!("Error: UnauthorizedUser - Unauthorized: Only the user can update their own profile"),
-                Some(6010) => println!("Error: InvalidBurnAmount - Invalid burn amount. Must be an integer multiple of 1 token."),
-                Some(6011) => println!("Error: InvalidBurnHistoryIndex - Invalid burn history index"),
-                Some(6012) => println!("Error: BurnHistoryFull - Burn history account is full"),
-                Some(6013) => println!("Error: InvalidSignatureLength - Invalid signature length"),
-                Some(6014) => println!("Error: BurnHistoryRequired - Burn history account is required for recording burn history"),
-                Some(6015) => println!("Error: CounterOverflow - Counter overflow: maximum number of shards reached"),
-                Some(6016) => {
-                    println!("Error: TopBurnShardFull - Top burn shard is full. Try using the next available shard.");
-                    println!("Solution: Use a different shard or create a new shard with 'cargo run --bin init-top-burn-shard'");
-                },
-                Some(6017) => {
-                    println!("Error: NoMoreShardsAvailable - No more pre-allocated shards available.");
-                    println!("Solution: Create new shards first using 'cargo run --bin init-top-burn-shard'");
-                    println!("Then try your burn operation again.");
-                },
-                Some(6018) => println!("Error: NeedToUseDifferentShard - Need to use a different shard. The current shard is full."),
-                Some(101) => println!("Error: InstructionFallbackNotFound (0x65) - Anchor could not match your instruction to any defined in the program."),
-                Some(code) => println!("Unknown error code: 0x{:x} ({})", code, code),
-                None => println!("Could not extract specific error code from the error message.")
-            }
-            
-            println!("\n=== TROUBLESHOOTING GUIDE ===");
-            println!("1. The burn shards don't exist - run initialization scripts first");
-            println!("2. Insufficient token balance");
-            println!("3. Issues with the memo format - ensure it's valid JSON with required fields");
-            println!("4. Burn amount too small (< 1 token) or not an integer multiple of 1 token");
-            println!("5. Current top burn shard may be full - create a new shard with init-top-burn-shard");
-            println!("6. Global top burn index may need initialization");
-            println!("7. Burn history may be full (100 signatures) - create a new burn history account");
-            println!("8. Compute units might be insufficient (currently set to: {})", compute_units);
         }
     }
 

@@ -7,8 +7,8 @@ use std::convert::TryInto;
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[repr(C)]
 struct GlobalTopBurnIndex {
-    top_burn_shard_total_count: u64,     // Total count of allocated shards
-    top_burn_shard_current_index: Option<u64>,   // Current index with available space
+    top_burn_shard_total_count: u128,     // Total count of allocated shards
+    top_burn_shard_current_index: Option<u128>,   // Current index with available space
 }
 
 fn main() {
@@ -41,19 +41,21 @@ fn main() {
             // Parse data
             let data = &account.data[8..];
             
-            if data.len() >= 9 { // at least 8 bytes for total_count and 1 byte for option tag
-                // Parse top_burn_shard_total_count (8 bytes)
-                let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+            if data.len() >= 17 { // at least 16 bytes for total_count and 1 byte for option tag
+                // Parse top_burn_shard_total_count (16 bytes for u128)
+                let total_count_bytes = &data[0..16];
+                let total_count = u128::from_le_bytes(total_count_bytes.try_into().unwrap());
                 println!("Top Burn Shard Total Count: {}", total_count);
                 
-                // Parse top_burn_shard_current_index (Option<u64>) - read 1 byte for tag first
-                let option_tag = data[8];
+                // Parse top_burn_shard_current_index (Option<u128>) - read 1 byte for tag first
+                let option_tag = data[16];
                 let mut current_index_option = None;
                 
                 if option_tag == 0 {
                     println!("Top Burn Shard Current Index: None (No active shard)");
-                } else if option_tag == 1 && data.len() >= 17 {
-                    let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
+                } else if option_tag == 1 && data.len() >= 33 { // 1 byte for tag + 16 bytes for u128
+                    let current_index_bytes = &data[17..33];
+                    let current_index = u128::from_le_bytes(current_index_bytes.try_into().unwrap());
                     println!("Top Burn Shard Current Index: {}", current_index);
                     current_index_option = Some(current_index);
                 } else {
@@ -66,7 +68,7 @@ fn main() {
                 for i in 0..total_count {
                     // Calculate the shard PDA
                     let (shard_pda, _) = Pubkey::find_program_address(
-                        &[b"top_burn_shard", &i.to_le_bytes()],
+                        &[b"top_burn_shard", &i.to_le_bytes()[..]], // Using the full 16 bytes for u128
                         &program_id,
                     );
                     
@@ -79,20 +81,23 @@ fn main() {
                             println!("  Status: Exists");
                             
                             // Check if it has data
-                            if shard_account.data.len() > 44 { // At least discriminator + index + creator + vec length
+                            if shard_account.data.len() > 52 { // At least discriminator + index(16) + creator(32) + vec length(4)
                                 // Skip discriminator
                                 let shard_data = &shard_account.data[8..];
                                 
-                                // Parse index (8 bytes)
-                                let index = u64::from_le_bytes(shard_data[0..8].try_into().unwrap());
+                                // Parse index (16 bytes for u128)
+                                let index_bytes = &shard_data[0..16];
+                                let index = u128::from_le_bytes(index_bytes.try_into().unwrap());
                                 println!("  Index: {}", index);
                                 
                                 // Parse creator (32 bytes)
-                                let creator = Pubkey::from(<[u8; 32]>::try_from(&shard_data[8..40]).unwrap());
+                                let creator_bytes = &shard_data[16..48];
+                                let creator = Pubkey::new(creator_bytes);
                                 println!("  Creator: {}", creator);
                                 
                                 // Parse records vector length (4 bytes)
-                                let record_count = u32::from_le_bytes(shard_data[40..44].try_into().unwrap());
+                                let record_count_bytes = &shard_data[48..52];
+                                let record_count = u32::from_le_bytes(record_count_bytes.try_into().unwrap());
                                 println!("  Record Count: {}", record_count);
                                 println!("  Max Records: 69");
                                 
