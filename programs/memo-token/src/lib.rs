@@ -671,31 +671,40 @@ pub mod memo_token {
             msg!("Added new burn record to latest burn shard");
         }
         
-        // update top burn shard
-        if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
-            // if current shard is full, we need to try to update global_top_burn_index's current_index
-            if top_burn_shard.is_full() && record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
-                if let Some(global_top_burn_index) = &mut ctx.accounts.global_top_burn_index {
-                    if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
-                        // if current shard is the shard that current_index points to
-                        if current_index == top_burn_shard.index {
-                            // check if there is a next shard available
-                            if current_index + 1 < global_top_burn_index.top_burn_shard_total_count {
-                                // update current_index to the next shard
-                                global_top_burn_index.top_burn_shard_current_index = Some(current_index + 1);
-                                msg!("Updated current index to {} as current shard is full", current_index + 1);
+        // if burn amount is enough
+        if record.amount >= TopBurnShard::MIN_BURN_AMOUNT {
+            // if there is current top burn shard
+            if let Some(top_burn_shard) = &mut ctx.accounts.top_burn_shard {
+                // check if it is full
+                if top_burn_shard.is_full() {
+                    msg!("Current top burn shard is full. Please create more shards with init-top-burn-shard.");
+                    return Err(ErrorCode::TopBurnShardFull.into());
+                }
+                
+                // current shard has space, add the record
+                top_burn_shard.add_record(record.clone());
+                msg!("Added burn record to top burn shard with index {}", top_burn_shard.index);
+                
+                // check if this is the last empty shard
+                if top_burn_shard.is_full() {
+                    // add this record makes the shard full, update the global index to point to the next shard
+                    if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
+                        if let Some(current_index) = global_index.top_burn_shard_current_index {
+                            // ensure there is a next available shard
+                            if current_index + 1 < global_index.top_burn_shard_total_count {
+                                // update the global index to point to the next shard
+                                global_index.top_burn_shard_current_index = Some(current_index + 1);
+                                msg!("Current shard is now full. Updated global index to point to next shard with index {}", current_index + 1);
                             } else {
-                                msg!("Current shard is full but no next shard available");
+                                msg!("Warning: Current shard is now full and no more pre-allocated shards available");
+                                msg!("Please create a new shard using init-top-burn-shard before the next high-value burn");
                             }
                         }
                     }
                 }
-                msg!("Top burn shard with index {} is full", top_burn_shard.index);
-            } else if top_burn_shard.add_record(record) {
-                msg!("Added new burn record to top burn shard with index {}", top_burn_shard.index);
             } else {
-                msg!("Burn amount not high enough for top burn shard (minimum {} tokens)", 
-                    TopBurnShard::MIN_BURN_AMOUNT / 1_000_000_000);
+                // no top burn shard provided
+                msg!("No top burn shard provided. This burn exceeds threshold but can't be recorded in top burns");
             }
         }
 
