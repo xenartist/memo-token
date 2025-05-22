@@ -52,10 +52,8 @@ pub struct TopBurnShard {
 }
 
 impl TopBurnShard {
-    //pub const MAX_RECORDS: usize = 69;
-    //pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
-    pub const MAX_RECORDS: usize = 6; // 6 records for testing ONLY
-    pub const MIN_BURN_AMOUNT: u64 = 1 * 1_000_000_000; // 1 tokens threshold for testing ONLY
+    pub const MAX_RECORDS: usize = 69;
+    pub const MIN_BURN_AMOUNT: u64 = 420 * 1_000_000_000; // 420 tokens threshold
     
     pub fn add_record(&mut self, record: BurnRecord) -> bool {
         // Check if the burn amount meets the minimum threshold
