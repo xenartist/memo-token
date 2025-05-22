@@ -694,7 +694,8 @@ pub mod memo_token {
             } else if top_burn_shard.add_record(record) {
                 msg!("Added new burn record to top burn shard with index {}", top_burn_shard.index);
             } else {
-                msg!("Burn amount not high enough for top burn shard (minimum 420 tokens)");
+                msg!("Burn amount not high enough for top burn shard (minimum {} tokens)", 
+                    TopBurnShard::MIN_BURN_AMOUNT / 1_000_000_000);
             }
         }
 
