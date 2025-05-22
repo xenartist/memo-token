@@ -441,9 +441,9 @@ pub mod memo_token {
                 if current_shard.owner == &crate::ID {
                     // get account data, avoid parsing the whole structure
                     if let Ok(data) = current_shard.try_borrow_data() {
-                        if data.len() >= 60 {
-                            // read the records.len field (56-60 bytes)
-                            let records_len = u32::from_le_bytes([data[56], data[57], data[58], data[59]]) as usize;
+                        if data.len() >= 68 { // 8 + 16 + 32 + 4 + 8 = 68
+                            // read the records.len field (64-68 bytes)
+                            let records_len = u32::from_le_bytes([data[64], data[65], data[66], data[67]]) as usize;
                             
                             if records_len >= TopBurnShard::MAX_RECORDS {
                                 // shard is full, update index
