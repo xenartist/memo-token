@@ -325,17 +325,17 @@ fn run_burns(
                         let data = &account.data[8..]; // 跳过discriminator
                         
                         // parse total_count
-                        let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
+                        let total_count = u128::from_le_bytes(data[0..16].try_into().unwrap());
                         
                         // parse current_index
-                        let option_tag = data[8];
+                        let option_tag = data[16];
                         
                         if option_tag == 1 && data.len() >= 17 {
-                            let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
+                            let current_index = u128::from_le_bytes(data[17..33].try_into().unwrap());
                             
                             // calculate the primary shard PDA
                             let (primary_pda, _) = Pubkey::find_program_address(
-                                &[b"top_burn_shard", &current_index.to_le_bytes()],
+                                &[b"top_burn_shard", &current_index.to_le_bytes()[..]],
                                 &program_id,
                             );
                             primary_shard_pda = Some(primary_pda);
@@ -344,7 +344,7 @@ fn run_burns(
                             if current_index + 1 < total_count {
                                 let next_index = current_index + 1;
                                 let (backup_pda, _) = Pubkey::find_program_address(
-                                    &[b"top_burn_shard", &next_index.to_le_bytes()],
+                                    &[b"top_burn_shard", &next_index.to_le_bytes()[..]],
                                     &program_id,
                                 );
                                 backup_shard_pda = Some(backup_pda);
