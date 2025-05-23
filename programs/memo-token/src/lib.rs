@@ -1172,9 +1172,6 @@ pub enum ErrorCode {
     #[msg("Missing signature field in memo JSON.")]
     MissingSignature,
     
-    #[msg("Unauthorized: Only the authority can perform this action")]
-    UnauthorizedAuthority,
-    
     #[msg("Unauthorized: Only the admin can perform this action")]
     UnauthorizedAdmin,
     
@@ -1192,28 +1189,10 @@ pub enum ErrorCode {
     
     #[msg("Burn history account is full")]
     BurnHistoryFull,
-    
-    #[msg("Invalid signature length")]
-    InvalidSignatureLength,
-
-    #[msg("Burn history account is required for recording burn history")]
-    BurnHistoryRequired,
 
     #[msg("Counter overflow: maximum number of shards reached")]
     CounterOverflow,
 
     #[msg("Top burn shard is full")]
     TopBurnShardFull,
-
-    #[msg("Top burn shard is full. Need to use a different shard.")]
-    NeedToUseDifferentShard,
-    
-    #[msg("No more pre-allocated shards available. Create new shards first.")]
-    NoMoreShardsAvailable,
-    
-    #[msg("Retry with the next shard. Global index has been updated.")]
-    RetryWithNextShard,
-
-    #[msg("Invalid top burn shard account. Account doesn't match the current index.")]
-    InvalidTopBurnShardAccount,
 }
