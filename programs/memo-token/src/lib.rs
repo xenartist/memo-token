@@ -855,7 +855,10 @@ pub struct ProcessTransfer<'info> {
     /// CHECK: PDA as mint authority
     pub mint_authority: AccountInfo<'info>,
     
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = token_account.mint == mint.key() && token_account.owner == user.key() @ ErrorCode::InvalidTokenAccount
+    )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
     
     pub token_program: Program<'info, Token2022>,
@@ -884,7 +887,7 @@ pub struct ProcessBurn<'info> {
     
     #[account(
         mut,
-        constraint = token_account.mint == mint.key() && token_account.owner == user.key()
+        constraint = token_account.mint == mint.key() && token_account.owner == user.key() @ ErrorCode::InvalidTokenAccount
     )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
     
@@ -1203,4 +1206,7 @@ pub enum ErrorCode {
 
     #[msg("Top burn shard is full")]
     TopBurnShardFull,
+
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
 }
