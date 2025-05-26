@@ -480,6 +480,11 @@ pub mod memo_token {
 
     // Close top burn shard account
     pub fn close_top_burn_shard(ctx: Context<CloseTopBurnShard>) -> Result<()> {
+        // check if caller is admin
+        if ctx.accounts.user.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+        
         let global_top_burn_index = &mut ctx.accounts.global_top_burn_index;
         let top_burn_shard = &ctx.accounts.top_burn_shard;
         
