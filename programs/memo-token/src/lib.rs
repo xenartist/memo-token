@@ -1032,7 +1032,7 @@ pub struct InitializeTopBurnShard<'info> {
 
 #[derive(Accounts)]
 pub struct CloseTopBurnShard<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = user.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
     pub user: Signer<'info>,
     
     #[account(
