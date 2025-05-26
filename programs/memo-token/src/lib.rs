@@ -149,6 +149,13 @@ pub mod memo_token {
     }
 
     pub fn process_transfer(ctx: Context<ProcessTransfer>) -> Result<()> {
+        // check user profile authority
+        if let Some(user_profile) = &ctx.accounts.user_profile {
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+        }
+        
         // check memo instruction
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69)?;
         if !memo_found {
@@ -260,6 +267,13 @@ pub mod memo_token {
 
     // modify process_burn function
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
+        // check user profile authority
+        if let Some(user_profile) = &ctx.accounts.user_profile {
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+        }
+        
         // check burn amount is at least 1 token (10^9 units)
         if amount < 1_000_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
@@ -574,6 +588,13 @@ pub mod memo_token {
 
     // 2. process burn with history
     pub fn process_burn_with_history(ctx: Context<ProcessBurnWithHistory>, amount: u64) -> Result<()> {
+        // check user profile authority
+        if let Some(user_profile) = &ctx.accounts.user_profile {
+            if user_profile.pubkey != ctx.accounts.user.key() {
+                return Err(ErrorCode::UnauthorizedUser.into());
+            }
+        }
+        
         // check burn amount is at least 1 token (10^9 units)
         if amount < 1_000_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
