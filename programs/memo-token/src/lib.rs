@@ -929,7 +929,7 @@ pub struct ProcessBurnWithHistory<'info> {
     
     #[account(
         mut,
-        constraint = token_account.mint == mint.key() && token_account.owner == user.key()
+        constraint = token_account.mint == mint.key() && token_account.owner == user.key() @ ErrorCode::InvalidTokenAccount
     )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
     
