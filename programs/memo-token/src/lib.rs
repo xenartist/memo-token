@@ -966,7 +966,7 @@ pub struct ProcessBurnWithHistory<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeLatestBurnShard<'info> {
-    #[account(mut, constraint = payer.key().to_string() == ADMIN_PUBKEY)]
+    #[account(mut, constraint = payer.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
     pub payer: Signer<'info>,
     
     #[account(
@@ -986,7 +986,7 @@ pub struct InitializeLatestBurnShard<'info> {
 
 #[derive(Accounts)]
 pub struct CloseLatestBurnShard<'info> {
-    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
+    #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
     pub recipient: Signer<'info>,
     
     #[account(
