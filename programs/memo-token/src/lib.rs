@@ -416,7 +416,11 @@ pub mod memo_token {
 
     // Close latest burn shard account
     pub fn close_latest_burn_shard(ctx: Context<CloseLatestBurnShard>) -> Result<()> {
-        // Authority check is handled in the account validation
+        // check if caller is admin
+        if ctx.accounts.recipient.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+        
         msg!("Closing latest burn shard account");
         Ok(())
     }
@@ -531,12 +535,13 @@ pub mod memo_token {
     }
 
     pub fn initialize_burn_history(ctx: Context<InitializeUserBurnHistory>) -> Result<()> {
-        // get burn history and user profile
-        let burn_history = &mut ctx.accounts.burn_history;
-        let user_profile = &mut ctx.accounts.user_profile;
+        // check user profile authority
+        if ctx.accounts.user_profile.pubkey != ctx.accounts.user.key() {
+            return Err(ErrorCode::UnauthorizedUser.into());
+        }
         
         // automatically calculate new index
-        let new_index = match user_profile.burn_history_index {
+        let new_index = match ctx.accounts.user_profile.burn_history_index {
             None => {
                 0
             },
@@ -546,12 +551,12 @@ pub mod memo_token {
         };
         
         // initialize burn history
-        burn_history.owner = ctx.accounts.user.key();
-        burn_history.index = new_index;
-        burn_history.signatures = Vec::new();
+        ctx.accounts.burn_history.owner = ctx.accounts.user.key();
+        ctx.accounts.burn_history.index = new_index;
+        ctx.accounts.burn_history.signatures = Vec::new();
         
         // update user profile
-        user_profile.burn_history_index = Some(new_index);
+        ctx.accounts.user_profile.burn_history_index = Some(new_index);
         
         msg!("Initialized burn history account with index: {}", new_index);
         Ok(())
@@ -559,30 +564,37 @@ pub mod memo_token {
 
     // close user burn history
     pub fn close_user_burn_history(ctx: Context<CloseUserBurnHistory>) -> Result<()> {
-        let user_profile = &mut ctx.accounts.user_profile;
-        let burn_history = &ctx.accounts.burn_history;
+        // check user profile authority
+        if ctx.accounts.user_profile.pubkey != ctx.accounts.user.key() {
+            return Err(ErrorCode::UnauthorizedUser.into());
+        }
+        
+        // check burn history authority
+        if ctx.accounts.burn_history.owner != ctx.accounts.user.key() {
+            return Err(ErrorCode::UnauthorizedUser.into());
+        }
 
         // ensure closing the current index burn history
-        if let Some(current_index) = user_profile.burn_history_index {
+        if let Some(current_index) = ctx.accounts.user_profile.burn_history_index {
             // verify current burn history index
-            if burn_history.index != current_index {
+            if ctx.accounts.burn_history.index != current_index {
                 return Err(ErrorCode::InvalidBurnHistoryIndex.into());
             }
 
             // if current index is 0, set burn_history_index to None
             if current_index == 0 {
-                user_profile.burn_history_index = None;
+                ctx.accounts.user_profile.burn_history_index = None;
                 msg!("Closed last burn history account, burn_history_index set to None");
             } else {
                 // otherwise, reduce index by 1
-                user_profile.burn_history_index = Some(current_index - 1);
+                ctx.accounts.user_profile.burn_history_index = Some(current_index - 1);
                 msg!("Reduced burn_history_index to {}", current_index - 1);
             }
         } else {
             return Err(ErrorCode::InvalidBurnHistoryIndex.into());
         }
 
-        msg!("Closing burn history with index {}", burn_history.index);
+        msg!("Closing burn history with index {}", ctx.accounts.burn_history.index);
         Ok(())
     }
 
