@@ -730,7 +730,7 @@ pub mod memo_token {
     // InitializeGlobalBurnIndex
     #[derive(Accounts)]
     pub struct InitializeGlobalTopBurnIndex<'info> {
-        #[account(mut)]
+        #[account(mut, constraint = payer.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
         pub payer: Signer<'info>,
         
         #[account(
@@ -764,7 +764,10 @@ pub mod memo_token {
 
     // close global top burn index
     pub fn close_global_top_burn_index(ctx: Context<CloseGlobalTopBurnIndex>) -> Result<()> {
-        // Authority check is handled in the account validation
+        // check if caller is admin
+        if ctx.accounts.recipient.key().to_string() != ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
         
         msg!("Closing global top burn index account");
         Ok(())
@@ -773,7 +776,7 @@ pub mod memo_token {
     // close global top burn index
     #[derive(Accounts)]
     pub struct CloseGlobalTopBurnIndex<'info> {
-        #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY)]
+        #[account(mut, constraint = recipient.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
         pub recipient: Signer<'info>,
         
         #[account(
