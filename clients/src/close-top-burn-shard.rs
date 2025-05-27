@@ -16,21 +16,21 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[repr(C)]
-struct OptionU128 {
+struct OptionU64 {
     tag: u8,
-    value: Option<u128>,
+    value: Option<u64>,
 }
 
-impl OptionU128 {
+impl OptionU64 {
     fn from_bytes(data: &[u8]) -> Self {
         let tag = data[0];
         if tag == 0 {
-            OptionU128 { tag: 0, value: None }
+            OptionU64 { tag: 0, value: None }
         } else {
-            let mut bytes = [0u8; 16];
-            bytes.copy_from_slice(&data[1..17]);
-            let value = u128::from_le_bytes(bytes);
-            OptionU128 { tag: 1, value: Some(value) }
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&data[1..9]);
+            let value = u64::from_le_bytes(bytes);
+            OptionU64 { tag: 1, value: Some(value) }
         }
     }
 }
@@ -38,8 +38,8 @@ impl OptionU128 {
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[repr(C)]
 struct GlobalTopBurnIndex {
-    top_burn_shard_total_count: u128,
-    top_burn_shard_current_index: OptionU128,
+    top_burn_shard_total_count: u64,
+    top_burn_shard_current_index: OptionU64,
 }
 
 fn main() {
@@ -86,10 +86,10 @@ fn main() {
 
     // Skip the 8-byte discriminator
     let data = &global_top_burn_index_account.data[8..];
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&data[0..16]);
-    let total_count = u128::from_le_bytes(bytes);
-    let current_index_option = OptionU128::from_bytes(&data[16..]);
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[0..8]);
+    let total_count = u64::from_le_bytes(bytes);
+    let current_index_option = OptionU64::from_bytes(&data[8..]);
 
     println!("Total top burn shard count: {}", total_count);
     println!("Current top burn shard index: {:?}", current_index_option.value);
@@ -206,10 +206,10 @@ fn main() {
         Ok(account) => {
             // Skip the 8-byte discriminator
             let data = &account.data[8..];
-            let mut bytes = [0u8; 16];
-            bytes.copy_from_slice(&data[0..16]);
-            let total_count = u128::from_le_bytes(bytes);
-            let current_index_option = OptionU128::from_bytes(&data[16..]);
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&data[0..8]);
+            let total_count = u64::from_le_bytes(bytes);
+            let current_index_option = OptionU64::from_bytes(&data[8..]);
 
             println!("\nFinal global top burn index state:");
             println!("Total top burn shard count: {}", total_count);

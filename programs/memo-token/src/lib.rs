@@ -46,7 +46,7 @@ impl LatestBurnShard {
 #[account]
 #[derive(Default)]
 pub struct TopBurnShard {
-    pub index: u128,           // Index of this shard in the global index
+    pub index: u64,           // Index of this shard in the global index
     pub creator: Pubkey,      // Creator's public key
     pub records: Vec<BurnRecord>, // Burn records
 }
@@ -106,8 +106,8 @@ pub struct UserBurnHistory {
 #[account]
 #[derive(Default)]
 pub struct GlobalTopBurnIndex {
-    pub top_burn_shard_total_count: u128,       // Total count of allocated shards
-    pub top_burn_shard_current_index: Option<u128>,  // Current index with available space, None if no shards exist
+    pub top_burn_shard_total_count: u64,       // Total count of allocated shards
+    pub top_burn_shard_current_index: Option<u64>,  // Current index with available space, None if no shards exist
 }
 
 #[program]
@@ -459,9 +459,9 @@ pub mod memo_token {
                 if current_shard.owner == &crate::ID {
                     // get account data, avoid parsing the whole structure
                     if let Ok(data) = current_shard.try_borrow_data() {
-                        if data.len() >= 68 { // 8 + 16 + 32 + 4 + 8 = 68
-                            // read the records.len field (64-68 bytes)
-                            let records_len = u32::from_le_bytes([data[64], data[65], data[66], data[67]]) as usize;
+                        if data.len() >= 52 { // 8 + 8 + 32 + 4 = 52
+                            // read the records.len field (48-52 bytes)
+                            let records_len = u32::from_le_bytes([data[48], data[49], data[50], data[51]]) as usize;
                             
                             if records_len >= TopBurnShard::MAX_RECORDS {
                                 // shard is full, update index
@@ -775,8 +775,8 @@ pub mod memo_token {
             init,
             payer = payer,
             space = 8 + // discriminator
-                   16 + // top_burn_shard_total_count (u128 needs 16 bytes)
-                   17,  // top_burn_shard_current_index (Option<u128>: 1 byte for Option tag + 16 bytes for u128)
+                   8 + // top_burn_shard_total_count (u64 needs 8 bytes)
+                   9,  // top_burn_shard_current_index (Option<u64>: 1 byte for Option tag + 8 bytes for u64)
             seeds = [b"global_top_burn_index"],
             bump
         )]
@@ -1056,10 +1056,10 @@ pub struct InitializeTopBurnShard<'info> {
     #[account(
         init,
         payer = user,
-        space = 8 + 16 + 32 + 4 + (69 * (32 + 88 + 8 + 8 + 8)), // 16 bytes for u128 index
+        space = 8 + 8 + 32 + 4 + (69 * (32 + 88 + 8 + 8 + 8)), // 8字节用于u64 index
         seeds = [
             b"top_burn_shard", 
-            &global_top_burn_index.top_burn_shard_total_count.to_le_bytes()[..] // 16 bytes for u128 index
+            global_top_burn_index.top_burn_shard_total_count.to_le_bytes().as_ref() // 确保使用.as_ref()
         ],
         bump
     )]

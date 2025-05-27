@@ -39,17 +39,17 @@ fn main() {
     );
 
     // initalize total_count
-    let mut shard_total_count: u128 = 0;
+    let mut shard_total_count: u64 = 0;
 
     // Check if global top burn index account exists
     match client.get_account(&global_top_burn_index_pda) {
         Ok(account) => {
             println!("Global top burn index account exists, continuing...");
             // parse account data to get current shard count
-            if account.data.len() >= 24 { // 8字节discriminator + 16字节u128
-                let mut bytes = [0u8; 16];
-                bytes.copy_from_slice(&account.data[8..24]);
-                shard_total_count = u128::from_le_bytes(bytes);
+            if account.data.len() >= 16 { // 8 bytes discriminator + 8 bytes u64
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&account.data[8..16]);
+                shard_total_count = u64::from_le_bytes(bytes);
                 println!("Current total count: {}", shard_total_count);
                 
                 if shard_total_count == 0 {
@@ -95,11 +95,7 @@ fn main() {
     }
 
     // Calculate required space
-    let space = 8 + // discriminator
-                16 + // index (u128)
-                32 + // creator pubkey
-                4 + // vec len
-                (69 * (32 + 88 + 8 + 8 + 8)); // 69 records
+    let space = 8 + 8 + 32 + 4 + (69 * (32 + 88 + 8 + 8 + 8)); // 8 bytes for u64 index
 
     // Calculate required lamports for rent exemption
     let rent = client
@@ -118,12 +114,12 @@ fn main() {
     // read current index from global top burn index account
     match client.get_account(&global_top_burn_index_pda) {
         Ok(account) => {
-            if account.data.len() >= 25 { // 8 + 16 + 1
-                let option_tag = account.data[24];
-                if option_tag == 1 && account.data.len() >= 41 { // 8+16+1+16
-                    let mut bytes = [0u8; 16];
-                    bytes.copy_from_slice(&account.data[25..41]);
-                    let current_index = u128::from_le_bytes(bytes);
+            if account.data.len() >= 17 { // 8 + 8 + 1
+                let option_tag = account.data[16];
+                if option_tag == 1 && account.data.len() >= 25 { // 8+8+1+8
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&account.data[17..25]);
+                    let current_index = u64::from_le_bytes(bytes);
                     println!("Current top burn shard index: {}", current_index);
                     
                     // calculate current index's shard PDA
@@ -149,8 +145,8 @@ fn main() {
 
     // check current_index status
     let has_current_index = if let Ok(account_data) = client.get_account(&global_top_burn_index_pda) {
-        if account_data.data.len() >= 25 {
-            account_data.data[24] == 1 // 1 represents Some, 0 represents None
+        if account_data.data.len() >= 17 {
+            account_data.data[16] == 1 // 1 represents Some, 0 represents None
         } else {
             false
         }
@@ -162,7 +158,7 @@ fn main() {
     if has_current_index {
         // read current_index value
         let current_index = if let Ok(account_data) = client.get_account(&global_top_burn_index_pda) {
-            u128::from_le_bytes(account_data.data[25..41].try_into().unwrap())
+            u64::from_le_bytes(account_data.data[17..25].try_into().unwrap())
         } else {
             0 // theoretically not here
         };

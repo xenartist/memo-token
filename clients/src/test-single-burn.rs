@@ -120,25 +120,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(account) => {
             println!("Found global top burn index account");
             // parse the data to find the current index and total count
-            if account.data.len() >= 25 { // 8 bytes discriminator + 16 bytes total_count + 1 byte option tag
+            if account.data.len() >= 17 { // 8 bytes discriminator + 8 bytes total_count + 1 byte option tag
                 let data = &account.data[8..]; // skip discriminator
                 
-                // parse total_count - now u128 (16 bytes)
-                let total_count = u128::from_le_bytes(data[0..16].try_into().unwrap());
+                // parse total_count - now u64 (8 bytes)
+                let total_count = u64::from_le_bytes(data[0..8].try_into().unwrap());
                 println!("Top burn shard total count: {}", total_count);
                 
-                // parse current_index (Option<u128>) - 1 byte for option tag
-                let option_tag = data[16];
+                // parse current_index (Option<u64>) - 1 byte for option tag
+                let option_tag = data[8];
                 
-                if option_tag == 1 && data.len() >= 33 { // Option::Some (8 + 16 + 1 + 16 = 41)
-                    let current_index = u128::from_le_bytes(data[17..33].try_into().unwrap());
+                if option_tag == 1 && data.len() >= 17 { // Option::Some (8 + 8 + 1 + 8 = 25)
+                    let current_index = u64::from_le_bytes(data[9..17].try_into().unwrap());
                     println!("Current top burn shard index: {}", current_index);
                     
-                    // calculate the current shard PDA using the current index (16 bytes)
+                    // calculate the current shard PDA using the current index (8 bytes)
                     let (shard_pda, _) = Pubkey::find_program_address(
-                        &[b"top_burn_shard", &current_index.to_le_bytes()[..]],
-        &program_id,
-    );
+                        &[b"top_burn_shard", &current_index.to_le_bytes()],
+                        &program_id,
+                    );
                     current_top_burn_shard_pda = Some(shard_pda);
                     println!("Current top burn shard PDA: {}", shard_pda);
                 } else if option_tag == 0 { // Option::None

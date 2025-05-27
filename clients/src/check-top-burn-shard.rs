@@ -34,11 +34,11 @@ fn main() {
             
             let mut offset = 0;
             
-            // read index (16 bytes for u128)
-            let mut bytes = [0u8; 16];
-            bytes.copy_from_slice(&data[offset..offset+16]);
-            let index = u128::from_le_bytes(bytes);
-            offset += 16;
+            // read index (8 bytes for u64)
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&data[offset..offset+8]);
+            let index = u64::from_le_bytes(bytes);
+            offset += 8;
             println!("\nShard Index: {}", index);
             
             // read creator (32 bytes)
