@@ -659,6 +659,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+
+            // Print program error interpretation
+            if let Some(code) = error_code {
+                println!("\n=== PROGRAM ERROR INTERPRETATION ===");
+                match code {
+                    6001 => println!("Error: MemoTooShort - Memo is too short. Must be at least 69 bytes."),
+                    6002 => println!("Error: MemoTooLong - Memo is too long. Must be at most 700 bytes."),
+                    6003 => println!("Error: MemoRequired - Transaction must include a memo."),
+                    6004 => println!("Error: InvalidMemoFormat - Invalid memo format. Expected JSON format."),
+                    6005 => println!("Error: MissingSignature - Missing signature field in memo JSON."),
+                    6006 => println!("Error: UnauthorizedAdmin - Unauthorized: Only the admin can perform this action"),
+                    6007 => println!("Error: BurnAmountTooSmall - Burn amount too small. Must burn at least 1 token."),
+                    6008 => println!("Error: UnauthorizedUser - Unauthorized: Only the user can update their own profile"),
+                    6009 => println!("Error: InvalidBurnAmount - Invalid burn amount. Must be an integer multiple of 1 token."),
+                    6010 => println!("Error: InvalidBurnHistoryIndex - Invalid burn history index"),
+                    6011 => println!("Error: BurnHistoryFull - Burn history account is full"),
+                    6012 => println!("Error: CounterOverflow - Counter overflow: maximum number of shards reached"),
+                    6013 => println!("Error: TopBurnShardFull - Top burn shard is full."),
+                    6014 => println!("Error: InvalidTokenAccount - Invalid token account"),
+                    101 => println!("Error: InstructionFallbackNotFound (0x65) - Anchor could not match your instruction to any defined in the program."),
+                    _ => println!("Unknown error code: 0x{:x} ({})", code, code),
+                }
+            }
         }
     }
 
