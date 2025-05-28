@@ -101,6 +101,10 @@ cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
 ```
 cargo run --bin test-single-burn
 ```
+##### burn 420 tokens
+```
+cargo run --bin test-single-burn - 420
+```
 
 ##### add burn_history in memo and set it to "N"
 ```
