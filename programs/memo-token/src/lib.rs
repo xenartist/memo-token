@@ -393,13 +393,20 @@ pub mod memo_token {
                     // add this record makes the shard full, update the global index to point to the next shard
                     if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
                         if let Some(current_index) = global_index.top_burn_shard_current_index {
-                            // ensure there is a next available shard
-                            if current_index + 1 < global_index.top_burn_shard_total_count {
-                                // update the global index to point to the next shard
-                                global_index.top_burn_shard_current_index = Some(current_index + 1);
-                                msg!("Current shard is now full. Updated global index to point to next shard with index {}", current_index + 1);
+                            // use checked_add to prevent overflow
+                            if let Some(next_index) = current_index.checked_add(1) {
+                                // ensure there is a next available shard
+                                if next_index < global_index.top_burn_shard_total_count {
+                                    // update the global index to point to the next shard
+                                    global_index.top_burn_shard_current_index = Some(next_index);
+                                    msg!("Current shard is now full. Updated global index to point to next shard with index {}", next_index);
+                                } else {
+                                    msg!("Warning: Current shard is now full and no more pre-allocated shards available");
+                                    msg!("Please create a new shard using init-top-burn-shard before the next high-value burn");
+                                }
                             } else {
-                                msg!("Warning: Current shard is now full and no more pre-allocated shards available");
+                                // handle overflow
+                                msg!("Warning: Index overflow detected. Current shard is full but cannot increment index");
                                 msg!("Please create a new shard using init-top-burn-shard before the next high-value burn");
                             }
                         }
@@ -466,13 +473,18 @@ pub mod memo_token {
                             if records_len >= TopBurnShard::MAX_RECORDS {
                                 // shard is full, update index
                                 if let Some(current_index) = global_top_burn_index.top_burn_shard_current_index {
-                                    let next_index = current_index + 1;
-                                    if next_index < global_top_burn_index.top_burn_shard_total_count {
-                                        global_top_burn_index.top_burn_shard_current_index = Some(next_index);
-                                        msg!("Current shard full, updated index to {}", next_index);
+                                    if let Some(next_index) = current_index.checked_add(1) {
+                                        if next_index < global_top_burn_index.top_burn_shard_total_count {
+                                            global_top_burn_index.top_burn_shard_current_index = Some(next_index);
+                                            msg!("Current shard full, updated index to {}", next_index);
+                                        } else {
+                                            global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
+                                            msg!("No more shards, updated to new one {}", top_burn_shard.index);
+                                        }
                                     } else {
+                                        // handle overflow
+                                        msg!("Warning: Current index overflow detected, using new shard");
                                         global_top_burn_index.top_burn_shard_current_index = Some(top_burn_shard.index);
-                                        msg!("No more shards, updated to new one {}", top_burn_shard.index);
                                     }
                                 }
                             } else {
@@ -726,13 +738,20 @@ pub mod memo_token {
                     // add this record makes the shard full, update the global index to point to the next shard
                     if let Some(global_index) = &mut ctx.accounts.global_top_burn_index {
                         if let Some(current_index) = global_index.top_burn_shard_current_index {
-                            // ensure there is a next available shard
-                            if current_index + 1 < global_index.top_burn_shard_total_count {
-                                // update the global index to point to the next shard
-                                global_index.top_burn_shard_current_index = Some(current_index + 1);
-                                msg!("Current shard is now full. Updated global index to point to next shard with index {}", current_index + 1);
+                            // use checked_add to prevent overflow
+                            if let Some(next_index) = current_index.checked_add(1) {
+                                // ensure there is a next available shard
+                                if next_index < global_index.top_burn_shard_total_count {
+                                    // update the global index to point to the next shard
+                                    global_index.top_burn_shard_current_index = Some(next_index);
+                                    msg!("Current shard is now full. Updated global index to point to next shard with index {}", next_index);
+                                } else {
+                                    msg!("Warning: Current shard is now full and no more pre-allocated shards available");
+                                    msg!("Please create a new shard using init-top-burn-shard before the next high-value burn");
+                                }
                             } else {
-                                msg!("Warning: Current shard is now full and no more pre-allocated shards available");
+                                // handle overflow
+                                msg!("Warning: Index overflow detected. Current shard is full but cannot increment index");
                                 msg!("Please create a new shard using init-top-burn-shard before the next high-value burn");
                             }
                         }
