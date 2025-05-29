@@ -20,6 +20,8 @@ pub struct BurnRecord {
 
 // admin public key
 pub const ADMIN_PUBKEY: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"; // replace with your admin public key
+// authorized mint
+pub const AUTHORIZED_MINT: &str = "MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7";
 
 // latest burn shard
 #[account]
@@ -901,7 +903,10 @@ pub struct ProcessTransfer<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+    )]
     pub mint: InterfaceAccount<'info, Mint>,
     
     /// CHECK: PDA as mint authority
@@ -934,7 +939,10 @@ pub struct ProcessBurn<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+    )]
     pub mint: InterfaceAccount<'info, Mint>,
     
     #[account(
@@ -976,7 +984,10 @@ pub struct ProcessBurnWithHistory<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+    )]
     pub mint: InterfaceAccount<'info, Mint>,
     
     #[account(
@@ -1261,4 +1272,7 @@ pub enum ErrorCode {
 
     #[msg("Invalid token account")]
     InvalidTokenAccount,
+
+    #[msg("Unauthorized mint: only the specified mint can be used")]
+    UnauthorizedMint,
 }
