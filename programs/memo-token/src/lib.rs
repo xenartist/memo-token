@@ -8,6 +8,11 @@ use borsh::BorshDeserialize;
 
 declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
 
+// admin public key
+pub const ADMIN_PUBKEY: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"; // replace with your admin public key
+// authorized mint
+pub const AUTHORIZED_MINT: &str = "MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7";
+
 // individual burn record
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct BurnRecord {
@@ -17,11 +22,6 @@ pub struct BurnRecord {
     pub blocktime: i64,      // 8 bytes
     pub amount: u64,         // 8 bytes - token burn amount
 }
-
-// admin public key
-pub const ADMIN_PUBKEY: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"; // replace with your admin public key
-// authorized mint
-pub const AUTHORIZED_MINT: &str = "MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7";
 
 // latest burn shard
 #[account]
@@ -42,6 +42,14 @@ impl LatestBurnShard {
         }
         self.current_index = ((self.current_index as usize + 1) % Self::MAX_RECORDS) as u8;
     }
+}
+
+// First, add the new GlobalTopBurnIndex structure
+#[account]
+#[derive(Default)]
+pub struct GlobalTopBurnIndex {
+    pub top_burn_shard_total_count: u64,       // Total count of allocated shards
+    pub top_burn_shard_current_index: Option<u64>,  // Current index with available space, None if no shards exist
 }
 
 // top burn shard
@@ -104,13 +112,7 @@ pub struct UserBurnHistory {
     pub signatures: Vec<String>, // 4 + (92 * 100) bytes - max 100 signatures
 }
 
-// First, add the new GlobalTopBurnIndex structure
-#[account]
-#[derive(Default)]
-pub struct GlobalTopBurnIndex {
-    pub top_burn_shard_total_count: u64,       // Total count of allocated shards
-    pub top_burn_shard_current_index: Option<u64>,  // Current index with available space, None if no shards exist
-}
+
 
 #[program]
 pub mod memo_token {
