@@ -294,6 +294,14 @@ pub mod memo_token {
             msg!("No memo instruction found");
             return Err(ErrorCode::MemoRequired.into());
         }
+
+        // calculate memo length
+        let memo_length = memo_data.len();
+        
+        // check memo length is not too long
+        if memo_length > 700 {
+            return Err(ErrorCode::MemoTooLong.into());
+        }
         
         // get current clock information
         let clock = Clock::get()?;
@@ -315,6 +323,16 @@ pub mod memo_token {
             .as_str()
             .ok_or(ErrorCode::MissingSignature)?
             .to_string();
+
+        // check signature length
+        if signature.len() < 86 || signature.len() > 88 {
+            return Err(ErrorCode::InvalidSignatureLength.into());
+        }
+
+        // check signature is valid base58 string
+        if !signature.chars().all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c)) {
+            return Err(ErrorCode::InvalidSignatureFormat.into());
+        }
 
         // burn tokens
         token_2022::burn(
@@ -1277,4 +1295,10 @@ pub enum ErrorCode {
 
     #[msg("Unauthorized mint: only the specified mint can be used")]
     UnauthorizedMint,
+
+    #[msg("Invalid signature length.")]
+    InvalidSignatureLength,
+
+    #[msg("Invalid signature format. Must be a valid base58 string.")]
+    InvalidSignatureFormat,
 }
