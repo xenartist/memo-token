@@ -679,6 +679,16 @@ pub mod memo_token {
             .ok_or(ErrorCode::MissingSignature)?
             .to_string();
 
+        // check signature length
+        if signature.len() < 86 || signature.len() > 88 {
+            return Err(ErrorCode::InvalidSignatureLength.into());
+        }   
+
+        // check signature is valid base58 string
+        if !signature.chars().all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c)) {
+            return Err(ErrorCode::InvalidSignatureFormat.into());
+        }
+
         // burn tokens
         token_2022::burn(
             CpiContext::new(
