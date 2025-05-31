@@ -5,119 +5,107 @@ edition = "2021"
 
 [[bin]]
 name = "admin-transfer-memo-token-mint-authority"
-path = "src/admin-transfer-memo-token-mint-authority.rs"
-
-[[bin]]
-name = "init-global-burn-index"
-path = "src/init-global-burn-index.rs"
+path = "memo-token/src/admin-transfer-memo-token-mint-authority.rs"
 
 [[bin]]
 name = "init-global-top-burn-index"
-path = "src/init-global-top-burn-index.rs"
+path = "global-top-burn/src/init-global-top-burn-index.rs"
 
 [[bin]]
 name = "init-latest-burn-shard"
-path = "src/init-latest-burn-shard.rs"
+path = "latest-burn-shard/src/init-latest-burn-shard.rs"
 
 [[bin]]
 name = "init-top-burn-shard"
-path = "src/init-top-burn-shard.rs"
+path = "top-burn-shard/src/init-top-burn-shard.rs"
 
 [[bin]]
 name = "init-user-profile"
-path = "src/init-user-profile.rs"
+path = "/user-profile/src/init-user-profile.rs"
 
 [[bin]]
 name = "init-social-profile"
-path = "src/init-social-profile.rs"
+path = "social-profile/src/init-social-profile.rs"
 
 [[bin]]
 name = "init-user-profile-burn-history"
-path = "src/init-user-profile-burn-history.rs"
-
-[[bin]]
-name = "check-global-burn-index"
-path = "src/check-global-burn-index.rs"
+path = "user-profile/src/init-user-profile-burn-history.rs"
 
 [[bin]]
 name = "check-global-top-burn-index"
-path = "src/check-global-top-burn-index.rs"
+path = "global-top-burn-index/src/check-global-top-burn-index.rs"
 
 [[bin]]
 name = "check-latest-burn-shard"
-path = "src/check-latest-burn-shard.rs"
+path = "latest-burn-shard/src/check-latest-burn-shard.rs"
 
 [[bin]]
 name = "check-top-burn-shard"
-path = "src/check-top-burn-shard.rs"
+path = "top-burn-shard/src/check-top-burn-shard.rs"
 
 [[bin]]
 name = "check-user-profile"
-path = "src/check-user-profile.rs"
+path = "user-profile/src/check-user-profile.rs"
 
 [[bin]]
 name = "check-social-profile"
-path = "src/check-social-profile.rs"
+path = "social-profile/src/check-social-profile.rs"
 
 [[bin]]
 name = "update-social-profile"
-path = "src/update-social-profile.rs"
-
-[[bin]]
-name = "close-global-burn-index"
-path = "src/close-global-burn-index.rs"
+path = "social-profile/src/update-social-profile.rs"
 
 [[bin]]
 name = "close-global-top-burn-index"
-path = "src/close-global-top-burn-index.rs"
+path = "global-top-burn-index/src/close-global-top-burn-index.rs"
 
 [[bin]]
 name = "close-latest-burn-shard"
-path = "src/close-latest-burn-shard.rs"
+path = "latest-burn-shard/src/close-latest-burn-shard.rs"
 
 [[bin]]
 name = "close-top-burn-shard"
-path = "src/close-top-burn-shard.rs"
+path = "top-burn-shard/src/close-top-burn-shard.rs"
 
 [[bin]]
 name = "close-user-profile"
-path = "src/close-user-profile.rs"
+path = "user-profile/src/close-user-profile.rs"
 
 [[bin]]
 name = "close-social-profile"
-path = "src/close-social-profile.rs"
+path = "social-profile/src/close-social-profile.rs"
 
 [[bin]]
 name = "close-user-profile-burn-history"
-path = "src/close-user-profile-burn-history.rs"
+path = "user-profile/src/close-user-profile-burn-history.rs"
 
 [[bin]]
 name = "init-token-account"
-path = "src/init-token-account.rs"
+path = "mint/src/init-token-account.rs"
 
 [[bin]]
 name = "test-single-mint"
-path = "src/test-single-mint.rs"
+path = "mint/src/test-single-mint.rs"
 
 [[bin]]
 name = "test-batch-mint"
-path = "src/test-batch-mint.rs"
+path = "mint/src/test-batch-mint.rs"
 
 [[bin]]
 name = "test-single-burn"
-path = "src/test-single-burn.rs"
+path = "burn/src/test-single-burn.rs"
 
 [[bin]]
 name = "test-single-burn-with-history"
-path = "src/test-single-burn-with-history.rs"
+path = "burn/src/test-single-burn-with-history.rs"
 
 [[bin]]
 name = "test-batch-burn"
-path = "src/test-batch-burn.rs"
+path = "burn/src/test-batch-burn.rs"
 
 [[bin]]
 name = "img2hex"
-path = "src/img2hex.rs"
+path = "misc/src/img2hex.rs"
 
 [dependencies]
 solana-client = "1.18.26"
