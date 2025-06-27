@@ -166,30 +166,16 @@ pub mod memo_token {
             return Err(ErrorCode::MemoRequired.into());
         }
         
-        // calculate memo length
+        // calculate memo length and check limits
         let memo_length = memo_data.len();
         
-        // check memo length is not too long
-        if memo_length > 700 {
+        // check memo length is not too long (maximum 769 bytes)
+        if memo_length > 769 {
             return Err(ErrorCode::MemoTooLong.into());
         }
         
-        // determine the possible token count range based on length
-        let max_tokens = if memo_length <= 100 {
-            1
-        } else if memo_length <= 200 {
-            2
-        } else if memo_length <= 300 {
-            3
-        } else if memo_length <= 400 {
-            4
-        } else if memo_length <= 500 {
-            5
-        } else if memo_length <= 600 {
-            6
-        } else {
-            7 // max 700 bytes
-        };
+        // Fixed token count - always mint 1 token regardless of memo length
+        let token_count = 1u64;
         
         // get PDA and bump
         let (mint_authority, bump) = Pubkey::find_program_address(
@@ -202,19 +188,8 @@ pub mod memo_token {
             return Err(ProgramError::InvalidSeeds.into());
         }
         
-        // generate random number
+        // get current clock information
         let clock = Clock::get()?;
-        let mut hasher = solana_program::hash::Hasher::default();
-        hasher.hash(&memo_data);
-        hasher.hash(&clock.slot.to_le_bytes());
-        hasher.hash(&clock.unix_timestamp.to_le_bytes());
-        hasher.hash(ctx.accounts.user.key().as_ref());
-        let hash = hasher.result();
-        
-        // generate random number between 1 and max_tokens
-        let random_bytes = &hash.to_bytes()[0..8];
-        let random_value = u64::from_le_bytes(random_bytes.try_into().unwrap());
-        let token_count = (random_value % max_tokens as u64) + 1;
         
         // calculate mint amount (1 token = 10^9 units)
         let amount = token_count * 1_000_000_000;
@@ -263,8 +238,8 @@ pub mod memo_token {
             msg!("Updated user profile stats for mint operation");
         }
         
-        // record the number of tokens minted
-        msg!("Minted {} tokens", token_count);
+        // record the mint operation with memo length for debugging
+        msg!("Minted {} tokens with memo length: {} bytes", token_count, memo_length);
         
         Ok(())
     }
@@ -299,7 +274,7 @@ pub mod memo_token {
         let memo_length = memo_data.len();
         
         // check memo length is not too long
-        if memo_length > 700 {
+        if memo_length > 769 {
             return Err(ErrorCode::MemoTooLong.into());
         }
         
@@ -1264,7 +1239,7 @@ pub enum ErrorCode {
     #[msg("Memo is too short. Must be at least 69 bytes.")]
     MemoTooShort,
     
-    #[msg("Memo is too long. Must be at most 700 bytes.")]
+    #[msg("Memo is too long. Must be at most 769 bytes.")]
     MemoTooLong,
     
     #[msg("Transaction must include a memo.")]

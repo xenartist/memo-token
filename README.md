@@ -93,7 +93,7 @@ cargo run --bin mint
 - `init.rs`: Token account initialization
 - `mint.rs`: Token minting client
 ```
-cargo run --bin mint 400000 "$(printf 'a%.0s' {1..700})"
+cargo run --bin test-single-mint "$(printf 'a%.0s' {1..500})"
 ``` 
 - `burn.rs`: Token burning client
 
