@@ -21,7 +21,7 @@ path = "top-burn-shard/src/init-top-burn-shard.rs"
 
 [[bin]]
 name = "init-user-profile"
-path = "/user-profile/src/init-user-profile.rs"
+path = "user-profile/src/init-user-profile.rs"
 
 [[bin]]
 name = "init-social-profile"
