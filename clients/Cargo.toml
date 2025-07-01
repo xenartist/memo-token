@@ -9,7 +9,7 @@ path = "memo-token/src/admin-transfer-memo-token-mint-authority.rs"
 
 [[bin]]
 name = "init-global-top-burn-index"
-path = "global-top-burn/src/init-global-top-burn-index.rs"
+path = "global-top-burn-index/src/init-global-top-burn-index.rs"
 
 [[bin]]
 name = "init-latest-burn-shard"
