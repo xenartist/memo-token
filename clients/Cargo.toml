@@ -92,6 +92,10 @@ name = "test-batch-mint"
 path = "mint/src/test-batch-mint.rs"
 
 [[bin]]
+name = "test-perf-batch-mint"
+path = "mint/src/test-perf-batch-mint.rs"
+
+[[bin]]
 name = "test-single-burn"
 path = "burn/src/test-single-burn.rs"
 
