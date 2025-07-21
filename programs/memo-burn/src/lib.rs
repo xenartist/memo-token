@@ -1,0 +1,234 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{Mint, TokenAccount};
+use anchor_spl::token_2022::{self, Token2022};
+use solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
+use std::str::FromStr;
+use serde_json::Value;
+
+declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
+
+// authorized mint - same as memo-token contract
+pub const AUTHORIZED_MINT: &str = "MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7";
+
+#[program]
+pub mod memo_burn {
+    use super::*;
+
+    /// Process burn operation with enhanced validation
+    pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
+        // Check if this is a burn instruction by validating token program and accounts
+        validate_burn_operation(&ctx)?;
+        
+        // Check burn amount is at least 1 token (10^9 units)
+        if amount < 1_000_000_000 {
+            return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+
+        // Check burn amount is an integer multiple of 1 token (10^9 units)  
+        if amount % 1_000_000_000 != 0 {
+            return Err(ErrorCode::InvalidBurnAmount.into());
+        }
+        
+        // Check memo instruction (remove length limit as requested)
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
+        if !memo_found {
+            msg!("No memo instruction found");
+            return Err(ErrorCode::MemoRequired.into());
+        }
+
+        // Validate memo contains correct amount matching the burn amount
+        validate_memo_amount(&memo_data, amount)?;
+
+        // Burn tokens
+        token_2022::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                token_2022::Burn {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    from: ctx.accounts.token_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        msg!("Successfully burned {} tokens with memo validation", amount / 1_000_000_000);
+        
+        Ok(())
+    }
+}
+
+/// Validate this is a legitimate burn operation and not other types of operations
+fn validate_burn_operation(ctx: &Context<ProcessBurn>) -> Result<()> {
+    // Check that the user is the owner of the token account (prevent transfers from other accounts)
+    if ctx.accounts.token_account.owner != ctx.accounts.user.key() {
+        return Err(ErrorCode::UnauthorizedTokenAccount.into());
+    }
+    
+    // Check the mint is the authorized one
+    if ctx.accounts.mint.key().to_string() != AUTHORIZED_MINT {
+        return Err(ErrorCode::UnauthorizedMint.into());
+    }
+    
+    // Check token account belongs to the correct mint
+    if ctx.accounts.token_account.mint != ctx.accounts.mint.key() {
+        return Err(ErrorCode::InvalidTokenAccount.into());
+    }
+    
+    // Additional check: ensure this is called with burn intention
+    // The fact that we're in process_burn function with proper accounts structure
+    // and the user owns the token account confirms this is a burn operation
+    
+    Ok(())
+}
+
+/// Extract and validate memo contains correct amount
+fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
+    // Parse memo as UTF-8 string
+    let memo_str = String::from_utf8(memo_data.to_vec())
+        .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+    
+    // Clean the string (handle JSON escaping)
+    let clean_str = memo_str
+        .trim_matches('"')
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\");
+    
+    // Parse as JSON
+    let json_data: Value = serde_json::from_str(&clean_str)
+        .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+
+    // Extract amount from memo
+    let memo_amount = match &json_data["amount"] {
+        Value::Number(n) => {
+            if let Some(int_val) = n.as_u64() {
+                int_val // Assume JSON numbers are already in lamports
+            } else if let Some(float_val) = n.as_f64() {
+                // For JSON numbers, assume they're already in lamports
+                if float_val < 0.0 || float_val > u64::MAX as f64 {
+                    return Err(ErrorCode::InvalidAmountFormat.into());
+                }
+                float_val as u64
+            } else {
+                return Err(ErrorCode::InvalidAmountFormat.into());
+            }
+        },
+        Value::String(s) => {
+            // For string values, assume they're already in lamports (direct parsing)
+            if let Ok(int_val) = s.parse::<u64>() {
+                int_val // Direct parsing as lamports
+            } else {
+                return Err(ErrorCode::InvalidAmountFormat.into());
+            }
+        },
+        _ => return Err(ErrorCode::MissingAmountField.into()),
+    };
+
+    // Check if memo amount matches expected burn amount
+    if memo_amount != expected_amount {
+        msg!("Amount mismatch: memo contains {} lamports, but burning {} lamports", memo_amount, expected_amount);
+        return Err(ErrorCode::AmountMismatch.into());
+    }
+
+    msg!("Amount validation passed: {} lamports", expected_amount);
+    Ok(())
+}
+
+/// Check for memo instruction (removed minimum length requirement)
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
+    // SPL Memo program ID
+    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+        .expect("Failed to parse memo program ID");
+    
+    // Get current instruction index
+    let current_index = solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
+    
+    // First check the most likely position (index 1)
+    if current_index > 1 {
+        match solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
+            Ok(ix) => {
+                if ix.program_id == memo_program_id {
+                    // Remove minimum length requirement as requested
+                    return Ok((true, ix.data.to_vec()));
+                }
+            },
+            Err(_) => {}
+        }
+    }
+    
+    // If not found at index 1, check other positions as fallback
+    for i in 0..current_index {
+        if i == 1 { continue; } // Skip index 1 as we already checked it
+        
+        match solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
+            Ok(ix) => {
+                if ix.program_id == memo_program_id {
+                    // Remove minimum length requirement as requested
+                    return Ok((true, ix.data.to_vec()));
+                }
+            },
+            Err(_) => { continue; }
+        }
+    }
+    
+    // No valid memo found
+    Ok((false, vec![]))
+}
+
+#[derive(Accounts)]
+pub struct ProcessBurn<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        mut,
+        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+    )]
+    pub mint: InterfaceAccount<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = token_account.mint == mint.key() @ ErrorCode::InvalidTokenAccount,
+        constraint = token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
+    )]
+    pub token_account: InterfaceAccount<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token2022>,
+    
+    /// CHECK: Instructions sysvar
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Transaction must include a memo.")]
+    MemoRequired,
+
+    #[msg("Invalid memo format. Expected JSON format.")]
+    InvalidMemoFormat,
+    
+    #[msg("Burn amount too small. Must burn at least 1 token.")]
+    BurnAmountTooSmall,
+
+    #[msg("Invalid burn amount. Must be an integer multiple of 1 token (1,000,000,000 units).")]
+    InvalidBurnAmount,
+
+    #[msg("Invalid token account. Token account must belong to the correct mint.")]
+    InvalidTokenAccount,
+
+    #[msg("Unauthorized mint. Only the specified mint can be used.")]
+    UnauthorizedMint,
+
+    #[msg("Unauthorized token account. User must own the token account.")]
+    UnauthorizedTokenAccount,
+
+    #[msg("Missing amount field in memo JSON.")]
+    MissingAmountField,
+
+    #[msg("Invalid amount format in memo. Must be a number.")]
+    InvalidAmountFormat,
+
+    #[msg("Amount mismatch. The amount in memo must match the burn amount.")]
+    AmountMismatch,
+}
