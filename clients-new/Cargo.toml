@@ -7,6 +7,10 @@ edition = "2021"
 name = "test-memo-burn"
 path = "burn/src/test-memo-burn.rs"
 
+[[bin]]
+name = "test-memo-transfer"
+path = "burn/src/test-memo-transfer.rs"
+
 [dependencies]
 solana-client = "1.18.26"
 solana-sdk = "1.18.26"
