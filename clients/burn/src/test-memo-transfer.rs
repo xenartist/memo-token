@@ -9,13 +9,11 @@ use solana_sdk::{
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
-    system_instruction,
 };
+use solana_system_interface::instruction as system_instruction;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::{self, instruction as token_instruction};
 use std::str::FromStr;
-use serde_json;
-
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
