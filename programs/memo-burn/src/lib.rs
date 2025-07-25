@@ -4,7 +4,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
-use solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
+use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
 use serde_json::Value;
 
@@ -144,11 +144,11 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
         .expect("Failed to parse memo program ID");
     
     // Get current instruction index
-    let current_index = solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
+    let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
     // First check the most likely position (index 1)
     if current_index > 1 {
-        match solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
+        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
             Ok(ix) => {
                 if ix.program_id == memo_program_id {
                     // Remove minimum length requirement as requested
@@ -163,7 +163,7 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
     for i in 0..current_index {
         if i == 1 { continue; } // Skip index 1 as we already checked it
         
-        match solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
+        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
             Ok(ix) => {
                 if ix.program_id == memo_program_id {
                     // Remove minimum length requirement as requested

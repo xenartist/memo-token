@@ -5,11 +5,15 @@ resolution = true
 skip-lint = false
 
 [programs.testnet]
-memo_token = "TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw"
+memo_burn = "FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP"
+
+# [programs.mainnet]
+
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "https://rpc.testnet.x1.xyz"
+# testnet
+cluster = "https://rpc-testnet.x1.wiki"
 wallet = "~/.config/solana/id.json"

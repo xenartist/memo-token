@@ -2168,7 +2168,6 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "serde_json",
- "solana-program",
 ]
 
 [[package]]

@@ -22,5 +22,4 @@ anchor-debug = []
 [dependencies]
 anchor-lang = "0.31.1"
 anchor-spl = "0.31.1"
-solana-program = "^2"
 serde_json = "1.0"
