@@ -1,0 +1,24 @@
+[package]
+name = "memo-mint"
+version = "0.1.0"
+description = "Simplified memo mint contract"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "memo_mint"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+custom-heap = []
+custom-panic = []
+anchor-debug = []
+
+[dependencies]
+anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
