@@ -11,6 +11,10 @@ path = "burn/src/test-memo-burn.rs"
 name = "test-memo-transfer"
 path = "burn/src/test-memo-transfer.rs"
 
+[[bin]]
+name = "admin-transfer-memo-token-mint-authority"
+path = "memo-token/src/admin-transfer-memo-token-mint-authority.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

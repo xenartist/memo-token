@@ -100,7 +100,7 @@ fn main() {
     
     println!("Calculated mint authority PDA: {}", mint_authority_pda);
 
-    // First, check if the mint actually exists and what type it is
+    // First, check if the mint actually exists and verify it's a Token-2022 mint
     match client.get_account(&mint_address) {
         Ok(account) => {
             let owner = account.owner;
@@ -108,18 +108,16 @@ fn main() {
             
             println!("Mint account owner: {}", owner);
             
-            // Check if it's a token-2022 or standard SPL token
+            // Only support Token-2022
             if owner == token_2022_id {
                 println!("This is a Token-2022 token mint.");
                 transfer_token_2022_authority(&client, &mint_address, &mint_authority_pda, &payer);
-            } else if owner == spl_token::id() {
-                println!("This is a standard SPL Token mint.");
-                transfer_spl_token_authority(&client, &mint_address, &mint_authority_pda, &payer);
             } else {
-                println!("Error: This address is not a valid token mint!");
-                println!("Expected owner to be Token-2022 ({}) or standard SPL Token ({})",
-                        token_2022_id, spl_token::id());
+                println!("Error: This tool only supports Token-2022 mints!");
+                println!("Expected owner to be Token-2022 ({})", token_2022_id);
                 println!("Actual owner: {}", owner);
+                println!("If you need to transfer authority for a legacy SPL token, please use the spl-token CLI tool:");
+                println!("spl-token authorize {} mint {}", mint_address, mint_authority_pda);
                 process::exit(1);
             }
         },
@@ -142,12 +140,12 @@ fn transfer_token_2022_authority(
 ) {
     let token_2022_id = Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap();
 
-    // Create instruction to transfer mint authority
-    let set_authority_ix = match spl_token_2022::instruction::set_authority(
+    // Create instruction to transfer mint authority using Token-2022
+    let set_authority_ix = match token_instruction::set_authority(
         &token_2022_id,
         mint_address,
         Some(mint_authority_pda),
-        spl_token_2022::instruction::AuthorityType::MintTokens,
+        token_instruction::AuthorityType::MintTokens,
         &payer.pubkey(),
         &[&payer.pubkey()],
     ) {
@@ -158,9 +156,6 @@ fn transfer_token_2022_authority(
             process::exit(1);
         }
     };
-    
-    // Default compute units as fallback
-    let initial_compute_units = 200_000;
     
     // Get recent blockhash
     let recent_blockhash = client
@@ -177,7 +172,9 @@ fn transfer_token_2022_authority(
     
     // Simulate transaction to determine required compute units
     println!("Simulating transaction to determine required compute units...");
-    let compute_units = match client.simulate_transaction_with_config(
+    let mut compute_units = 10_000u32; // Minimum safe value
+    
+    match client.simulate_transaction_with_config(
         &sim_transaction,
         RpcSimulateTransactionConfig {
             sig_verify: false,
@@ -192,31 +189,33 @@ fn transfer_token_2022_authority(
         Ok(result) => {
             if let Some(err) = result.value.err {
                 println!("Warning: Transaction simulation failed: {:?}", err);
-                println!("Using default compute units: {}", initial_compute_units);
-                initial_compute_units
+                compute_units = 10_000; // Use safe default
             } else if let Some(units_consumed) = result.value.units_consumed {
-                // Add 10% safety margin
-                let required_cu = (units_consumed as f64 * 1.1) as u32;
-                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
-                    units_consumed, required_cu);
-                required_cu
+                // Add significant safety margin (50% more)
+                compute_units = ((units_consumed as f64 * 1.5) as u32).max(5000);
+                println!("Simulation consumed {} CUs, requesting {} CUs with 50% safety margin", 
+                    units_consumed, compute_units);
             } else {
-                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
-                initial_compute_units
+                println!("Simulation didn't return units consumed, using safe default: {}", compute_units);
             }
         },
         Err(err) => {
             println!("Failed to simulate transaction: {}", err);
-            println!("Using default compute units: {}", initial_compute_units);
-            initial_compute_units
+            compute_units = 10_000; // Use safe default
         }
     };
     
-    // Create compute budget instruction with dynamically calculated CU
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
     println!("Setting compute budget: {} CUs", compute_units);
     
-    // Create and sign transaction with dynamic compute units
+    // Create compute budget instruction with calculated CU
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    
+    // Get fresh blockhash for the actual transaction
+    let recent_blockhash = client
+        .get_latest_blockhash()
+        .expect("Failed to get recent blockhash");
+    
+    // Create and sign transaction with compute budget
     let transfer_auth_transaction = Transaction::new_signed_with_payer(
         &[compute_budget_ix, set_authority_ix],
         Some(&payer.pubkey()),
@@ -237,123 +236,15 @@ fn transfer_token_2022_authority(
             
             // Optional: Create a token account for the current wallet
             println!("\nTip: You can create a token account for your wallet using:");
-            println!("spl-token create-account {}", mint_address);
+            println!("spl-token create-account {} --program-id {}", mint_address, TOKEN_2022_PROGRAM_ID);
         },
         Err(e) => {
             println!("Error transferring mint authority: {}", e);
             println!("Detailed error: {:?}", e);
             
             println!("\nYou can try using the spl-token CLI tool instead:");
-            println!("spl-token set-authority {} mint {}", mint_address, mint_authority_pda);
-        }
-    }
-}
-
-fn transfer_spl_token_authority(
-    client: &RpcClient,
-    mint_address: &Pubkey,
-    mint_authority_pda: &Pubkey,
-    payer: &Keypair
-) {
-    // Create instruction to transfer mint authority
-    let set_authority_ix = match spl_token::instruction::set_authority(
-        &spl_token::id(),
-        mint_address,
-        Some(mint_authority_pda),
-        spl_token::instruction::AuthorityType::MintTokens,
-        &payer.pubkey(),
-        &[&payer.pubkey()],
-    ) {
-        Ok(ix) => ix,
-        Err(e) => {
-            println!("Error creating set_authority instruction: {}", e);
-            println!("This could be because you don't have the right to transfer this mint's authority.");
-            process::exit(1);
-        }
-    };
-    
-    // Default compute units as fallback
-    let initial_compute_units = 200_000;
-    
-    // Get recent blockhash
-    let recent_blockhash = client
-        .get_latest_blockhash()
-        .expect("Failed to get recent blockhash");
-    
-    // Create transaction without compute budget instruction for simulation
-    let sim_transaction = Transaction::new_signed_with_payer(
-        &[set_authority_ix.clone()],
-        Some(&payer.pubkey()),
-        &[payer],
-        recent_blockhash,
-    );
-    
-    // Simulate transaction to determine required compute units
-    println!("Simulating transaction to determine required compute units...");
-    let compute_units = match client.simulate_transaction_with_config(
-        &sim_transaction,
-        RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: false,
-            commitment: Some(CommitmentConfig::confirmed()),
-            encoding: None,
-            accounts: None,
-            min_context_slot: None,
-            inner_instructions: true,
-        },
-    ) {
-        Ok(result) => {
-            if let Some(err) = result.value.err {
-                println!("Warning: Transaction simulation failed: {:?}", err);
-                println!("Using default compute units: {}", initial_compute_units);
-                initial_compute_units
-            } else if let Some(units_consumed) = result.value.units_consumed {
-                // Add 10% safety margin
-                let required_cu = (units_consumed as f64 * 1.1) as u32;
-                println!("Simulation consumed {} CUs, requesting {} CUs with 10% safety margin", 
-                    units_consumed, required_cu);
-                required_cu
-            } else {
-                println!("Simulation didn't return units consumed, using default: {}", initial_compute_units);
-                initial_compute_units
-            }
-        },
-        Err(err) => {
-            println!("Failed to simulate transaction: {}", err);
-            println!("Using default compute units: {}", initial_compute_units);
-            initial_compute_units
-        }
-    };
-    
-    // Create compute budget instruction with dynamically calculated CU
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
-    println!("Setting compute budget: {} CUs", compute_units);
-    
-    // Create and sign transaction with dynamic compute units
-    let transfer_auth_transaction = Transaction::new_signed_with_payer(
-        &[compute_budget_ix, set_authority_ix],
-        Some(&payer.pubkey()),
-        &[payer],
-        recent_blockhash,
-    );
-    
-    // Send and confirm transaction
-    println!("\nTransferring mint authority to PDA using standard SPL Token program...");
-    match client.send_and_confirm_transaction_with_spinner(&transfer_auth_transaction) {
-        Ok(sig) => {
-            println!("\nMint authority transferred to PDA successfully!");
-            println!("Transaction signature: {}", sig);
-            println!("\nToken Info Summary:");
-            println!("Mint address: {}", mint_address);
-            println!("Mint authority (PDA): {}", mint_authority_pda);
-            println!("\nSave these addresses for future use!");
-        },
-        Err(e) => {
-            println!("Error transferring mint authority: {}", e);
-            println!("Detailed error: {:?}", e);
-            
-            println!("\nYou can try using the spl-token CLI tool instead:");
-            println!("spl-token set-authority {} mint {}", mint_address, mint_authority_pda);
+            println!("spl-token authorize {} mint {} --program-id {}", 
+                mint_address, mint_authority_pda, TOKEN_2022_PROGRAM_ID);
         }
     }
 }

@@ -7,12 +7,10 @@ use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
 
-declare_id!("TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw");
+declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
-// Admin public key
-pub const ADMIN_PUBKEY: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn";
 // Authorized mint address
-pub const AUTHORIZED_MINT: &str = "MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7";
+pub const AUTHORIZED_MINT: &str = "memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc";
 
 #[program]
 pub mod memo_mint {
@@ -41,8 +39,8 @@ pub mod memo_mint {
             return Err(ProgramError::InvalidSeeds.into());
         }
         
-        // Calculate mint amount (1 token = 10^9 lamports)
-        let amount = token_count * 1_000_000_000;
+        // For decimal=0 tokens, amount equals token count directly
+        let amount = token_count;
         
         // Execute token mint operation
         token_2022::mint_to(
@@ -61,17 +59,6 @@ pub mod memo_mint {
         // Log successful mint operation
         msg!("Successfully minted {} tokens with memo length: {} bytes", token_count, memo_data.len());
         
-        Ok(())
-    }
-
-    /// Update authorized mint address (admin only)
-    pub fn update_authorized_mint(ctx: Context<UpdateAuthorizedMint>, new_mint: Pubkey) -> Result<()> {
-        // Verify caller is admin
-        if ctx.accounts.admin.key().to_string() != ADMIN_PUBKEY {
-            return Err(ErrorCode::UnauthorizedAdmin.into());
-        }
-        
-        msg!("Authorized mint address updated to: {}", new_mint);
         Ok(())
     }
 }
@@ -165,13 +152,6 @@ pub struct MintToken<'info> {
     pub instructions: AccountInfo<'info>,
 }
 
-/// Account structure for updating authorized mint address
-#[derive(Accounts)]
-pub struct UpdateAuthorizedMint<'info> {
-    #[account(mut, constraint = admin.key().to_string() == ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin)]
-    pub admin: Signer<'info>,
-}
-
 /// Error code definitions
 #[error_code]
 pub enum ErrorCode {
@@ -183,9 +163,6 @@ pub enum ErrorCode {
     
     #[msg("Transaction must include a memo instruction.")]
     MemoRequired,
-    
-    #[msg("Unauthorized: Only admin can perform this action.")]
-    UnauthorizedAdmin,
     
     #[msg("Invalid token account: Account must belong to the correct mint and owner.")]
     InvalidTokenAccount,
