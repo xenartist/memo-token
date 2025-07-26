@@ -657,9 +657,9 @@ fn create_mint_instruction(
     mint_authority: &Pubkey,
     token_account: &Pubkey,
 ) -> Instruction {
-    // Calculate Anchor instruction sighash for "mint_token"
+    // Calculate Anchor instruction sighash for "process_mint"
     let mut hasher = Sha256::new();
-    hasher.update(b"global:mint_token");
+    hasher.update(b"global:process_mint");
     let result = hasher.finalize();
     let instruction_data = result[..8].to_vec();
     

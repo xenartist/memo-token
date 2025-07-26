@@ -19,17 +19,11 @@ pub mod memo_burn {
 
     /// Process burn operation with enhanced validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
-        // Check if this is a burn instruction by validating token program and accounts
-        validate_burn_operation(&ctx)?;
-        
         // Check burn amount is at least 1 token (for decimal=0, this is just 1 unit)
         if amount < 1 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
 
-        // For decimal=0 tokens, amount should be a positive integer (no fractional validation needed)
-        // Remove the 10^9 multiplication check since decimal=0 means 1 token = 1 unit
-        
         // Check memo instruction with length validation (69-800 bytes)
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
         if !memo_found {
@@ -57,30 +51,6 @@ pub mod memo_burn {
         
         Ok(())
     }
-}
-
-/// Validate this is a legitimate burn operation and not other types of operations
-fn validate_burn_operation(ctx: &Context<ProcessBurn>) -> Result<()> {
-    // Check that the user is the owner of the token account (prevent transfers from other accounts)
-    if ctx.accounts.token_account.owner != ctx.accounts.user.key() {
-        return Err(ErrorCode::UnauthorizedTokenAccount.into());
-    }
-    
-    // Check the mint is the authorized one
-    if ctx.accounts.mint.key().to_string() != AUTHORIZED_MINT {
-        return Err(ErrorCode::UnauthorizedMint.into());
-    }
-    
-    // Check token account belongs to the correct mint
-    if ctx.accounts.token_account.mint != ctx.accounts.mint.key() {
-        return Err(ErrorCode::InvalidTokenAccount.into());
-    }
-    
-    // Additional check: ensure this is called with burn intention
-    // The fact that we're in process_burn function with proper accounts structure
-    // and the user owns the token account confirms this is a burn operation
-    
-    Ok(())
 }
 
 /// Extract and validate memo contains correct amount
