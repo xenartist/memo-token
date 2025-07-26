@@ -5,7 +5,7 @@ X1
 ## Overview
 
 This project consists of:
-- A Solana program (smart contract) for token minting
+- A Solana program (smart contract) for token minting and burning
 - Client utilities for token creation and management
 - PDA-based mint authority for secure token minting
 
@@ -30,7 +30,7 @@ cargo install anchor-cli
 anchor build
 ```
 ```bash
-anchor build --program-name memo-token
+anchor build --program-name memo-mint
 ```
 ```bash
 anchor build --program-name memo-social
@@ -79,10 +79,23 @@ Save the output addresses:
 ```bash
 cargo run --bin test-memo-mint valid-memo
 cargo run --bin test-memo-mint memo-69
-cargo run --bin test-memo-mint memo-769
+cargo run --bin test-memo-mint memo-800
 cargo run --bin test-memo-mint no-memo
 cargo run --bin test-memo-mint short-memo
 cargo run --bin test-memo-mint long-memo
+cargo run --bin test-memo-mint custom-length 420
+```
+
+2. Burn token:
+
+```bash
+cargo run --bin test-memo-burn 1 valid-memo
+cargo run --bin test-memo-burn 1 memo-69
+cargo run --bin test-memo-burn 1 memo-800
+cargo run --bin test-memo-burn 1 no-memo
+cargo run --bin test-memo-burn 1 short-memo
+cargo run --bin test-memo-burn 1 long-memo
+cargo run --bin test-memo-burn 1 custom-length 420
 ```
 
 

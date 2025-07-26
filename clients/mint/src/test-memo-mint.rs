@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "valid-memo" => test_valid_memo(),
         "long-memo" => test_long_memo(),
         "memo-69" => test_memo_exact_69(),
-        "memo-769" => test_memo_exact_769(),
+        "memo-800" => test_memo_exact_800(),  // Changed from memo-769
         "custom-length" => test_custom_length(custom_memo_length.unwrap()),
         "help" | _ => {
             print_help(&args[0]);
@@ -67,9 +67,9 @@ fn print_help(program_name: &str) {
     println!("  no-memo         - Test mint without memo (should fail)");
     println!("  short-memo      - Test mint with memo < 69 bytes (should fail)");
     println!("  memo-69         - Test mint with memo exactly 69 bytes (should succeed)");
-    println!("  valid-memo      - Test mint with memo 69-769 bytes (should succeed)");
-    println!("  memo-769        - Test mint with memo exactly 769 bytes (should succeed)");
-    println!("  long-memo       - Test mint with memo > 769 bytes (should fail)");
+    println!("  valid-memo      - Test mint with memo 69-800 bytes (should succeed)");  // Changed 769 to 800
+    println!("  memo-800        - Test mint with memo exactly 800 bytes (should succeed)");  // Changed 769 to 800
+    println!("  long-memo       - Test mint with memo > 800 bytes (should fail)");  // Changed 769 to 800
     println!("  custom-length   - Test mint with custom memo length (requires memo_length parameter)");
     println!("\nExamples:");
     println!("  {} valid-memo", program_name);
@@ -110,10 +110,10 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     // Analyze expected result
     let expected_result = if actual_length < 69 {
         "FAIL (< 69 bytes)"
-    } else if actual_length > 769 {
-        "FAIL (> 769 bytes)"
+    } else if actual_length > 800 {  // Changed from 769
+        "FAIL (> 800 bytes)"
     } else {
-        "SUCCESS (69-769 bytes)"
+        "SUCCESS (69-800 bytes)"  // Changed from 69-769
     };
     println!("Expected result: {}", expected_result);
     
@@ -148,13 +148,13 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
             if actual_length < 69 {
                 println!("   ❌ UNEXPECTED SUCCESS: Memo < 69 bytes should have failed");
                 println!("   🔍 This suggests the contract may not be enforcing minimum length");
-            } else if actual_length > 769 {
-                println!("   ❌ UNEXPECTED SUCCESS: Memo > 769 bytes should have failed");
+            } else if actual_length > 800 {  // Changed from 769
+                println!("   ❌ UNEXPECTED SUCCESS: Memo > 800 bytes should have failed");
                 println!("   🔍 This suggests either:");
                 println!("      - Contract is not enforcing maximum length");
                 println!("      - System limit is higher than expected");
             } else {
-                println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-769 bytes)");
+                println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-800 bytes)");  // Changed from 69-769
             }
             
             if balance_after - balance_before == 1 {
@@ -174,9 +174,9 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                 } else {
                     println!("   ⚠️  UNEXPECTED ERROR for short memo: {}", e);
                 }
-            } else if actual_length > 769 {
+            } else if actual_length > 800 {  // Changed from 769
                 if e.to_string().contains("Custom(6008)") || e.to_string().contains("MemoTooLong") {
-                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo > 769 bytes");
+                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo > 800 bytes");  // Changed from 769
                 } else if e.to_string().contains("Program failed to complete") || e.to_string().contains("Transaction too large") {
                     println!("   ✅ EXPECTED FAILURE: Hit system-level transaction size limit");
                     println!("   🔍 Solana transaction size limit (~1232 bytes) exceeded");
@@ -184,7 +184,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                     println!("   ⚠️  UNEXPECTED ERROR for long memo: {}", e);
                 }
             } else {
-                println!("   ❌ UNEXPECTED FAILURE: Memo within valid range (69-769 bytes) should succeed");
+                println!("   ❌ UNEXPECTED FAILURE: Memo within valid range (69-800 bytes) should succeed");  // Changed from 69-769
                 println!("   🔍 Possible issues:");
                 println!("      - Contract bug");
                 println!("      - Network/RPC issue");
@@ -197,7 +197,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     println!("\n📊 CUSTOM LENGTH TEST SUMMARY:");
     println!("   Target length: {} bytes", target_length);
     println!("   Actual length: {} bytes", actual_length);
-    println!("   Contract valid range: 69-769 bytes");
+    println!("   Contract valid range: 69-800 bytes");  // Changed from 69-769
     println!("   System limit: ~1000+ bytes (varies)");
     
     if actual_length != target_length {
@@ -340,7 +340,7 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with VALID memo (69-769 bytes) (expected to succeed)...\n");
+    println!("🧪 Testing mint with VALID memo (69-800 bytes) (expected to succeed)...\n");  // Changed from 69-769
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -352,7 +352,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Get current token balance
     let balance_before = get_token_balance(&client, &token_account);
     
-    // Create valid memo (between 69-769 bytes)
+    // Create valid memo (between 69-800 bytes)  // Changed from 69-769
     let message = "This is a valid memo test for the memo-mint contract. ".repeat(2);
     let memo_json = serde_json::json!({
         "message": message,
@@ -362,7 +362,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     });
     let memo_text = memo_json.to_string();
     
-    println!("Memo length: {} bytes (69-769 bytes range)", memo_text.len());
+    println!("Memo length: {} bytes (69-800 bytes range)", memo_text.len());  // Changed from 69-769
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
@@ -400,8 +400,8 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with memo EXACTLY 769 bytes (expected to succeed)...\n");
+fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed from test_memo_exact_769
+    println!("🧪 Testing mint with memo EXACTLY 800 bytes (expected to succeed)...\n");  // Changed from 769
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -413,10 +413,10 @@ fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
     // Get current token balance
     let balance_before = get_token_balance(&client, &token_account);
     
-    // Create memo with exactly 769 bytes
-    let memo_text = create_memo_with_exact_length(769);
+    // Create memo with exactly 800 bytes  // Changed from 769
+    let memo_text = create_memo_with_exact_length(800);
     
-    println!("Memo length: {} bytes (exactly 769 bytes)", memo_text.len());
+    println!("Memo length: {} bytes (exactly 800 bytes)", memo_text.len());  // Changed from 769
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
@@ -426,7 +426,7 @@ fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
     let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
     // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 769 Bytes Memo Test");
+    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Test");  // Changed from 769
     
     match result {
         Ok(signature) => {
@@ -441,7 +441,7 @@ fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
             
             if balance_after - balance_before == 1 {
                 println!("   ✅ Correct amount minted (1 token with decimal=0)");
-                println!("   ✅ Boundary condition (769 bytes) handled correctly");
+                println!("   ✅ Boundary condition (800 bytes) handled correctly");  // Changed from 769
             } else {
                 println!("   ❌ Unexpected mint amount");
             }
@@ -449,7 +449,7 @@ fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             println!("❌ UNEXPECTED: Transaction failed when it should have succeeded!");
             println!("   Error: {}", e);
-            println!("   The contract should accept memos of exactly 769 bytes.");
+            println!("   The contract should accept memos of exactly 800 bytes.");  // Changed from 769
         }
     }
     
@@ -457,7 +457,7 @@ fn test_memo_exact_769() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with LONG memo > 769 bytes (expected to fail)...\n");
+    println!("🧪 Testing mint with LONG memo > 800 bytes (expected to fail)...\n");  // Changed from 769
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -466,7 +466,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Create long memo (more than 769 bytes)
+    // Create long memo (more than 800 bytes)  // Changed from 769
     let long_message = "This is a very long memo test that exceeds the maximum allowed length. ".repeat(15);
     let memo_json = serde_json::json!({
         "message": long_message,
@@ -475,7 +475,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     });
     let memo_text = memo_json.to_string();
     
-    println!("Memo length: {} bytes (> 769 bytes)", memo_text.len());
+    println!("Memo length: {} bytes (> 800 bytes)", memo_text.len());  // Changed from 769
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
@@ -490,7 +490,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     match result {
         Ok(_) => {
             println!("❌ UNEXPECTED: Transaction succeeded when it should have failed!");
-            println!("   The contract should reject memos longer than 769 bytes.");
+            println!("   The contract should reject memos longer than 800 bytes.");  // Changed from 769
         },
         Err(e) => {
             println!("✅ EXPECTED: Transaction failed as expected");

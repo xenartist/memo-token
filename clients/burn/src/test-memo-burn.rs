@@ -21,48 +21,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
-    if args.len() < 2 {
-        println!("Usage: cargo run -- <test_type> [burn_amount] [memo_length]");
+    if args.len() < 3 {
+        println!("Usage: cargo run -- <burn_amount> <test_type> [memo_length]");
+        println!("Parameters:");
+        println!("  burn_amount   - Number of tokens to burn (decimal=0)");
+        println!("  test_type     - Type of memo test to perform");
+        println!("  memo_length   - Custom memo length (only for custom-length test)");
+        println!();
         println!("Test types:");
-        println!("  valid-memo    - Valid memo (between 69-769 bytes) - should succeed");
+        println!("  valid-memo    - Valid memo (between 69-800 bytes) - should succeed");
         println!("  memo-69       - Memo exactly 69 bytes - should succeed");
-        println!("  memo-769      - Memo exactly 769 bytes - should succeed");
+        println!("  memo-800      - Memo exactly 800 bytes - should succeed");
         println!("  no-memo       - No memo instruction - should fail");
         println!("  short-memo    - Memo less than 69 bytes - should fail");
-        println!("  long-memo     - Memo more than 769 bytes - should fail");
+        println!("  long-memo     - Memo more than 800 bytes - should fail");
         println!("  custom-length - Custom memo length (requires memo_length parameter)");
-        println!("\nExamples:");
-        println!("  cargo run -- valid-memo 1");
-        println!("  cargo run -- custom-length 1 800    # Test 800-byte memo");
-        println!("  cargo run -- custom-length 1 50     # Test 50-byte memo");
+        println!();
+        println!("Examples:");
+        println!("  cargo run -- 1 valid-memo           # Burn 1 token with valid memo");
+        println!("  cargo run -- 5 memo-69              # Burn 5 tokens with 69-byte memo");
+        println!("  cargo run -- 2 custom-length 666    # Burn 2 tokens with 666-byte memo");
+        println!("  cargo run -- 10 long-memo           # Burn 10 tokens with long memo (should fail)");
         return Ok(());
     }
 
-    let test_type = &args[1];
-    
-    // Parse burn amount (in token units for decimal=0)
-    let burn_amount_tokens = if args.len() > 2 {
-        args[2].parse::<u64>().unwrap_or(1)
-    } else {
-        1
-    };
+    // Parse burn amount (first parameter)
+    let burn_amount_tokens = args[1].parse::<u64>().unwrap_or_else(|_| {
+        eprintln!("Error: Invalid burn amount '{}'", args[1]);
+        std::process::exit(1);
+    });
     let burn_amount = burn_amount_tokens; // For decimal=0
 
-    // Parse custom memo length (only used for custom-length test)
-    let custom_memo_length = if args.len() > 3 {
-        Some(args[3].parse::<usize>().unwrap_or(100))
-    } else if test_type == "custom-length" {
-        println!("ERROR: custom-length test requires memo_length parameter");
-        println!("Usage: cargo run -- custom-length [burn_amount] <memo_length>");
-        println!("Example: cargo run -- custom-length 1 800");
-        return Ok(());
+    // Parse test type (second parameter)
+    let test_type = &args[2];
+
+    // Parse custom memo length (third parameter, only for custom-length test)
+    let custom_memo_length = if test_type == "custom-length" {
+        if args.len() < 4 {
+            println!("ERROR: custom-length test requires memo_length parameter");
+            println!("Usage: cargo run -- <burn_amount> custom-length <memo_length>");
+            println!("Example: cargo run -- 1 custom-length 800");
+            return Ok(());
+        }
+        Some(args[3].parse::<usize>().unwrap_or_else(|_| {
+            eprintln!("Error: Invalid memo length '{}'", args[3]);
+            std::process::exit(1);
+        }))
     } else {
         None
     };
 
     println!("=== MEMO-BURN CONTRACT TEST ===");
-    println!("Test type: {}", test_type);
     println!("Burn amount: {} tokens (decimal=0)", burn_amount_tokens);
+    println!("Test type: {}", test_type);
     if let Some(length) = custom_memo_length {
         println!("Custom memo length: {} bytes", length);
     }
@@ -288,7 +299,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
     match test_type {
         "valid-memo" => {
             let memo_json = serde_json::json!({
-                "message": "Testing memo-burn contract with valid memo length between 69-769 bytes",
+                "message": "Testing memo-burn contract with valid memo length between 69-800 bytes",
                 "amount": burn_amount,
                 "operation": "burn",
                 "timestamp": chrono::Utc::now().timestamp()
@@ -313,15 +324,15 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             assert_eq!(result.as_bytes().len(), 69, "Memo should be exactly 69 bytes");
             Ok(result)
         },
-        "memo-769" => {
-            // Create a memo that's exactly 769 bytes
+        "memo-800" => {
+            // Create a memo that's exactly 800 bytes
             let base_json = serde_json::json!({
                 "amount": burn_amount,
                 "message": "",
                 "operation": "burn"
             });
             let base_str = serde_json::to_string(&base_json).unwrap();
-            let needed_chars = 769 - base_str.len() + 2; // +2 for quotes around message
+            let needed_chars = 800 - base_str.len() + 2; // +2 for quotes around message
             let padding = "x".repeat(needed_chars);
             
             let memo_json = serde_json::json!({
@@ -330,7 +341,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
                 "operation": "burn"
             });
             let result = serde_json::to_string(&memo_json).unwrap();
-            assert_eq!(result.as_bytes().len(), 769, "Memo should be exactly 769 bytes");
+            assert_eq!(result.as_bytes().len(), 800, "Memo should be exactly 800 bytes");
             Ok(result)
         },
         "short-memo" => {
@@ -342,8 +353,8 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             Ok(serde_json::to_string(&memo_json).unwrap())
         },
         "long-memo" => {
-            // Create a memo longer than 769 bytes (should fail)
-            let long_message = "x".repeat(800);
+            // Create a memo longer than 800 bytes (should fail)
+            let long_message = "x".repeat(850);
             let memo_json = serde_json::json!({
                 "amount": burn_amount,
                 "message": long_message,
@@ -447,7 +458,7 @@ fn send_and_check_transaction(
             
             // Check if this should have succeeded
             match test_type {
-                "valid-memo" | "memo-69" | "memo-769" => {
+                "valid-memo" | "memo-69" | "memo-800" => {
                     println!("✅ EXPECTED SUCCESS: {} test passed", test_type);
                     println!("Burned {} tokens successfully", burn_amount_tokens);
                 },
@@ -458,10 +469,10 @@ fn send_and_check_transaction(
                     // Analysis of custom length result
                     if memo_length < 69 {
                         println!("⚠️  Note: Memo < 69 bytes succeeded (unexpected if contract enforces minimum)");
-                    } else if memo_length > 769 {
-                        println!("⚠️  Note: Memo > 769 bytes succeeded (unexpected if contract enforces maximum)");
+                    } else if memo_length > 800 {
+                        println!("⚠️  Note: Memo > 800 bytes succeeded (unexpected if contract enforces maximum)");
                     } else {
-                        println!("✅ Memo length within expected range (69-769 bytes)");
+                        println!("✅ Memo length within expected range (69-800 bytes)");
                     }
                 },
                 _ => {
@@ -506,9 +517,9 @@ fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
         } else {
             println!("⚠️  Unexpected error for short memo: {}", error_msg);
         }
-    } else if memo_length > 769 {
+    } else if memo_length > 800 {
         if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
-            println!("✅ Expected: Contract correctly rejects memo > 769 bytes");
+            println!("✅ Expected: Contract correctly rejects memo > 800 bytes");
         } else if error_msg.contains("Program failed to complete") {
             println!("⚠️  System limit: Memo might exceed system-level limits");
             println!("   This could be a Solana transaction size limit (~1232 bytes total)");
@@ -516,7 +527,7 @@ fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
             println!("⚠️  Unexpected error for long memo: {}", error_msg);
         }
     } else {
-        println!("⚠️  Unexpected failure for memo within valid range (69-769): {}", error_msg);
+        println!("⚠️  Unexpected failure for memo within valid range (69-800): {}", error_msg);
     }
     
     // General system limit analysis
@@ -544,7 +555,7 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
         },
         "long-memo" => {
             if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
-                println!("✅ Correct error: Contract properly rejects memo > 769 bytes");
+                println!("✅ Correct error: Contract properly rejects memo > 800 bytes");
             } else {
                 println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
             }
@@ -563,7 +574,7 @@ fn print_error_guidance(error_msg: &str) {
     } else if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
         println!("💡 Memo Too Short: Memo must be at least 69 bytes long.");
     } else if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
-        println!("💡 Memo Too Long: Memo must not exceed 769 bytes.");
+        println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
     } else if error_msg.contains("Custom(6009)") || error_msg.contains("AmountMismatch") {
         println!("💡 Amount Mismatch: The amount field in memo doesn't match burn amount.");
     } else if error_msg.contains("Custom(6007)") || error_msg.contains("MissingAmountField") {
