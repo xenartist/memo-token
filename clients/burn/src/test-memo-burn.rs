@@ -21,60 +21,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
-    // Parse compute units (default: 200_000)
-    let initial_compute_units = if args.len() > 1 {
-        args[1].parse().unwrap_or(200_000)
-    } else {
-        200_000
-    };
+    if args.len() < 2 {
+        println!("Usage: cargo run -- <test_type> [burn_amount] [memo_length]");
+        println!("Test types:");
+        println!("  valid-memo    - Valid memo (between 69-769 bytes) - should succeed");
+        println!("  memo-69       - Memo exactly 69 bytes - should succeed");
+        println!("  memo-769      - Memo exactly 769 bytes - should succeed");
+        println!("  no-memo       - No memo instruction - should fail");
+        println!("  short-memo    - Memo less than 69 bytes - should fail");
+        println!("  long-memo     - Memo more than 769 bytes - should fail");
+        println!("  custom-length - Custom memo length (requires memo_length parameter)");
+        println!("\nExamples:");
+        println!("  cargo run -- valid-memo 1");
+        println!("  cargo run -- custom-length 1 800    # Test 800-byte memo");
+        println!("  cargo run -- custom-length 1 50     # Test 50-byte memo");
+        return Ok(());
+    }
+
+    let test_type = &args[1];
     
-    // Parse burn amount (in actual token units for decimal=0)
+    // Parse burn amount (in token units for decimal=0)
     let burn_amount_tokens = if args.len() > 2 {
         args[2].parse::<u64>().unwrap_or(1)
     } else {
         1
     };
-    // For decimal=0, token amount equals the burn amount directly
-    let burn_amount = burn_amount_tokens;
+    let burn_amount = burn_amount_tokens; // For decimal=0
 
-    // Parse custom message (optional) - ensure it's long enough
-    let base_message = if args.len() > 3 {
-        args[3].clone()
+    // Parse custom memo length (only used for custom-length test)
+    let custom_memo_length = if args.len() > 3 {
+        Some(args[3].parse::<usize>().unwrap_or(100))
+    } else if test_type == "custom-length" {
+        println!("ERROR: custom-length test requires memo_length parameter");
+        println!("Usage: cargo run -- custom-length [burn_amount] <memo_length>");
+        println!("Example: cargo run -- custom-length 1 800");
+        return Ok(());
     } else {
-        format!("Testing memo-burn contract with {} tokens on decimal=0 system", burn_amount_tokens)
+        None
     };
 
-    // Build JSON format memo with enough content to meet 69-byte minimum
-    let memo_json = serde_json::json!({
-        "message": base_message,
-        "amount": burn_amount,
-        "operation": "burn",
-        "timestamp": format!("{}", chrono::Utc::now().timestamp())
-    });
-    
-    // Convert to string
-    let mut memo_text = serde_json::to_string(&memo_json)
-        .expect("Failed to serialize JSON");
-    
-    // Ensure memo meets minimum 69-byte requirement
-    while memo_text.as_bytes().len() < 69 {
-        let expanded_json = serde_json::json!({
-            "message": format!("{} - extended for minimum length requirement", base_message),
-            "amount": burn_amount,
-            "operation": "burn",
-            "timestamp": format!("{}", chrono::Utc::now().timestamp()),
-            "padding": "x".repeat(69 - memo_text.as_bytes().len())
-        });
-        memo_text = serde_json::to_string(&expanded_json)
-            .expect("Failed to serialize expanded JSON");
+    println!("=== MEMO-BURN CONTRACT TEST ===");
+    println!("Test type: {}", test_type);
+    println!("Burn amount: {} tokens (decimal=0)", burn_amount_tokens);
+    if let Some(length) = custom_memo_length {
+        println!("Custom memo length: {} bytes", length);
     }
-
-    // Print detailed information
-    println!("=== MEMO-BURN CONTRACT TEST (DECIMAL=0, MIN 69 BYTES) ===");
-    println!("Burn amount: {} tokens (decimal=0, so {} units)", burn_amount_tokens, burn_amount);
-    println!("Memo length: {} bytes (minimum required: 69)", memo_text.as_bytes().len());
-    println!("Memo content:");
-    println!("{}", memo_text);
     println!();
 
     // Connect to network
@@ -114,7 +105,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(err) => {
             println!("Error checking token balance: {}", err);
-            println!("Token account: {}", token_account);
             return Ok(());
         }
     }
@@ -136,12 +126,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ), // instructions sysvar
     ];
 
-    // Create memo instruction
-    let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
-        &[&payer.pubkey()],
-    );
-    
     // Create burn instruction
     let burn_ix = Instruction::new_with_bytes(
         program_id,
@@ -154,71 +138,440 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // Create compute budget instruction
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(initial_compute_units);
+    // Generate memo based on test type and simulate to get CU requirements
+    let memo_result = generate_memo_for_test(test_type, burn_amount, custom_memo_length);
     
-    // Final transaction: [compute_budget, memo, burn]
-    let transaction = Transaction::new_signed_with_payer(
-        &[compute_budget_ix, memo_ix, burn_ix],
-        Some(&payer.pubkey()),
-        &[&payer],
-        recent_blockhash,
-    );
-
-    // Send transaction
-    println!("Sending burn transaction...");
-    println!("Instruction order: [compute_budget, memo, burn] - memo at index 1");
-    match client.send_and_confirm_transaction(&transaction) {
-        Ok(signature) => {
-            println!("🔥 BURN SUCCESSFUL!");
-            println!("Transaction signature: {}", signature);
-            println!("Burned {} tokens successfully", burn_amount_tokens);
+    match memo_result {
+        Ok(memo_text) => {
+            println!("Memo length: {} bytes", memo_text.as_bytes().len());
             
-            // Check new balance
-            if let Ok(balance) = client.get_token_account_balance(&token_account) {
-                println!("New token balance: {} tokens", balance.ui_amount.unwrap_or(0.0));
+            // Show first and last parts of memo if it's very long
+            if memo_text.len() > 200 {
+                println!("Memo content (first 100 chars): {}...", &memo_text[..100]);
+                println!("Memo content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+            } else {
+                println!("Memo content: {}", memo_text);
             }
-            
-            println!("\n✅ Decimal=0 memo-burn contract validation passed:");
-            println!("  ✓ Memo length >= 69 bytes ({})", memo_text.as_bytes().len());
-            println!("  ✓ Amount in memo matched burn amount (token count)");
-            println!("  ✓ Decimal=0 token handling correct");
+            println!();
+
+            // Create memo instruction
+            let memo_ix = spl_memo::build_memo(
+                memo_text.as_bytes(),
+                &[&payer.pubkey()],
+            );
+
+            // Simulate transaction to get optimal CU limit
+            let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+            let sim_transaction = Transaction::new_signed_with_payer(
+                &[dummy_compute_budget_ix, memo_ix.clone(), burn_ix.clone()],
+                Some(&payer.pubkey()),
+                &[&payer],
+                recent_blockhash,
+            );
+
+            println!("Simulating transaction to calculate optimal compute units...");
+            let optimal_cu = match client.simulate_transaction_with_config(
+                &sim_transaction,
+                RpcSimulateTransactionConfig {
+                    sig_verify: false,
+                    replace_recent_blockhash: false,
+                    commitment: Some(CommitmentConfig::confirmed()),
+                    encoding: None,
+                    accounts: None,
+                    min_context_slot: None,
+                    inner_instructions: false,
+                },
+            ) {
+                Ok(result) => {
+                    if let Some(err) = result.value.err {
+                        // For expected failures in simulation, use default CU
+                        println!("Simulation shows expected error: {:?}", err);
+                        let default_cu = 300_000u32;
+                        println!("Using default compute units: {}", default_cu);
+                        default_cu
+                    } else if let Some(units_consumed) = result.value.units_consumed {
+                        // Add 10% safety margin to actual consumption
+                        let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
+                        println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                            units_consumed, optimal_cu);
+                        optimal_cu
+                    } else {
+                        let default_cu = 300_000u32;
+                        println!("Simulation successful but no CU data, using default: {}", default_cu);
+                        default_cu
+                    }
+                },
+                Err(err) => {
+                    println!("Simulation failed: {}, using default CU", err);
+                    300_000u32
+                }
+            };
+
+            // Create transaction with optimal compute budget
+            let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
+            let transaction = Transaction::new_signed_with_payer(
+                &[compute_budget_ix, memo_ix, burn_ix],
+                Some(&payer.pubkey()),
+                &[&payer],
+                recent_blockhash,
+            );
+
+            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, memo_text.as_bytes().len());
         },
-        Err(err) => {
-            println!("❌ BURN FAILED!");
-            println!("Error: {}", err);
-            print_error_guidance(&err.to_string());
+        Err(_) => {
+            // For no-memo test case
+            println!("Testing without memo instruction");
+            println!();
+
+            // Simulate transaction without memo to get CU requirements
+            let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+            let sim_transaction = Transaction::new_signed_with_payer(
+                &[dummy_compute_budget_ix, burn_ix.clone()],
+                Some(&payer.pubkey()),
+                &[&payer],
+                recent_blockhash,
+            );
+
+            println!("Simulating transaction to calculate optimal compute units...");
+            let optimal_cu = match client.simulate_transaction_with_config(
+                &sim_transaction,
+                RpcSimulateTransactionConfig {
+                    sig_verify: false,
+                    replace_recent_blockhash: false,
+                    commitment: Some(CommitmentConfig::confirmed()),
+                    encoding: None,
+                    accounts: None,
+                    min_context_slot: None,
+                    inner_instructions: false,
+                },
+            ) {
+                Ok(result) => {
+                    if let Some(err) = result.value.err {
+                        println!("Simulation shows expected error: {:?}", err);
+                        let default_cu = 300_000u32;
+                        println!("Using default compute units: {}", default_cu);
+                        default_cu
+                    } else if let Some(units_consumed) = result.value.units_consumed {
+                        let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
+                        println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                            units_consumed, optimal_cu);
+                        optimal_cu
+                    } else {
+                        let default_cu = 300_000u32;
+                        println!("Simulation successful but no CU data, using default: {}", default_cu);
+                        default_cu
+                    }
+                },
+                Err(err) => {
+                    println!("Simulation failed: {}, using default CU", err);
+                    300_000u32
+                }
+            };
+
+            // Create transaction without memo with optimal compute budget
+            let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
+            let transaction = Transaction::new_signed_with_payer(
+                &[compute_budget_ix, burn_ix],
+                Some(&payer.pubkey()),
+                &[&payer],
+                recent_blockhash,
+            );
+
+            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, 0);
         }
     }
 
     Ok(())
 }
 
+fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Option<usize>) -> Result<String, String> {
+    match test_type {
+        "valid-memo" => {
+            let memo_json = serde_json::json!({
+                "message": "Testing memo-burn contract with valid memo length between 69-769 bytes",
+                "amount": burn_amount,
+                "operation": "burn",
+                "timestamp": chrono::Utc::now().timestamp()
+            });
+            Ok(serde_json::to_string(&memo_json).unwrap())
+        },
+        "memo-69" => {
+            // Create a memo that's exactly 69 bytes
+            let base_json = serde_json::json!({
+                "amount": burn_amount,
+                "msg": ""
+            });
+            let base_str = serde_json::to_string(&base_json).unwrap();
+            let needed_chars = 69 - base_str.len() + 2; // +2 for quotes around msg
+            let padding = "x".repeat(needed_chars);
+            
+            let memo_json = serde_json::json!({
+                "amount": burn_amount,
+                "msg": padding
+            });
+            let result = serde_json::to_string(&memo_json).unwrap();
+            assert_eq!(result.as_bytes().len(), 69, "Memo should be exactly 69 bytes");
+            Ok(result)
+        },
+        "memo-769" => {
+            // Create a memo that's exactly 769 bytes
+            let base_json = serde_json::json!({
+                "amount": burn_amount,
+                "message": "",
+                "operation": "burn"
+            });
+            let base_str = serde_json::to_string(&base_json).unwrap();
+            let needed_chars = 769 - base_str.len() + 2; // +2 for quotes around message
+            let padding = "x".repeat(needed_chars);
+            
+            let memo_json = serde_json::json!({
+                "amount": burn_amount,
+                "message": padding,
+                "operation": "burn"
+            });
+            let result = serde_json::to_string(&memo_json).unwrap();
+            assert_eq!(result.as_bytes().len(), 769, "Memo should be exactly 769 bytes");
+            Ok(result)
+        },
+        "short-memo" => {
+            // Create a memo shorter than 69 bytes (should fail)
+            let memo_json = serde_json::json!({
+                "amount": burn_amount,
+                "msg": "short"
+            });
+            Ok(serde_json::to_string(&memo_json).unwrap())
+        },
+        "long-memo" => {
+            // Create a memo longer than 769 bytes (should fail)
+            let long_message = "x".repeat(800);
+            let memo_json = serde_json::json!({
+                "amount": burn_amount,
+                "message": long_message,
+                "operation": "burn"
+            });
+            Ok(serde_json::to_string(&memo_json).unwrap())
+        },
+        "custom-length" => {
+            // Create a memo with custom specified length
+            let target_length = custom_length.unwrap_or(100);
+            
+            let base_json = serde_json::json!({
+                "amount": burn_amount,
+                "operation": "burn",
+                "test_type": "custom-length",
+                "message": ""
+            });
+            let base_str = serde_json::to_string(&base_json).unwrap();
+            
+            if target_length <= base_str.len() {
+                // If target is smaller than base structure, create minimal memo
+                let memo_json = serde_json::json!({
+                    "amount": burn_amount,
+                    "msg": "x".repeat(std::cmp::max(1, target_length.saturating_sub(20)))
+                });
+                let result = serde_json::to_string(&memo_json).unwrap();
+                
+                // Trim or pad to exact length if possible
+                if result.len() > target_length {
+                    return Ok(format!("{{\"amount\":{},\"msg\":\"{}\"}}", 
+                        burn_amount, 
+                        "x".repeat(std::cmp::max(1, target_length.saturating_sub(format!("{{\"amount\":{},\"msg\":\"\"}}", burn_amount).len())))
+                    ));
+                } else {
+                    return Ok(result);
+                }
+            }
+            
+            // Calculate how much padding we need
+            let needed_chars = target_length - base_str.len() + 2; // +2 for quotes around message
+            let padding = "x".repeat(needed_chars);
+            
+            let memo_json = serde_json::json!({
+                "amount": burn_amount,
+                "operation": "burn",
+                "test_type": "custom-length",
+                "message": padding
+            });
+            let result = serde_json::to_string(&memo_json).unwrap();
+            
+            // Fine-tune to exact length
+            let current_len = result.as_bytes().len();
+            if current_len != target_length {
+                let diff = target_length as i32 - current_len as i32;
+                let adjusted_padding = if diff > 0 {
+                    padding + &"x".repeat(diff as usize)
+                } else {
+                    padding[..std::cmp::max(0, padding.len() as i32 + diff) as usize].to_string()
+                };
+                
+                let final_memo_json = serde_json::json!({
+                    "amount": burn_amount,
+                    "operation": "burn",
+                    "test_type": "custom-length",
+                    "message": adjusted_padding
+                });
+                let final_result = serde_json::to_string(&final_memo_json).unwrap();
+                
+                println!("Attempted to create {}-byte memo, actual length: {} bytes", 
+                    target_length, final_result.as_bytes().len());
+                Ok(final_result)
+            } else {
+                Ok(result)
+            }
+        },
+        "no-memo" => {
+            // Return error to indicate no memo should be included
+            Err("no-memo".to_string())
+        },
+        _ => {
+            println!("Unknown test type: {}", test_type);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn send_and_check_transaction(
+    client: &RpcClient,
+    transaction: Transaction,
+    test_type: &str,
+    token_account: &Pubkey,
+    burn_amount_tokens: u64,
+    memo_length: usize
+) {
+    println!("Sending burn transaction...");
+    
+    match client.send_and_confirm_transaction(&transaction) {
+        Ok(signature) => {
+            println!("🔥 TRANSACTION SUCCESSFUL!");
+            println!("Transaction signature: {}", signature);
+            
+            // Check if this should have succeeded
+            match test_type {
+                "valid-memo" | "memo-69" | "memo-769" => {
+                    println!("✅ EXPECTED SUCCESS: {} test passed", test_type);
+                    println!("Burned {} tokens successfully", burn_amount_tokens);
+                },
+                "custom-length" => {
+                    println!("✅ CUSTOM LENGTH SUCCESS: {}-byte memo test passed", memo_length);
+                    println!("Burned {} tokens successfully", burn_amount_tokens);
+                    
+                    // Analysis of custom length result
+                    if memo_length < 69 {
+                        println!("⚠️  Note: Memo < 69 bytes succeeded (unexpected if contract enforces minimum)");
+                    } else if memo_length > 769 {
+                        println!("⚠️  Note: Memo > 769 bytes succeeded (unexpected if contract enforces maximum)");
+                    } else {
+                        println!("✅ Memo length within expected range (69-769 bytes)");
+                    }
+                },
+                _ => {
+                    println!("❌ UNEXPECTED SUCCESS: {} test should have failed but succeeded", test_type);
+                }
+            }
+            
+            // Check new balance
+            if let Ok(balance) = client.get_token_account_balance(token_account) {
+                println!("New token balance: {} tokens", balance.ui_amount.unwrap_or(0.0));
+            }
+        },
+        Err(err) => {
+            println!("❌ TRANSACTION FAILED!");
+            println!("Error: {}", err);
+            
+            // Check if this failure was expected
+            match test_type {
+                "no-memo" | "short-memo" | "long-memo" => {
+                    println!("✅ EXPECTED FAILURE: {} test correctly failed", test_type);
+                    print_specific_error_for_test(test_type, &err.to_string());
+                },
+                "custom-length" => {
+                    println!("📊 CUSTOM LENGTH FAILURE: {}-byte memo test failed", memo_length);
+                    print_custom_length_analysis(memo_length, &err.to_string());
+                },
+                _ => {
+                    println!("❌ UNEXPECTED FAILURE: {} test should have succeeded", test_type);
+                    print_error_guidance(&err.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
+    println!("📊 Custom length analysis for {} bytes:", memo_length);
+    
+    if memo_length < 69 {
+        if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+            println!("✅ Expected: Contract correctly rejects memo < 69 bytes");
+        } else {
+            println!("⚠️  Unexpected error for short memo: {}", error_msg);
+        }
+    } else if memo_length > 769 {
+        if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
+            println!("✅ Expected: Contract correctly rejects memo > 769 bytes");
+        } else if error_msg.contains("Program failed to complete") {
+            println!("⚠️  System limit: Memo might exceed system-level limits");
+            println!("   This could be a Solana transaction size limit (~1232 bytes total)");
+        } else {
+            println!("⚠️  Unexpected error for long memo: {}", error_msg);
+        }
+    } else {
+        println!("⚠️  Unexpected failure for memo within valid range (69-769): {}", error_msg);
+    }
+    
+    // General system limit analysis
+    if memo_length > 1000 {
+        println!("💡 Note: Very large memos may hit Solana transaction size limits");
+        println!("   Maximum transaction size is ~1232 bytes including all instructions");
+    }
+}
+
+fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
+    match test_type {
+        "no-memo" => {
+            if error_msg.contains("Custom(6000)") || error_msg.contains("MemoRequired") {
+                println!("✅ Correct error: Contract properly requires memo instruction");
+            } else {
+                println!("⚠️  Unexpected error for no-memo test: {}", error_msg);
+            }
+        },
+        "short-memo" => {
+            if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+                println!("✅ Correct error: Contract properly rejects memo < 69 bytes");
+            } else {
+                println!("⚠️  Unexpected error for short-memo test: {}", error_msg);
+            }
+        },
+        "long-memo" => {
+            if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
+                println!("✅ Correct error: Contract properly rejects memo > 769 bytes");
+            } else {
+                println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
+            }
+        },
+        _ => {
+            println!("Unexpected test type: {}", test_type);
+        }
+    }
+}
+
 fn print_error_guidance(error_msg: &str) {
     println!("\n=== ERROR ANALYSIS ===");
     
-    if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+    if error_msg.contains("Custom(6000)") || error_msg.contains("MemoRequired") {
+        println!("💡 Missing Memo: This contract requires a memo instruction at index 1.");
+    } else if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
         println!("💡 Memo Too Short: Memo must be at least 69 bytes long.");
-        println!("   Add more content to your memo JSON structure.");
     } else if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
         println!("💡 Memo Too Long: Memo must not exceed 769 bytes.");
-        println!("   Reduce the content in your memo.");
     } else if error_msg.contains("Custom(6009)") || error_msg.contains("AmountMismatch") {
-        println!("💡 Amount Mismatch: The amount field in your memo doesn't match the burn amount.");
-        println!("   For decimal=0 tokens: memo.amount should equal token count.");
+        println!("💡 Amount Mismatch: The amount field in memo doesn't match burn amount.");
     } else if error_msg.contains("Custom(6007)") || error_msg.contains("MissingAmountField") {
-        println!("💡 Missing Amount: Your memo JSON must include an 'amount' field.");
+        println!("💡 Missing Amount: Memo JSON must include an 'amount' field.");
     } else if error_msg.contains("Custom(6005)") || error_msg.contains("UnauthorizedMint") {
-        println!("💡 Wrong Mint: Only the authorized mint can be used.");
+        println!("💡 Wrong Mint: Only authorized mint can be used.");
         println!("   Expected: memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
     } else {
         println!("💡 Error: {}", error_msg);
     }
-    
-    println!("\n=== TROUBLESHOOTING CHECKLIST ===");
-    println!("1. ✓ Memo length between 69-769 bytes");
-    println!("2. ✓ Memo contains valid JSON with 'amount' field");
-    println!("3. ✓ Amount in memo matches burn amount (decimal=0)");
-    println!("4. ✓ Using correct mint: memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
-    println!("5. ✓ Sufficient token balance");
 } 

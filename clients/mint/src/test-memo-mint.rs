@@ -27,31 +27,184 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments for test scenario
     let args: Vec<String> = std::env::args().collect();
     
-    let test_scenario = if args.len() > 1 {
-        args[1].as_str()
+    if args.len() < 2 {
+        print_help(&args[0]);
+        return Ok(());
+    }
+    
+    let test_scenario = &args[1];
+    
+    // Parse custom memo length for custom-length test
+    let custom_memo_length = if args.len() > 2 && test_scenario == "custom-length" {
+        Some(args[2].parse::<usize>().unwrap_or(100))
+    } else if test_scenario == "custom-length" {
+        println!("ERROR: custom-length test requires memo_length parameter");
+        println!("Usage: cargo run -- custom-length <memo_length>");
+        println!("Example: cargo run -- custom-length 800");
+        return Ok(());
     } else {
-        "help"
+        None
     };
     
-    match test_scenario {
+    match test_scenario.as_str() {
         "no-memo" => test_no_memo(),
         "short-memo" => test_short_memo(),
         "valid-memo" => test_valid_memo(),
         "long-memo" => test_long_memo(),
         "memo-69" => test_memo_exact_69(),
         "memo-769" => test_memo_exact_769(),
+        "custom-length" => test_custom_length(custom_memo_length.unwrap()),
         "help" | _ => {
-            println!("Usage: {} <test_scenario>", args[0]);
-            println!("Test scenarios:");
-            println!("  no-memo      - Test mint without memo (should fail)");
-            println!("  short-memo   - Test mint with memo < 69 bytes (should fail)");
-            println!("  memo-69      - Test mint with memo exactly 69 bytes (should succeed)");
-            println!("  valid-memo   - Test mint with memo 69-769 bytes (should succeed)");
-            println!("  memo-769     - Test mint with memo exactly 769 bytes (should succeed)");
-            println!("  long-memo    - Test mint with memo > 769 bytes (should fail)");
+            print_help(&args[0]);
             Ok(())
         }
     }
+}
+
+fn print_help(program_name: &str) {
+    println!("Usage: {} <test_scenario> [memo_length]", program_name);
+    println!("Test scenarios:");
+    println!("  no-memo         - Test mint without memo (should fail)");
+    println!("  short-memo      - Test mint with memo < 69 bytes (should fail)");
+    println!("  memo-69         - Test mint with memo exactly 69 bytes (should succeed)");
+    println!("  valid-memo      - Test mint with memo 69-769 bytes (should succeed)");
+    println!("  memo-769        - Test mint with memo exactly 769 bytes (should succeed)");
+    println!("  long-memo       - Test mint with memo > 769 bytes (should fail)");
+    println!("  custom-length   - Test mint with custom memo length (requires memo_length parameter)");
+    println!("\nExamples:");
+    println!("  {} valid-memo", program_name);
+    println!("  {} custom-length 800    # Test 800-byte memo", program_name);
+    println!("  {} custom-length 50     # Test 50-byte memo", program_name);
+    println!("  {} custom-length 1000   # Test 1000-byte memo", program_name);
+}
+
+fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with CUSTOM LENGTH memo ({} bytes)...\n", target_length);
+    
+    let client = create_rpc_client();
+    let payer = load_payer_keypair();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
+    
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
+    
+    // Get current token balance
+    let balance_before = get_token_balance(&client, &token_account);
+    
+    // Create memo with custom length
+    let memo_text = create_memo_with_exact_length(target_length);
+    let actual_length = memo_text.as_bytes().len();
+    
+    println!("Target memo length: {} bytes", target_length);
+    println!("Actual memo length: {} bytes", actual_length);
+    
+    // Show memo content appropriately
+    if actual_length > 200 {
+        println!("Memo content (first 100 chars): {}...", &memo_text[..100]);
+        println!("Memo content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+    } else {
+        println!("Memo content: {}", memo_text);
+    }
+    println!();
+    
+    // Analyze expected result
+    let expected_result = if actual_length < 69 {
+        "FAIL (< 69 bytes)"
+    } else if actual_length > 769 {
+        "FAIL (> 769 bytes)"
+    } else {
+        "SUCCESS (69-769 bytes)"
+    };
+    println!("Expected result: {}", expected_result);
+    
+    // Additional system limit warnings
+    if actual_length > 1000 {
+        println!("⚠️  Warning: Very large memo may hit Solana transaction size limits");
+        println!("   Maximum transaction size is ~1232 bytes including all instructions");
+    }
+    println!();
+    
+    // Create memo instruction
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
+    
+    // Execute transaction
+    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], &format!("Custom Length ({} bytes) Test", actual_length));
+    
+    match result {
+        Ok(signature) => {
+            println!("✅ TRANSACTION SUCCESSFUL!");
+            println!("   Signature: {}", signature);
+            
+            // Check token balance after mint
+            let balance_after = get_token_balance(&client, &token_account);
+            println!("   Token balance before: {}", balance_before);
+            println!("   Token balance after:  {}", balance_after);
+            println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
+            
+            // Analyze result
+            if actual_length < 69 {
+                println!("   ❌ UNEXPECTED SUCCESS: Memo < 69 bytes should have failed");
+                println!("   🔍 This suggests the contract may not be enforcing minimum length");
+            } else if actual_length > 769 {
+                println!("   ❌ UNEXPECTED SUCCESS: Memo > 769 bytes should have failed");
+                println!("   🔍 This suggests either:");
+                println!("      - Contract is not enforcing maximum length");
+                println!("      - System limit is higher than expected");
+            } else {
+                println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-769 bytes)");
+            }
+            
+            if balance_after - balance_before == 1 {
+                println!("   ✅ Correct amount minted (1 token with decimal=0)");
+            } else {
+                println!("   ❌ Unexpected mint amount");
+            }
+        },
+        Err(e) => {
+            println!("❌ TRANSACTION FAILED!");
+            println!("   Error: {}", e);
+            
+            // Analyze failure
+            if actual_length < 69 {
+                if e.to_string().contains("Custom(6004)") || e.to_string().contains("MemoTooShort") {
+                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo < 69 bytes");
+                } else {
+                    println!("   ⚠️  UNEXPECTED ERROR for short memo: {}", e);
+                }
+            } else if actual_length > 769 {
+                if e.to_string().contains("Custom(6008)") || e.to_string().contains("MemoTooLong") {
+                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo > 769 bytes");
+                } else if e.to_string().contains("Program failed to complete") || e.to_string().contains("Transaction too large") {
+                    println!("   ✅ EXPECTED FAILURE: Hit system-level transaction size limit");
+                    println!("   🔍 Solana transaction size limit (~1232 bytes) exceeded");
+                } else {
+                    println!("   ⚠️  UNEXPECTED ERROR for long memo: {}", e);
+                }
+            } else {
+                println!("   ❌ UNEXPECTED FAILURE: Memo within valid range (69-769 bytes) should succeed");
+                println!("   🔍 Possible issues:");
+                println!("      - Contract bug");
+                println!("      - Network/RPC issue");
+                println!("      - Other validation failure");
+            }
+        }
+    }
+    
+    // Summary for custom length test
+    println!("\n📊 CUSTOM LENGTH TEST SUMMARY:");
+    println!("   Target length: {} bytes", target_length);
+    println!("   Actual length: {} bytes", actual_length);
+    println!("   Contract valid range: 69-769 bytes");
+    println!("   System limit: ~1000+ bytes (varies)");
+    
+    if actual_length != target_length {
+        println!("   ⚠️  Note: Actual length differs from target due to JSON formatting");
+    }
+    
+    Ok(())
 }
 
 fn test_no_memo() -> Result<(), Box<dyn std::error::Error>> {
@@ -352,8 +505,8 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
 // Helper function to create memo with exact length
 fn create_memo_with_exact_length(target_length: usize) -> String {
     let base_json = serde_json::json!({
-        "test": "boundary-test",
-        "length": target_length,
+        "test": "length-test",
+        "target": target_length,
         "data": ""
     });
     
@@ -362,37 +515,38 @@ fn create_memo_with_exact_length(target_length: usize) -> String {
     
     if base_length >= target_length {
         // If base is already too long, create a simpler JSON
+        let padding_size = target_length.saturating_sub(15); // Account for {"data":"..."}
         let simple_json = serde_json::json!({
-            "data": "x".repeat(target_length.saturating_sub(20))
+            "data": "x".repeat(padding_size)
         });
         let mut result = simple_json.to_string();
         
         // Fine-tune to exact length
-        while result.len() < target_length {
+        while result.as_bytes().len() < target_length {
             result.push('x');
         }
-        while result.len() > target_length {
+        while result.as_bytes().len() > target_length {
             result.pop();
         }
         result
     } else {
         // Add padding to reach exact length
-        let padding_needed = target_length - base_length;
+        let padding_needed = target_length - base_length + 2; // +2 for quotes around data
         let padding = "x".repeat(padding_needed);
         
         let final_json = serde_json::json!({
-            "test": "boundary-test",
-            "length": target_length,
+            "test": "length-test",
+            "target": target_length,
             "data": padding
         });
         
         let mut result = final_json.to_string();
         
-        // Fine-tune to exact length (account for JSON formatting)
-        while result.len() < target_length {
+        // Fine-tune to exact length (account for JSON formatting differences)
+        while result.as_bytes().len() < target_length {
             result.push('x');
         }
-        while result.len() > target_length {
+        while result.as_bytes().len() > target_length {
             result.pop();
         }
         
@@ -533,15 +687,19 @@ fn execute_transaction(
     let recent_blockhash = client.get_latest_blockhash()?;
     
     // Create transaction for simulation
+    let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+    let mut sim_instructions = vec![dummy_compute_budget_ix];
+    sim_instructions.extend(instructions.clone());
+    
     let sim_transaction = Transaction::new_signed_with_payer(
-        &instructions,
+        &sim_instructions,
         Some(&payer.pubkey()),
         &[payer],
         recent_blockhash,
     );
     
     // Simulate to get compute units
-    let compute_units = match client.simulate_transaction_with_config(
+    let optimal_cu = match client.simulate_transaction_with_config(
         &sim_transaction,
         RpcSimulateTransactionConfig {
             sig_verify: false,
@@ -550,27 +708,38 @@ fn execute_transaction(
             encoding: None,
             accounts: None,
             min_context_slot: None,
-            inner_instructions: true,
+            inner_instructions: false,
         },
     ) {
         Ok(result) => {
             if let Some(err) = result.value.err {
-                return Err(format!("Simulation failed: {:?}", err).into());
+                // For expected failures, still need to send with reasonable CU
+                println!("Simulation shows expected error: {:?}", err);
+                let default_cu = 300_000u32;
+                println!("Using default compute units: {}", default_cu);
+                default_cu
             } else if let Some(units_consumed) = result.value.units_consumed {
-                let required_cu = ((units_consumed as f64 * 1.2) as u32).max(5000);
-                println!("Simulation consumed {} CUs, requesting {} CUs", units_consumed, required_cu);
-                required_cu
+                // Add 10% safety margin to actual consumption
+                let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
+                println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                    units_consumed, optimal_cu);
+                optimal_cu
             } else {
-                10_000
+                let default_cu = 300_000u32;
+                println!("Simulation successful but no CU data, using default: {}", default_cu);
+                default_cu
             }
         },
-        Err(_) => 10_000,
+        Err(err) => {
+            println!("Simulation failed: {}, using default CU", err);
+            300_000u32
+        }
     };
     
-    // Create compute budget instruction
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(compute_units);
+    // Create compute budget instruction with optimal CU
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     
-    // Create final transaction with compute budget
+    // Create final transaction with optimal compute budget
     let mut final_instructions = vec![compute_budget_ix];
     final_instructions.extend(instructions);
     
