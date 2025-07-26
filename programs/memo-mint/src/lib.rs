@@ -19,7 +19,10 @@ pub mod memo_mint {
     /// Process token minting
     /// Mints exactly 1 token per call, requires memo instruction
     pub fn mint_token(ctx: Context<MintToken>) -> Result<()> {
-        // Check for memo instruction with length constraints (updated to 800 max)
+        // Validate this is a legitimate mint operation and not other types of operations
+        validate_mint_operation(&ctx)?;
+        
+        // Check for memo instruction with length constraints (69-800 bytes)
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 800)?;
         if !memo_found {
             return Err(ErrorCode::MemoRequired.into());
@@ -36,7 +39,7 @@ pub mod memo_mint {
         
         // Validate PDA matches provided account
         if mint_authority != ctx.accounts.mint_authority.key() {
-            return Err(ProgramError::InvalidSeeds.into());
+            return Err(ErrorCode::InvalidMintAuthority.into());
         }
         
         // For decimal=0 tokens, amount equals token count directly
@@ -61,6 +64,35 @@ pub mod memo_mint {
         
         Ok(())
     }
+}
+
+/// Validate this is a legitimate mint operation and not other types of operations
+fn validate_mint_operation(ctx: &Context<MintToken>) -> Result<()> {
+    // Check that the user is the owner of the token account (prevent minting to other accounts)
+    if ctx.accounts.token_account.owner != ctx.accounts.user.key() {
+        return Err(ErrorCode::UnauthorizedTokenAccount.into());
+    }
+    
+    // Check the mint is the authorized one
+    if ctx.accounts.mint.key().to_string() != AUTHORIZED_MINT {
+        return Err(ErrorCode::UnauthorizedMint.into());
+    }
+    
+    // Check token account belongs to the correct mint
+    if ctx.accounts.token_account.mint != ctx.accounts.mint.key() {
+        return Err(ErrorCode::InvalidTokenAccount.into());
+    }
+    
+    // Ensure we're using the correct token program (Token-2022)
+    if ctx.accounts.token_program.key() != token_2022::ID {
+        return Err(ErrorCode::InvalidTokenProgram.into());
+    }
+    
+    // Additional check: ensure this is called with mint intention
+    // The fact that we're in mint_token function with proper accounts structure
+    // and the user owns the token account confirms this is a mint operation
+    
+    Ok(())
 }
 
 /// Check for memo instruction in transaction with length validation
@@ -112,15 +144,18 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     
     // Check minimum length requirement
     if memo_length < min_length {
+        msg!("Memo too short: {} bytes (minimum: {})", memo_length, min_length);
         return Err(ErrorCode::MemoTooShort.into());
     }
     
     // Check maximum length requirement
     if memo_length > max_length {
+        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
         return Err(ErrorCode::MemoTooLong.into());
     }
     
     // Length is valid, return memo data
+    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
     Ok((true, memo_data.to_vec()))
 }
 
@@ -141,7 +176,8 @@ pub struct MintToken<'info> {
     
     #[account(
         mut,
-        constraint = token_account.mint == mint.key() && token_account.owner == user.key() @ ErrorCode::InvalidTokenAccount
+        constraint = token_account.mint == mint.key() @ ErrorCode::InvalidTokenAccount,
+        constraint = token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
     
@@ -158,15 +194,24 @@ pub enum ErrorCode {
     #[msg("Memo too short. Must be at least 69 bytes.")]
     MemoTooShort,
     
-    #[msg("Memo too long. Must be at most 800 bytes.")]  // Updated from 769 to 800
+    #[msg("Memo too long. Must be at most 800 bytes.")]
     MemoTooLong,
     
     #[msg("Transaction must include a memo instruction.")]
     MemoRequired,
     
-    #[msg("Invalid token account: Account must belong to the correct mint and owner.")]
+    #[msg("Invalid token account: Account must belong to the correct mint.")]
     InvalidTokenAccount,
 
     #[msg("Unauthorized mint: Only the specified mint address can be used.")]
     UnauthorizedMint,
+
+    #[msg("Unauthorized token account: User must own the token account.")]
+    UnauthorizedTokenAccount,
+
+    #[msg("Invalid mint authority: PDA does not match expected mint authority.")]
+    InvalidMintAuthority,
+
+    #[msg("Invalid token program: Must use Token-2022 program.")]
+    InvalidTokenProgram,
 } 
