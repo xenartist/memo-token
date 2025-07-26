@@ -19,8 +19,8 @@ pub mod memo_mint {
     /// Process token minting
     /// Mints exactly 1 token per call, requires memo instruction
     pub fn mint_token(ctx: Context<MintToken>) -> Result<()> {
-        // Check for memo instruction with length constraints
-        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 769)?;
+        // Check for memo instruction with length constraints (updated to 800 max)
+        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 800)?;
         if !memo_found {
             return Err(ErrorCode::MemoRequired.into());
         }
@@ -158,7 +158,7 @@ pub enum ErrorCode {
     #[msg("Memo too short. Must be at least 69 bytes.")]
     MemoTooShort,
     
-    #[msg("Memo too long. Must be at most 769 bytes.")]
+    #[msg("Memo too long. Must be at most 800 bytes.")]  // Updated from 769 to 800
     MemoTooLong,
     
     #[msg("Transaction must include a memo instruction.")]
