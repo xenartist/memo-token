@@ -19,7 +19,8 @@ use spl_token_2022::id as token_2022_id;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BURN CONTRACT TRANSFER REJECTION TEST ===");
-    println!("Testing that the contract correctly rejects non-burn operations\n");
+    println!("Testing that the contract correctly rejects non-burn operations");
+    println!("Using decimal=0 token: memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc\n");
 
     // Connect to network
     let rpc_url = "https://rpc-testnet.x1.wiki";
@@ -30,15 +31,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shellexpand::tilde("~/.config/solana/id.json").to_string()
     ).expect("Failed to read keypair file");
 
-    // Contract and token addresses
+    // Contract and token addresses - UPDATED
     let program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("MEM69mjnKAMxgqwosg5apfYNk2rMuV26FR9THDfT3Q7")
-        .expect("Invalid mint address");
+    let mint = Pubkey::from_str("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc")
+        .expect("Invalid mint address - updated to new memo token");
 
     println!("Test contract: {}", program_id);
     println!("Payer: {}", payer.pubkey());
-    println!("Target mint: {}\n", mint);
+    println!("Target mint: {} (decimal=0)", mint);
+    println!();
 
     // Get latest blockhash
     let recent_blockhash = client
@@ -148,7 +150,7 @@ fn test_token_transfer(
     match client.get_token_account_balance(&user_token_account) {
         Ok(balance) => {
             let current_balance = balance.ui_amount.unwrap_or(0.0);
-            println!("  Current user balance: {} tokens", current_balance);
+            println!("  Current user balance: {} tokens (decimal=0)", current_balance);
             
             if current_balance < 1.0 {
                 println!("  ⚠️  Insufficient balance for token transfer test");
@@ -164,7 +166,7 @@ fn test_token_transfer(
     }
 
     // Method 1: Try to create ATA for program and transfer (standard approach)
-    println!("  🔬 Method 1: Standard token transfer");
+    println!("  🔬 Method 1: Standard token transfer (decimal=0)");
     test_standard_token_transfer(client, payer, &user_token_account, &program_token_account, mint, recent_blockhash)?;
 
     // Method 2: Try to call the contract with a transfer-like instruction
@@ -182,9 +184,9 @@ fn test_standard_token_transfer(
     mint: &Pubkey,
     recent_blockhash: solana_sdk::hash::Hash,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let token_amount = 1_000_000_000u64; // 1 token
+    let token_amount = 1u64; // 1 token (decimal=0, so 1 unit = 1 token)
 
-    // Create transfer instruction
+    // Create transfer instruction for decimal=0 token
     let transfer_ix = token_instruction::transfer_checked(
         &token_2022_id(),
         user_token_account,
@@ -193,7 +195,7 @@ fn test_standard_token_transfer(
         &payer.pubkey(),
         &[],
         token_amount,
-        9, // decimals
+        0, // decimals = 0 for new token
     )?;
 
     // Create ATA for program if needed
@@ -211,7 +213,7 @@ fn test_standard_token_transfer(
         recent_blockhash,
     );
 
-    println!("    Attempting standard token transfer...");
+    println!("    Attempting standard token transfer (1 token, decimal=0)...");
 
     // Simulate the transaction
     match client.simulate_transaction_with_config(
@@ -233,6 +235,7 @@ fn test_standard_token_transfer(
             } else {
                 println!("    ⚠️  Standard transfer simulation succeeded");
                 println!("    📝 This might work since it's not calling the contract directly");
+                println!("    📝 Standard SPL transfers work independently of custom contracts");
             }
         },
         Err(err) => {
