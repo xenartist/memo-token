@@ -59,7 +59,7 @@ clients/src/admin-create-memo-token.sh
 ```
 
 ```bash
-cargo run --bin admin-transfer-memo-token-mint-authority <mint_keypair_path> <program_id>
+cargo run --bin admin-transfer-memo-token-mint-authority <token_mint_address> <program_id>
 ```
 
 Save the output addresses:
@@ -74,17 +74,17 @@ Save the output addresses:
 
 ## User Operations
 
-1. Create token account (first-time users):
+1. Mint token:
 
 ```bash
-cargo run --bin init
+cargo run --bin test-memo-mint valid-memo
+cargo run --bin test-memo-mint memo-69
+cargo run --bin test-memo-mint memo-769
+cargo run --bin test-memo-mint no-memo
+cargo run --bin test-memo-mint short-memo
+cargo run --bin test-memo-mint long-memo
 ```
 
-2. Mint tokens:
-
-```bash
-cargo run --bin mint
-```
 
 ## Architecture
 

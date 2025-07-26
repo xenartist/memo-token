@@ -1,7 +1,11 @@
 [package]
-name = "memo-burn-client"
+name = "memo-token-test-client"
 version = "0.1.0"
 edition = "2021"
+
+[[bin]]
+name = "test-memo-mint"
+path = "mint/src/test-memo-mint.rs"
 
 [[bin]]
 name = "test-memo-burn"
@@ -26,3 +30,4 @@ spl-memo = "6.0.0"
 shellexpand = "3.1.0"
 sha2 = "0.10.8"
 serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
