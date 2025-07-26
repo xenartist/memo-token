@@ -30,7 +30,7 @@ pub mod memo_burn {
         // For decimal=0 tokens, amount should be a positive integer (no fractional validation needed)
         // Remove the 10^9 multiplication check since decimal=0 means 1 token = 1 unit
         
-        // Check memo instruction
+        // Check memo instruction with length validation (69-800 bytes)
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
         if !memo_found {
             msg!("No memo instruction found");
@@ -135,7 +135,7 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     Ok(())
 }
 
-/// Check for memo instruction
+/// Check for memo instruction with length validation (69-800 bytes)
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // SPL Memo program ID
     let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
@@ -149,6 +149,18 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
         match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
             Ok(ix) => {
                 if ix.program_id == memo_program_id {
+                    // Validate memo length (69-800 bytes)
+                    let memo_length = ix.data.len();
+                    if memo_length < 69 {
+                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
+                        return Err(ErrorCode::MemoTooShort.into());
+                    }
+                    if memo_length > 800 {
+                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
+                        return Err(ErrorCode::MemoTooLong.into());
+                    }
+                    
+                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
                     return Ok((true, ix.data.to_vec()));
                 }
             },
@@ -163,6 +175,18 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
         match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
             Ok(ix) => {
                 if ix.program_id == memo_program_id {
+                    // Validate memo length (69-800 bytes)
+                    let memo_length = ix.data.len();
+                    if memo_length < 69 {
+                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
+                        return Err(ErrorCode::MemoTooShort.into());
+                    }
+                    if memo_length > 800 {
+                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
+                        return Err(ErrorCode::MemoTooLong.into());
+                    }
+                    
+                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
                     return Ok((true, ix.data.to_vec()));
                 }
             },
@@ -227,4 +251,10 @@ pub enum ErrorCode {
 
     #[msg("Amount mismatch. The amount in memo must match the burn amount.")]
     AmountMismatch,
+
+    #[msg("Memo too short (minimum 69 bytes).")]
+    MemoTooShort,
+
+    #[msg("Memo too long (maximum 800 bytes).")]
+    MemoTooLong,
 }
