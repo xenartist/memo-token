@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.testnet]
-memo_mint = "TD8dwXKKg7M3QpWa9mQQpcvzaRasDU1MjmQWqZ9UZiw"
+memo_mint = "A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy"
 memo_burn = "FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP"
 
 # [programs.mainnet]
