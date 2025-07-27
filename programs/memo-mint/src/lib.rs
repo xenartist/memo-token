@@ -25,9 +25,6 @@ pub mod memo_mint {
             return Err(ErrorCode::MemoRequired.into());
         }
         
-        // Fixed token count - always mint exactly 1 token
-        let token_count = 1u64;
-        
         // Derive PDA and bump seed
         let (mint_authority, bump) = Pubkey::find_program_address(
             &[b"mint_authority"],
@@ -39,8 +36,8 @@ pub mod memo_mint {
             return Err(ErrorCode::InvalidMintAuthority.into());
         }
         
-        // For decimal=0 tokens, amount equals token count directly
-        let amount = token_count;
+        // Fixed token amount - always mint exactly 1 token
+        let amount = 1u64;
         
         // Execute token mint operation
         token_2022::mint_to(
@@ -57,7 +54,7 @@ pub mod memo_mint {
         )?;
         
         // Log successful mint operation
-        msg!("Successfully minted {} tokens with memo length: {} bytes", token_count, memo_data.len());
+        msg!("Successfully minted {} tokens with memo length: {} bytes", amount, memo_data.len());
         
         Ok(())
     }
