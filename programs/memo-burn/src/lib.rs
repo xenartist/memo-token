@@ -10,8 +10,8 @@ use serde_json::Value;
 
 declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
 
-// Authorized mint - updated to new memo token address
-pub const AUTHORIZED_MINT: &str = "memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc";
+// Authorized mint address
+pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
 
 #[program]
 pub mod memo_burn {
@@ -19,9 +19,13 @@ pub mod memo_burn {
 
     /// Process burn operation with enhanced validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
-        // Check burn amount is at least 1 token (for decimal=0, this is just 1 unit)
-        if amount < 1 {
+        // Check burn amount is at least 1 token and is a multiple of 1_000_000 (decimal=6)
+        if amount < 1_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+        
+        if amount % 1_000_000 != 0 {
+            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction with length validation (69-800 bytes)
@@ -47,13 +51,14 @@ pub mod memo_burn {
             amount,
         )?;
 
-        msg!("Successfully burned {} tokens with memo validation", amount);
+        let token_count = amount / 1_000_000;
+        msg!("Successfully burned {} tokens ({} units) with memo validation", token_count, amount);
         
         Ok(())
     }
 }
 
-/// Extract and validate memo contains correct amount
+/// Extract and validate memo contains correct amount (in lamports/units)
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     // Parse memo as UTF-8 string
     let memo_str = String::from_utf8(memo_data.to_vec())
@@ -69,23 +74,17 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     let json_data: Value = serde_json::from_str(&clean_str)
         .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
-    // Extract amount from memo
+    // Extract amount from memo (expecting exact units/lamports)
     let memo_amount = match &json_data["amount"] {
         Value::Number(n) => {
             if let Some(int_val) = n.as_u64() {
-                int_val // For decimal=0, this is the actual token count
-            } else if let Some(float_val) = n.as_f64() {
-                // For decimal=0 tokens, we expect integers, but allow float conversion
-                if float_val < 0.0 || float_val > u64::MAX as f64 || float_val.fract() != 0.0 {
-                    return Err(ErrorCode::InvalidAmountFormat.into());
-                }
-                float_val as u64
+                int_val // Amount in units (lamports)
             } else {
                 return Err(ErrorCode::InvalidAmountFormat.into());
             }
         },
         Value::String(s) => {
-            // For string values, parse as token count (not lamports)
+            // Parse string as units (lamports)
             if let Ok(int_val) = s.parse::<u64>() {
                 int_val
             } else {
@@ -95,13 +94,17 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
         _ => return Err(ErrorCode::MissingAmountField.into()),
     };
 
-    // Check if memo amount matches expected burn amount
+    // Check if memo amount matches expected burn amount (both in units)
     if memo_amount != expected_amount {
-        msg!("Amount mismatch: memo contains {} tokens, but burning {} tokens", memo_amount, expected_amount);
+        let memo_tokens = memo_amount / 1_000_000;
+        let expected_tokens = expected_amount / 1_000_000;
+        msg!("Amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
+             memo_tokens, memo_amount, expected_tokens, expected_amount);
         return Err(ErrorCode::AmountMismatch.into());
     }
 
-    msg!("Amount validation passed: {} tokens", expected_amount);
+    let token_count = expected_amount / 1_000_000;
+    msg!("Amount validation passed: {} tokens ({} units)", token_count, expected_amount);
     Ok(())
 }
 
@@ -201,8 +204,11 @@ pub enum ErrorCode {
     #[msg("Invalid memo format. Expected JSON format.")]
     InvalidMemoFormat,
     
-    #[msg("Burn amount too small. Must burn at least 1 token.")]
+    #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
+
+    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    InvalidBurnAmount,
 
     #[msg("Invalid token account. Token account must belong to the correct mint.")]
     InvalidTokenAccount,
@@ -216,10 +222,10 @@ pub enum ErrorCode {
     #[msg("Missing amount field in memo JSON.")]
     MissingAmountField,
 
-    #[msg("Invalid amount format in memo. Must be a positive integer.")]
+    #[msg("Invalid amount format in memo. Must be a positive integer in units.")]
     InvalidAmountFormat,
 
-    #[msg("Amount mismatch. The amount in memo must match the burn amount.")]
+    #[msg("Amount mismatch. The amount in memo must match the burn amount (in units).")]
     AmountMismatch,
 
     #[msg("Memo too short (minimum 69 bytes).")]

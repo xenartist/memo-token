@@ -10,14 +10,14 @@ use std::str::FromStr;
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
 // Authorized mint address
-pub const AUTHORIZED_MINT: &str = "memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc";
+pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
 
 #[program]
 pub mod memo_mint {
     use super::*;
 
     /// Process token minting
-    /// Mints exactly 1 token per call, requires memo instruction
+    /// Mints exactly 1 token (1,000,000 units for decimal=6) per call, requires memo instruction
     pub fn process_mint(ctx: Context<ProcessMint>) -> Result<()> {
         // Check for memo instruction with length constraints (69-800 bytes)
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 800)?;
@@ -36,8 +36,8 @@ pub mod memo_mint {
             return Err(ErrorCode::InvalidMintAuthority.into());
         }
         
-        // Fixed token amount - always mint exactly 1 token
-        let amount = 1u64;
+        // Fixed token amount - always mint exactly 1 token (1,000,000 units for decimal=6)
+        let amount = 1_000_000u64; // 1 token with 6 decimal places
         
         // Execute token mint operation
         token_2022::mint_to(
@@ -54,7 +54,7 @@ pub mod memo_mint {
         )?;
         
         // Log successful mint operation
-        msg!("Successfully minted {} tokens with memo length: {} bytes", amount, memo_data.len());
+        msg!("Successfully minted 1 token ({} units) with memo length: {} bytes", amount, memo_data.len());
         
         Ok(())
     }
