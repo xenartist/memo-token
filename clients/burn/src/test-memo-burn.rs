@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 3 {
         println!("Usage: cargo run -- <burn_amount> <test_type> [memo_length]");
         println!("Parameters:");
-        println!("  burn_amount   - Number of tokens to burn (decimal=0)");
+        println!("  burn_amount   - Number of tokens to burn (decimal=6)");
         println!("  test_type     - Type of memo test to perform");
         println!("  memo_length   - Custom memo length (only for custom-length test)");
         println!();
@@ -50,7 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Error: Invalid burn amount '{}'", args[1]);
         std::process::exit(1);
     });
-    let burn_amount = burn_amount_tokens; // For decimal=0
+    // For decimal=6, multiply by 1,000,000 to get units
+    let burn_amount = burn_amount_tokens * 1_000_000;
 
     // Parse test type (second parameter)
     let test_type = &args[2];
@@ -72,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("=== MEMO-BURN CONTRACT TEST ===");
-    println!("Burn amount: {} tokens (decimal=0)", burn_amount_tokens);
+    println!("Burn amount: {} tokens ({} units, decimal=6)", burn_amount_tokens, burn_amount);
     println!("Test type: {}", test_type);
     if let Some(length) = custom_memo_length {
         println!("Custom memo length: {} bytes", length);
@@ -91,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and token addresses
     let program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
         .expect("Invalid program ID");
-    let mint = Pubkey::from_str("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc")
+    let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 
     // Get user's token account
@@ -581,7 +582,7 @@ fn print_error_guidance(error_msg: &str) {
         println!("💡 Missing Amount: Memo JSON must include an 'amount' field.");
     } else if error_msg.contains("Custom(6005)") || error_msg.contains("UnauthorizedMint") {
         println!("💡 Wrong Mint: Only authorized mint can be used.");
-        println!("   Expected: memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
+        println!("   Expected: HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
     } else {
         println!("💡 Error: {}", error_msg);
     }

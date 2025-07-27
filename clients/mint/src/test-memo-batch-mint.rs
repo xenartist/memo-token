@@ -152,7 +152,7 @@ fn load_payer_keypair() -> solana_sdk::signature::Keypair {
 fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     let program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
         .expect("invalid program id");
-    let mint_address = Pubkey::from_str("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc")
+    let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("invalid mint address");
     
     let (mint_authority_pda, _bump) = Pubkey::find_program_address(
@@ -325,6 +325,8 @@ fn execute_transaction(
 fn get_token_balance(client: &RpcClient, token_account: &Pubkey) -> u64 {
     match client.get_token_account_balance(token_account) {
         Ok(balance) => {
+            // For decimal=6 tokens, ui_amount represents the actual token count
+            // The contract mints 1,000,000 units = 1 token (displayed as ui_amount)
             balance.ui_amount.unwrap_or(0.0) as u64
         },
         Err(_) => 0,

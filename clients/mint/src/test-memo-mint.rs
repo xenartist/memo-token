@@ -158,7 +158,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
             }
             
             if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=0)");
+                println!("   ✅ Correct amount minted (1 token with decimal=6)");
             } else {
                 println!("   ❌ Unexpected mint amount");
             }
@@ -323,7 +323,7 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
             
             if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=0)");
+                println!("   ✅ Correct amount minted (1 token with decimal=6)");
                 println!("   ✅ Boundary condition (69 bytes) handled correctly");
             } else {
                 println!("   ❌ Unexpected mint amount");
@@ -386,7 +386,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
             
             if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=0)");
+                println!("   ✅ Correct amount minted (1 token with decimal=6)");
             } else {
                 println!("   ❌ Unexpected mint amount");
             }
@@ -440,7 +440,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed
             println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
             
             if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=0)");
+                println!("   ✅ Correct amount minted (1 token with decimal=6)");
                 println!("   ✅ Boundary condition (800 bytes) handled correctly");  // Changed from 769
             } else {
                 println!("   ❌ Unexpected mint amount");
@@ -572,7 +572,7 @@ fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     // Program addresses
     let program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
         .expect("Invalid program ID");
-    let mint_address = Pubkey::from_str("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc")
+    let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
     
     // Calculate PDA for mint authority
@@ -760,7 +760,8 @@ fn execute_transaction(
 fn get_token_balance(client: &RpcClient, token_account: &Pubkey) -> u64 {
     match client.get_token_account_balance(token_account) {
         Ok(balance) => {
-            // For decimal=0 tokens, ui_amount should equal the raw amount
+            // For decimal=6 tokens, ui_amount represents the actual token count
+            // The contract mints 1,000,000 units = 1 token (displayed as ui_amount)
             balance.ui_amount.unwrap_or(0.0) as u64
         },
         Err(_) => 0,
