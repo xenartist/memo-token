@@ -24,6 +24,7 @@ pub mod memo_burn {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
+        // Check burn amount is a multiple of 1_000_000 (decimal=6)
         if amount % 1_000_000 != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
@@ -60,9 +61,20 @@ pub mod memo_burn {
 
 /// Extract and validate memo contains correct amount (in lamports/units)
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    // Parse memo as UTF-8 string
-    let memo_str = String::from_utf8(memo_data.to_vec())
-        .map_err(|_| ErrorCode::InvalidMemoFormat)?;
+    // Enhanced UTF-8 validation (simple but effective)
+    let memo_str = match std::str::from_utf8(memo_data) {
+        Ok(s) => s,
+        Err(e) => {
+            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
+            return Err(ErrorCode::InvalidMemoFormat.into());
+        }
+    };
+    
+    // Basic security check (prevent obvious malicious input)
+    if memo_str.contains('\0') {
+        msg!("Memo contains null characters");
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
     
     // Clean the string (handle JSON escaping)
     let clean_str = memo_str
