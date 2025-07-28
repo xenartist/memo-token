@@ -82,9 +82,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(signature) => {
                 successful_mints += 1;
                 
-                // check token balance change
+                // check token balance change - prevent underflow
                 let balance_after = get_token_balance_raw(&client, &token_account);
-                let raw_minted = balance_after - balance_before;
+                let raw_minted = if balance_after >= balance_before {
+                    balance_after - balance_before
+                } else {
+                    println!("   ⚠️  Warning: balance_after ({}) < balance_before ({})", balance_after, balance_before);
+                    0 // if there is an exception, set to 0
+                };
+                
                 total_tokens_minted += raw_minted;
                 
                 println!("✅ transaction successful!");
@@ -109,7 +115,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 // Check for specific errors
                 if e.to_string().contains("SupplyLimitReached") {
-                    println!("   ℹ️  Supply limit reached (10 trillion tokens) - stopping batch mint");
+                    println!("   🚫 SUPPLY LIMIT REACHED!");
+                    println!("   📊 Maximum supply of 10 trillion tokens has been reached");
+                    println!("   🛑 Stopping batch mint operation");
+                    println!("   ✅ Contract protection is working correctly");
                     break;
                 }
                 
@@ -137,18 +146,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
-    match client.get_account(token_account) {
-        Ok(account) => {
-            // Parse the token account data to get the raw amount (in lamports)
-            if account.data.len() >= 72 { // SPL Token account is 165 bytes, amount is at offset 64-72
-                let amount_bytes = &account.data[64..72];
-                u64::from_le_bytes(amount_bytes.try_into().unwrap_or([0; 8]))
-            } else {
-                0
+    // try multiple times to ensure consistency
+    for attempt in 0..3 {
+        match client.get_account(token_account) {
+            Ok(account) => {
+                // Parse the token account data to get the raw amount (in lamports)
+                if account.data.len() >= 72 { // SPL Token account is 165 bytes, amount is at offset 64-72
+                    let amount_bytes = &account.data[64..72];
+                    let balance = u64::from_le_bytes(amount_bytes.try_into().unwrap_or([0; 8]));
+                    return balance;
+                } else {
+                    println!("   ⚠️  Warning: Token account data too short (attempt {})", attempt + 1);
+                }
+            },
+            Err(e) => {
+                println!("   ⚠️  Warning: Failed to get token account balance (attempt {}): {}", attempt + 1, e);
             }
-        },
-        Err(_) => 0,
+        }
+        
+        // if failed, wait a little bit and try again
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
     }
+    
+    println!("   ❌ Failed to read token balance after 3 attempts, returning 0");
+    0
 }
 
 fn format_token_amount(raw_amount: u64) -> String {
