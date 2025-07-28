@@ -88,8 +88,8 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Get current token balance
-    let balance_before = get_token_balance(&client, &token_account);
+    // Get current token balance (raw lamports)
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create memo with custom length
     let memo_text = create_memo_with_exact_length(target_length);
@@ -110,10 +110,10 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     // Analyze expected result
     let expected_result = if actual_length < 69 {
         "FAIL (< 69 bytes)"
-    } else if actual_length > 800 {  // Changed from 769
+    } else if actual_length > 800 {
         "FAIL (> 800 bytes)"
     } else {
-        "SUCCESS (69-800 bytes)"  // Changed from 69-769
+        "SUCCESS (69-800 bytes)"
     };
     println!("Expected result: {}", expected_result);
     
@@ -139,28 +139,32 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
             println!("   Signature: {}", signature);
             
             // Check token balance after mint
-            let balance_after = get_token_balance(&client, &token_account);
-            println!("   Token balance before: {}", balance_before);
-            println!("   Token balance after:  {}", balance_after);
-            println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
+            let balance_after = get_token_balance_raw(&client, &token_account);
+            let raw_minted = balance_after - balance_before;
+            
+            println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
+            println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
+            println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
             
             // Analyze result
             if actual_length < 69 {
                 println!("   ❌ UNEXPECTED SUCCESS: Memo < 69 bytes should have failed");
                 println!("   🔍 This suggests the contract may not be enforcing minimum length");
-            } else if actual_length > 800 {  // Changed from 769
+            } else if actual_length > 800 {
                 println!("   ❌ UNEXPECTED SUCCESS: Memo > 800 bytes should have failed");
                 println!("   🔍 This suggests either:");
                 println!("      - Contract is not enforcing maximum length");
                 println!("      - System limit is higher than expected");
             } else {
-                println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-800 bytes)");  // Changed from 69-769
+                println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-800 bytes)");
             }
             
-            if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=6)");
+            // Validate mint amount
+            let (is_valid, description) = validate_mint_amount(raw_minted);
+            if is_valid {
+                println!("   ✅ Valid mint amount: {}", description);
             } else {
-                println!("   ❌ Unexpected mint amount");
+                println!("   ❌ {}", description);
             }
         },
         Err(e) => {
@@ -174,9 +178,9 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                 } else {
                     println!("   ⚠️  UNEXPECTED ERROR for short memo: {}", e);
                 }
-            } else if actual_length > 800 {  // Changed from 769
+            } else if actual_length > 800 {
                 if e.to_string().contains("Custom(6008)") || e.to_string().contains("MemoTooLong") {
-                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo > 800 bytes");  // Changed from 769
+                    println!("   ✅ EXPECTED FAILURE: Contract correctly rejects memo > 800 bytes");
                 } else if e.to_string().contains("Program failed to complete") || e.to_string().contains("Transaction too large") {
                     println!("   ✅ EXPECTED FAILURE: Hit system-level transaction size limit");
                     println!("   🔍 Solana transaction size limit (~1232 bytes) exceeded");
@@ -184,11 +188,15 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                     println!("   ⚠️  UNEXPECTED ERROR for long memo: {}", e);
                 }
             } else {
-                println!("   ❌ UNEXPECTED FAILURE: Memo within valid range (69-800 bytes) should succeed");  // Changed from 69-769
-                println!("   🔍 Possible issues:");
-                println!("      - Contract bug");
-                println!("      - Network/RPC issue");
-                println!("      - Other validation failure");
+                if e.to_string().contains("SupplyLimitReached") {
+                    println!("   ✅ EXPECTED FAILURE: Supply limit reached (10 trillion tokens)");
+                } else {
+                    println!("   ❌ UNEXPECTED FAILURE: Memo within valid range (69-800 bytes) should succeed");
+                    println!("   🔍 Possible issues:");
+                    println!("      - Contract bug");
+                    println!("      - Network/RPC issue");
+                    println!("      - Other validation failure");
+                }
             }
         }
     }
@@ -197,8 +205,9 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     println!("\n📊 CUSTOM LENGTH TEST SUMMARY:");
     println!("   Target length: {} bytes", target_length);
     println!("   Actual length: {} bytes", actual_length);
-    println!("   Contract valid range: 69-800 bytes");  // Changed from 69-769
+    println!("   Contract valid range: 69-800 bytes");
     println!("   System limit: ~1000+ bytes (varies)");
+    println!("   Possible mint amounts: 1, 0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001 tokens");
     
     if actual_length != target_length {
         println!("   ⚠️  Note: Actual length differs from target due to JSON formatting");
@@ -293,8 +302,8 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Get current token balance
-    let balance_before = get_token_balance(&client, &token_account);
+    // Get current token balance (raw lamports)
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create memo with exactly 69 bytes
     let memo_text = create_memo_with_exact_length(69);
@@ -317,22 +326,30 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Signature: {}", signature);
             
             // Check token balance after mint
-            let balance_after = get_token_balance(&client, &token_account);
-            println!("   Token balance before: {}", balance_before);
-            println!("   Token balance after:  {}", balance_after);
-            println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
+            let balance_after = get_token_balance_raw(&client, &token_account);
+            let raw_minted = balance_after - balance_before;
             
-            if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=6)");
+            println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
+            println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
+            println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
+            
+            // Validate mint amount
+            let (is_valid, description) = validate_mint_amount(raw_minted);
+            if is_valid {
+                println!("   ✅ Valid mint amount: {}", description);
                 println!("   ✅ Boundary condition (69 bytes) handled correctly");
             } else {
-                println!("   ❌ Unexpected mint amount");
+                println!("   ❌ {}", description);
             }
         },
         Err(e) => {
             println!("❌ UNEXPECTED: Transaction failed when it should have succeeded!");
             println!("   Error: {}", e);
-            println!("   The contract should accept memos of exactly 69 bytes.");
+            if e.to_string().contains("SupplyLimitReached") {
+                println!("   ℹ️  Supply limit reached (10 trillion tokens)");
+            } else {
+                println!("   The contract should accept memos of exactly 69 bytes.");
+            }
         }
     }
     
@@ -340,7 +357,7 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with VALID memo (69-800 bytes) (expected to succeed)...\n");  // Changed from 69-769
+    println!("🧪 Testing mint with VALID memo (69-800 bytes) (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -349,10 +366,10 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Get current token balance
-    let balance_before = get_token_balance(&client, &token_account);
+    // Get current token balance (raw lamports)
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
-    // Create valid memo (between 69-800 bytes)  // Changed from 69-769
+    // Create valid memo (between 69-800 bytes)
     let message = "This is a valid memo test for the memo-mint contract. ".repeat(2);
     let memo_json = serde_json::json!({
         "message": message,
@@ -362,7 +379,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     });
     let memo_text = memo_json.to_string();
     
-    println!("Memo length: {} bytes (69-800 bytes range)", memo_text.len());  // Changed from 69-769
+    println!("Memo length: {} bytes (69-800 bytes range)", memo_text.len());
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
@@ -380,28 +397,35 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Signature: {}", signature);
             
             // Check token balance after mint
-            let balance_after = get_token_balance(&client, &token_account);
-            println!("   Token balance before: {}", balance_before);
-            println!("   Token balance after:  {}", balance_after);
-            println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
+            let balance_after = get_token_balance_raw(&client, &token_account);
+            let raw_minted = balance_after - balance_before;
             
-            if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=6)");
+            println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
+            println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
+            println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
+            
+            // Validate mint amount
+            let (is_valid, description) = validate_mint_amount(raw_minted);
+            if is_valid {
+                println!("   ✅ Valid mint amount: {}", description);
             } else {
-                println!("   ❌ Unexpected mint amount");
+                println!("   ❌ {}", description);
             }
         },
         Err(e) => {
             println!("❌ UNEXPECTED: Transaction failed when it should have succeeded!");
             println!("   Error: {}", e);
+            if e.to_string().contains("SupplyLimitReached") {
+                println!("   ℹ️  Supply limit reached (10 trillion tokens)");
+            }
         }
     }
     
     Ok(())
 }
 
-fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed from test_memo_exact_769
-    println!("🧪 Testing mint with memo EXACTLY 800 bytes (expected to succeed)...\n");  // Changed from 769
+fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with memo EXACTLY 800 bytes (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -410,13 +434,13 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Get current token balance
-    let balance_before = get_token_balance(&client, &token_account);
+    // Get current token balance (raw lamports)
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
-    // Create memo with exactly 800 bytes  // Changed from 769
+    // Create memo with exactly 800 bytes
     let memo_text = create_memo_with_exact_length(800);
     
-    println!("Memo length: {} bytes (exactly 800 bytes)", memo_text.len());  // Changed from 769
+    println!("Memo length: {} bytes (exactly 800 bytes)", memo_text.len());
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
@@ -426,7 +450,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed
     let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
     // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Test");  // Changed from 769
+    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Test");
     
     match result {
         Ok(signature) => {
@@ -434,22 +458,30 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {  // Renamed
             println!("   Signature: {}", signature);
             
             // Check token balance after mint
-            let balance_after = get_token_balance(&client, &token_account);
-            println!("   Token balance before: {}", balance_before);
-            println!("   Token balance after:  {}", balance_after);
-            println!("   Tokens minted: {} (expected: 1)", balance_after - balance_before);
+            let balance_after = get_token_balance_raw(&client, &token_account);
+            let raw_minted = balance_after - balance_before;
             
-            if balance_after - balance_before == 1 {
-                println!("   ✅ Correct amount minted (1 token with decimal=6)");
-                println!("   ✅ Boundary condition (800 bytes) handled correctly");  // Changed from 769
+            println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
+            println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
+            println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
+            
+            // Validate mint amount
+            let (is_valid, description) = validate_mint_amount(raw_minted);
+            if is_valid {
+                println!("   ✅ Valid mint amount: {}", description);
+                println!("   ✅ Boundary condition (800 bytes) handled correctly");
             } else {
-                println!("   ❌ Unexpected mint amount");
+                println!("   ❌ {}", description);
             }
         },
         Err(e) => {
             println!("❌ UNEXPECTED: Transaction failed when it should have succeeded!");
             println!("   Error: {}", e);
-            println!("   The contract should accept memos of exactly 800 bytes.");  // Changed from 769
+            if e.to_string().contains("SupplyLimitReached") {
+                println!("   ℹ️  Supply limit reached (10 trillion tokens)");
+            } else {
+                println!("   The contract should accept memos of exactly 800 bytes.");
+            }
         }
     }
     
@@ -757,13 +789,48 @@ fn execute_transaction(
     }
 }
 
-fn get_token_balance(client: &RpcClient, token_account: &Pubkey) -> u64 {
-    match client.get_token_account_balance(token_account) {
-        Ok(balance) => {
-            // For decimal=6 tokens, ui_amount represents the actual token count
-            // The contract mints 1,000,000 units = 1 token (displayed as ui_amount)
-            balance.ui_amount.unwrap_or(0.0) as u64
+fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
+    match client.get_account(token_account) {
+        Ok(account) => {
+            // Parse the token account data to get the raw amount (in lamports)
+            if account.data.len() >= 72 { // SPL Token account is 165 bytes, amount is at offset 64-72
+                let amount_bytes = &account.data[64..72];
+                u64::from_le_bytes(amount_bytes.try_into().unwrap_or([0; 8]))
+            } else {
+                0
+            }
         },
         Err(_) => 0,
+    }
+}
+
+fn format_token_amount(raw_amount: u64) -> String {
+    // Convert raw lamports to tokens with 6 decimal places
+    let tokens = raw_amount as f64 / 1_000_000.0;
+    
+    // Format to avoid floating point precision issues
+    match raw_amount {
+        1_000_000 => "1.0".to_string(),
+        100_000 => "0.1".to_string(),
+        10_000 => "0.01".to_string(),
+        1_000 => "0.001".to_string(),
+        100 => "0.0001".to_string(),
+        10 => "0.00001".to_string(),
+        1 => "0.000001".to_string(),
+        0 => "0".to_string(),
+        _ => format!("{:.6}", tokens), // Fallback for unexpected values
+    }
+}
+
+fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
+    match raw_amount {
+        1_000_000 => (true, "1.0 token (stage 1: 0-100M supply)".to_string()),
+        100_000 => (true, "0.1 token (stage 2: 100M-1B supply)".to_string()),
+        10_000 => (true, "0.01 token (stage 3: 1B-10B supply)".to_string()),
+        1_000 => (true, "0.001 token (stage 4: 10B-100B supply)".to_string()),
+        100 => (true, "0.0001 token (stage 5: 100B-1T supply)".to_string()),
+        1 => (true, "0.000001 token (stage 6: 1T+ supply)".to_string()),
+        0 => (false, "No tokens minted - supply limit reached".to_string()),
+        _ => (false, format!("Unexpected amount: {} lamports ({:.6} tokens)", raw_amount, raw_amount as f64 / 1_000_000.0)),
     }
 } 

@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // start batch mint operation
     let mut completed_mints = 0u64;
     let mut successful_mints = 0u64;
+    let mut total_tokens_minted = 0u64; // Track total tokens minted (in lamports)
     
     loop {
         // check if reached the specified number of times
@@ -62,8 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         completed_mints += 1;
         
-        // get current token balance
-        let balance_before = get_token_balance(&client, &token_account);
+        // get current token balance (raw lamports)
+        let balance_before = get_token_balance_raw(&client, &token_account);
         
         // generate random length valid memo (69-800 bytes)
         let memo_text = create_random_valid_memo();
@@ -82,18 +83,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 successful_mints += 1;
                 
                 // check token balance change
-                let balance_after = get_token_balance(&client, &token_account);
+                let balance_after = get_token_balance_raw(&client, &token_account);
+                let raw_minted = balance_after - balance_before;
+                total_tokens_minted += raw_minted;
+                
                 println!("✅ transaction successful!");
                 println!("   signature: {}", signature);
-                println!("   token balance change: {} -> {}", balance_before, balance_after);
+                println!("   token balance change: {} -> {} lamports", balance_before, balance_after);
+                println!("   tokens minted this time: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
+                
+                // Show mint stage information
+                let (is_valid, description) = validate_mint_amount(raw_minted);
+                if is_valid {
+                    println!("   📊 mint stage: {}", description);
+                } else {
+                    println!("   ⚠️  {}", description);
+                }
+                
                 println!("   cumulative successful: {}/{}", successful_mints, completed_mints);
+                println!("   total tokens accumulated: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
             },
             Err(e) => {
                 println!("❌ transaction failed!");
                 println!("   error: {}", e);
+                
+                // Check for specific errors
+                if e.to_string().contains("SupplyLimitReached") {
+                    println!("   ℹ️  Supply limit reached (10 trillion tokens) - stopping batch mint");
+                    break;
+                }
+                
                 println!("   cumulative successful: {}/{}", successful_mints, completed_mints);
             }
         }
+        
+        // Add a small delay to avoid overwhelming the network
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     
     // show final statistics
@@ -102,8 +127,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   successful times: {}", successful_mints);
     println!("   failed times: {}", completed_mints - successful_mints);
     println!("   success rate: {:.2}%", (successful_mints as f64 / completed_mints as f64) * 100.0);
+    println!("   total tokens minted: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
+    
+    // Final balance check
+    let final_balance = get_token_balance_raw(&client, &token_account);
+    println!("   final token balance: {} lamports ({})", final_balance, format_token_amount(final_balance));
     
     Ok(())
+}
+
+fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
+    match client.get_account(token_account) {
+        Ok(account) => {
+            // Parse the token account data to get the raw amount (in lamports)
+            if account.data.len() >= 72 { // SPL Token account is 165 bytes, amount is at offset 64-72
+                let amount_bytes = &account.data[64..72];
+                u64::from_le_bytes(amount_bytes.try_into().unwrap_or([0; 8]))
+            } else {
+                0
+            }
+        },
+        Err(_) => 0,
+    }
+}
+
+fn format_token_amount(raw_amount: u64) -> String {
+    // Convert raw lamports to tokens with 6 decimal places
+    match raw_amount {
+        1_000_000 => "1.0".to_string(),
+        100_000 => "0.1".to_string(),
+        10_000 => "0.01".to_string(),
+        1_000 => "0.001".to_string(),
+        100 => "0.0001".to_string(),
+        10 => "0.00001".to_string(),
+        1 => "0.000001".to_string(),
+        0 => "0".to_string(),
+        _ => {
+            let tokens = raw_amount as f64 / 1_000_000.0;
+            format!("{:.6}", tokens)
+        }
+    }
+}
+
+fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
+    match raw_amount {
+        1_000_000 => (true, "1.0 token (stage 1: 0-100M supply)".to_string()),
+        100_000 => (true, "0.1 token (stage 2: 100M-1B supply)".to_string()),
+        10_000 => (true, "0.01 token (stage 3: 1B-10B supply)".to_string()),
+        1_000 => (true, "0.001 token (stage 4: 10B-100B supply)".to_string()),
+        100 => (true, "0.0001 token (stage 5: 100B-1T supply)".to_string()),
+        1 => (true, "0.000001 token (stage 6: 1T+ supply)".to_string()),
+        0 => (false, "No tokens minted - supply limit reached".to_string()),
+        _ => (false, format!("Unexpected amount: {} lamports ({:.6} tokens)", raw_amount, raw_amount as f64 / 1_000_000.0)),
+    }
 }
 
 // generate random length valid memo (69-800 bytes)
@@ -252,10 +328,8 @@ fn execute_transaction(
     client: &RpcClient,
     payer: &solana_sdk::signature::Keypair,
     instructions: Vec<Instruction>,
-    test_name: &str,
+    _test_name: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    println!("execute {}...", test_name);
-    
     let recent_blockhash = client.get_latest_blockhash()?;
     
     let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
@@ -282,26 +356,17 @@ fn execute_transaction(
         },
     ) {
         Ok(result) => {
-            if let Some(err) = result.value.err {
-                println!("simulate shows expected error: {:?}", err);
+            if let Some(_err) = result.value.err {
                 let default_cu = 300_000u32;
-                println!("use default compute unit: {}", default_cu);
                 default_cu
             } else if let Some(units_consumed) = result.value.units_consumed {
                 let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
-                println!("simulate consume {} CUs, set limit to {} CUs (+10%)", 
-                    units_consumed, optimal_cu);
                 optimal_cu
             } else {
-                let default_cu = 300_000u32;
-                println!("simulate success but no CU data, use default value: {}", default_cu);
-                default_cu
+                300_000u32
             }
         },
-        Err(err) => {
-            println!("simulate failed: {}, use default CU", err);
-            300_000u32
-        }
+        Err(_) => 300_000u32
     };
     
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
@@ -319,16 +384,5 @@ fn execute_transaction(
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => Ok(signature.to_string()),
         Err(e) => Err(e.into()),
-    }
-}
-
-fn get_token_balance(client: &RpcClient, token_account: &Pubkey) -> u64 {
-    match client.get_token_account_balance(token_account) {
-        Ok(balance) => {
-            // For decimal=6 tokens, ui_amount represents the actual token count
-            // The contract mints 1,000,000 units = 1 token (displayed as ui_amount)
-            balance.ui_amount.unwrap_or(0.0) as u64
-        },
-        Err(_) => 0,
     }
 } 

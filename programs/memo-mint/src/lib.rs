@@ -16,8 +16,7 @@ pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
 pub mod memo_mint {
     use super::*;
 
-    /// Process token minting
-    /// Mints exactly 1 token (1,000,000 units for decimal=6) per call, requires memo instruction
+    /// Process token minting with dynamic amount based on total supply
     pub fn process_mint(ctx: Context<ProcessMint>) -> Result<()> {
         // Check for memo instruction with length constraints (69-800 bytes)
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 800)?;
@@ -36,8 +35,9 @@ pub mod memo_mint {
             return Err(ErrorCode::InvalidMintAuthority.into());
         }
         
-        // Fixed token amount - always mint exactly 1 token (1,000,000 units for decimal=6)
-        let amount = 1_000_000u64; // 1 token with 6 decimal places
+        // Get current supply and calculate dynamic mint amount
+        let current_supply = ctx.accounts.mint.supply;
+        let amount = calculate_dynamic_mint_amount(current_supply)?;
         
         // Execute token mint operation
         token_2022::mint_to(
@@ -54,7 +54,10 @@ pub mod memo_mint {
         )?;
         
         // Log successful mint operation
-        msg!("Successfully minted 1 token ({} units) with memo length: {} bytes", amount, memo_data.len());
+        let token_count = amount as f64 / 1_000_000.0;
+        let current_tokens = current_supply / 1_000_000;
+        msg!("Successfully minted {} tokens ({} units), current supply: {} tokens, memo length: {} bytes", 
+             token_count, amount, current_tokens, memo_data.len());
         
         Ok(())
     }
@@ -124,6 +127,37 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     Ok((true, memo_data.to_vec()))
 }
 
+/// Calculate dynamic mint amount based on current supply with hard cap
+fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
+    let current_tokens = current_supply / 1_000_000;
+    
+    // Hard cap: 10 trillion tokens
+    const MAX_SUPPLY_TOKENS: u64 = 10_000_000_000_000;
+    
+    // Check hard limit
+    if current_tokens >= MAX_SUPPLY_TOKENS {
+        return Err(ErrorCode::SupplyLimitReached.into());
+    }
+    
+    // Mint amount based on current supply
+    let amount = match current_tokens {
+        0..=100_000_000 => 1_000_000,           // 0-100M: 1 token
+        100_000_001..=1_000_000_000 => 100_000, // 100M-1B: 0.1 token
+        1_000_000_001..=10_000_000_000 => 10_000, // 1B-10B: 0.01 token
+        10_000_000_001..=100_000_000_000 => 1_000, // 10B-100B: 0.001 token
+        100_000_000_001..=1_000_000_000_000 => 100, // 100B-1T: 0.0001 token
+        _ => 1, // 1T+: 0.000001 token (1 lamport)
+    };
+    
+    // Double check: ensure we don't exceed the hard cap
+    let new_total_tokens = (current_supply + amount) / 1_000_000;
+    if new_total_tokens > MAX_SUPPLY_TOKENS {
+        return Err(ErrorCode::SupplyLimitReached.into());
+    }
+    
+    Ok(amount)
+}
+
 /// Account structure for token minting instruction
 #[derive(Accounts)]
 pub struct ProcessMint<'info> {
@@ -176,4 +210,7 @@ pub enum ErrorCode {
 
     #[msg("Invalid mint authority: PDA does not match expected mint authority.")]
     InvalidMintAuthority,
+
+    #[msg("Supply limit reached. Maximum supply is 10 trillion tokens.")]
+    SupplyLimitReached,
 } 
