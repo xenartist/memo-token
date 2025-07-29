@@ -17,50 +17,92 @@ pub mod memo_mint {
     use super::*;
 
     /// Process token minting with dynamic amount based on total supply
+    /// Mints to the caller's own token account
     pub fn process_mint(ctx: Context<ProcessMint>) -> Result<()> {
-        // Check for memo instruction with length constraints (69-800 bytes)
-        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref(), 69, 800)?;
-        if !memo_found {
-            return Err(ErrorCode::MemoRequired.into());
-        }
-        
-        // Derive PDA and bump seed
-        let (mint_authority, bump) = Pubkey::find_program_address(
-            &[b"mint_authority"],
-            ctx.program_id
-        );
-        
-        // Validate PDA matches provided account
-        if mint_authority != ctx.accounts.mint_authority.key() {
-            return Err(ErrorCode::InvalidMintAuthority.into());
-        }
-        
-        // Get current supply and calculate dynamic mint amount
-        let current_supply = ctx.accounts.mint.supply;
-        let amount = calculate_dynamic_mint_amount(current_supply)?;
-        
-        // Execute token mint operation
-        token_2022::mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token_2022::MintTo {
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.token_account.to_account_info(),
-                    authority: ctx.accounts.mint_authority.to_account_info(),
-                },
-                &[&[b"mint_authority".as_ref(), &[bump]]]
-            ),
-            amount
-        )?;
-        
-        // Log successful mint operation
-        let token_count = amount as f64 / 1_000_000.0;
-        let current_tokens = current_supply / 1_000_000;
-        msg!("Successfully minted {} tokens ({} units), current supply: {} tokens, memo length: {} bytes", 
-             token_count, amount, current_tokens, memo_data.len());
-        
-        Ok(())
+        // Use shared mint logic
+        execute_mint_operation(
+            &ctx.accounts.instructions,
+            &ctx.accounts.mint,
+            &ctx.accounts.mint_authority,
+            &ctx.accounts.token_account,
+            &ctx.accounts.token_program,
+            ctx.program_id,
+            ctx.bumps.mint_authority,
+        )
     }
+
+    /// Process token minting with dynamic amount based on total supply
+    /// Mints to a specified recipient's token account
+    pub fn process_mint_to(ctx: Context<ProcessMintTo>) -> Result<()> {
+        // Use shared mint logic
+        execute_mint_operation(
+            &ctx.accounts.instructions,
+            &ctx.accounts.mint,
+            &ctx.accounts.mint_authority,
+            &ctx.accounts.recipient_token_account,
+            &ctx.accounts.token_program,
+            ctx.program_id,
+            ctx.bumps.mint_authority,
+        )
+    }
+}
+
+/// Shared mint operation logic
+fn execute_mint_operation<'info>(
+    instructions: &AccountInfo<'info>,
+    mint: &InterfaceAccount<'info, Mint>,
+    mint_authority: &AccountInfo<'info>,
+    token_account: &InterfaceAccount<'info, TokenAccount>,
+    token_program: &Program<'info, Token2022>,
+    program_id: &Pubkey,
+    mint_authority_bump: u8,
+) -> Result<()> {
+    // Check for memo instruction with length constraints (69-800 bytes)
+    let (memo_found, memo_data) = check_memo_instruction(instructions, 69, 800)?;
+    if !memo_found {
+        return Err(ErrorCode::MemoRequired.into());
+    }
+    
+    // Validate PDA matches provided account
+    let (expected_mint_authority, expected_bump) = Pubkey::find_program_address(
+        &[b"mint_authority"],
+        program_id
+    );
+    
+    if expected_mint_authority != mint_authority.key() {
+        return Err(ErrorCode::InvalidMintAuthority.into());
+    }
+    
+    if expected_bump != mint_authority_bump {
+        return Err(ErrorCode::InvalidMintAuthority.into());
+    }
+    
+    // Get current supply and calculate dynamic mint amount
+    let current_supply = mint.supply;
+    let amount = calculate_dynamic_mint_amount(current_supply)?;
+    
+    // Execute token mint operation
+    token_2022::mint_to(
+        CpiContext::new_with_signer(
+            token_program.to_account_info(),
+            token_2022::MintTo {
+                mint: mint.to_account_info(),
+                to: token_account.to_account_info(),
+                authority: mint_authority.to_account_info(),
+            },
+            &[&[b"mint_authority".as_ref(), &[mint_authority_bump]]]
+        ),
+        amount
+    )?;
+    
+    // Log successful mint operation
+    let token_count = amount as f64 / 1_000_000.0;
+    let current_tokens = current_supply / 1_000_000;
+    let recipient = token_account.owner;
+    msg!("Successfully minted {} tokens ({} units) to {}, current supply: {} tokens, memo length: {} bytes", 
+         token_count, amount, recipient, current_tokens, memo_data.len());
+    
+    Ok(())
 }
 
 /// Check for memo instruction in transaction with length validation
@@ -158,7 +200,7 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
     Ok(amount)
 }
 
-/// Account structure for token minting instruction
+/// Account structure for token minting instruction (original version)
 #[derive(Accounts)]
 pub struct ProcessMint<'info> {
     #[account(mut)]
@@ -171,6 +213,10 @@ pub struct ProcessMint<'info> {
     pub mint: InterfaceAccount<'info, Mint>,
     
     /// CHECK: PDA serving as mint authority
+    #[account(
+        seeds = [b"mint_authority"],
+        bump
+    )]
     pub mint_authority: AccountInfo<'info>,
     
     #[account(
@@ -179,6 +225,40 @@ pub struct ProcessMint<'info> {
         constraint = token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token2022>,
+    
+    /// CHECK: Instructions sysvar
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>,
+}
+
+/// Account structure for token minting instruction with recipient specification
+#[derive(Accounts)]
+#[instruction(recipient: Pubkey)]
+pub struct ProcessMintTo<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,  // Can be user or contract
+    
+    #[account(
+        mut,
+        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+    )]
+    pub mint: InterfaceAccount<'info, Mint>,
+    
+    /// CHECK: PDA serving as mint authority
+    #[account(
+        seeds = [b"mint_authority"],
+        bump
+    )]
+    pub mint_authority: AccountInfo<'info>,
+    
+    #[account(
+        mut,
+        constraint = recipient_token_account.mint == mint.key() @ ErrorCode::InvalidTokenAccount,
+        constraint = recipient_token_account.owner == recipient @ ErrorCode::UnauthorizedTokenAccount
+    )]
+    pub recipient_token_account: InterfaceAccount<'info, TokenAccount>,
     
     pub token_program: Program<'info, Token2022>,
     
