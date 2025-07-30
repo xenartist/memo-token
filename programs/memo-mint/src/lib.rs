@@ -171,29 +171,26 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
 
 /// Calculate dynamic mint amount based on current supply with hard cap
 fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
-    let current_tokens = current_supply / 1_000_000;
-    
-    // Hard cap: 10 trillion tokens
-    const MAX_SUPPLY_TOKENS: u64 = 10_000_000_000_000;
+    // Hard cap: 10 trillion tokens = 10_000_000_000_000 * 1_000_000 lamports
+    const MAX_SUPPLY_LAMPORTS: u64 = 10_000_000_000_000 * 1_000_000;
     
     // Check hard limit
-    if current_tokens >= MAX_SUPPLY_TOKENS {
+    if current_supply >= MAX_SUPPLY_LAMPORTS {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
     
-    // Mint amount based on current supply
-    let amount = match current_tokens {
-        0..=100_000_000 => 1_000_000,           // 0-100M: 1 token
-        100_000_001..=1_000_000_000 => 100_000, // 100M-1B: 0.1 token
-        1_000_000_001..=10_000_000_000 => 10_000, // 1B-10B: 0.01 token
-        10_000_000_001..=100_000_000_000 => 1_000, // 10B-100B: 0.001 token
-        100_000_000_001..=1_000_000_000_000 => 100, // 100B-1T: 0.0001 token
-        _ => 1, // 1T+: 0.000001 token (1 lamport)
+    // Mint amount based on current supply (in lamports)
+    let amount = match current_supply {
+        0..=100_000_000_000_000 => 1_000_000,           // 0-100M tokens: 1 token
+        100_000_000_000_001..=1_000_000_000_000_000 => 100_000, // 100M-1B tokens: 0.1 token  
+        1_000_000_000_000_001..=10_000_000_000_000_000 => 10_000, // 1B-10B tokens: 0.01 token
+        10_000_000_000_000_001..=100_000_000_000_000_000 => 1_000, // 10B-100B tokens: 0.001 token
+        100_000_000_000_000_001..=1_000_000_000_000_000_000 => 100, // 100B-1T tokens: 0.0001 token
+        _ => 1, // 1T+ tokens: 0.000001 token (1 lamport)
     };
     
     // Double check: ensure we don't exceed the hard cap
-    let new_total_tokens = (current_supply + amount) / 1_000_000;
-    if new_total_tokens > MAX_SUPPLY_TOKENS {
+    if current_supply + amount > MAX_SUPPLY_LAMPORTS {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
     
