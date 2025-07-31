@@ -2216,6 +2216,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "memo-chat"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "memo-burn",
+ "memo-mint",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "memo-mint"
 version = "0.1.0"
 dependencies = [

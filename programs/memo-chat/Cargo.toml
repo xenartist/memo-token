@@ -1,0 +1,28 @@
+[package]
+name = "memo-chat"
+version = "0.1.0"
+description = "Chat contract that mints tokens via memo-mint"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "memo_chat"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+custom-heap = []
+custom-panic = []
+anchor-debug = []
+
+[dependencies]
+anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
+memo-mint = { path = "../memo-mint", features = ["cpi"] }
+memo-burn = { path = "../memo-burn", features = ["cpi"] }
+serde = "1.0"
+serde_json = "1.0"
