@@ -98,6 +98,31 @@ cargo run --bin test-memo-burn 1 long-memo
 cargo run --bin test-memo-burn 1 custom-length 420
 ```
 
+3. Chat Group
+
+```bash
+cargo run --bin test-memo-chat-create-group -- custom 1 "chat" "solXEN" "solXEN chat group" "avatar.png" "solXEN,X1,Solana" 60
+
+cargo run --bin test-memo-chat-create-group -- valid-basic
+
+cargo run --bin test-memo-chat-create-group -- invalid-category
+
+cargo run --bin test-memo-chat-create-group -- long-name
+```
+
+```bash
+cargo run --bin test-memo-chat-send-memo -- simple-text 0
+
+cargo run --bin test-memo-chat-send-memo -- json-memo 1
+
+cargo run --bin test-memo-chat-send-memo -- too-long 0
+
+cargo run --bin test-memo-chat-send-memo -- custom 0 "Hello, world."
+
+# show help
+cargo run --bin test-memo-chat-send-memo --
+```
+
 ## Security
 
 The program uses a PDA as mint authority, which means:

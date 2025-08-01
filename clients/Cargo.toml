@@ -8,6 +8,10 @@ name = "test-memo-mint"
 path = "mint/src/test-memo-mint.rs"
 
 [[bin]]
+name = "test-memo-mint-to"
+path = "mint/src/test-memo-mint-to.rs"
+
+[[bin]]
 name = "test-memo-batch-mint"
 path = "mint/src/test-memo-batch-mint.rs"
 
@@ -30,6 +34,10 @@ path = "chat/src/test-memo-chat-create-group.rs"
 [[bin]]
 name = "check-memo-chat-statistics"
 path = "chat/src/check-memo-chat-statistics.rs"
+
+[[bin]]
+name = "test-memo-chat-send-memo"
+path = "chat/src/test-memo-chat-send-memo.rs"
 
 [dependencies]
 solana-client = "^2"
