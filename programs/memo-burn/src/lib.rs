@@ -86,13 +86,13 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     let json_data: Value = serde_json::from_str(&clean_str)
         .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
-    // Extract amount from memo (expecting exact units/lamports)
-    let memo_amount = match &json_data["amount"] {
+    // Extract burned_amount from memo (expecting exact units/lamports)
+    let memo_burned_amount = match &json_data["burned_amount"] {
         Value::Number(n) => {
             if let Some(int_val) = n.as_u64() {
-                int_val // Amount in units (lamports)
+                int_val // Burned amount in units (lamports)
             } else {
-                return Err(ErrorCode::InvalidAmountFormat.into());
+                return Err(ErrorCode::InvalidBurnedAmountFormat.into());
             }
         },
         Value::String(s) => {
@@ -100,23 +100,23 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
             if let Ok(int_val) = s.parse::<u64>() {
                 int_val
             } else {
-                return Err(ErrorCode::InvalidAmountFormat.into());
+                return Err(ErrorCode::InvalidBurnedAmountFormat.into());
             }
         },
-        _ => return Err(ErrorCode::MissingAmountField.into()),
+        _ => return Err(ErrorCode::MissingBurnedAmountField.into()),
     };
 
-    // Check if memo amount matches expected burn amount (both in units)
-    if memo_amount != expected_amount {
-        let memo_tokens = memo_amount / 1_000_000;
+    // Check if memo burned amount matches expected burn amount (both in units)
+    if memo_burned_amount != expected_amount {
+        let memo_tokens = memo_burned_amount / 1_000_000;
         let expected_tokens = expected_amount / 1_000_000;
-        msg!("Amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
-             memo_tokens, memo_amount, expected_tokens, expected_amount);
-        return Err(ErrorCode::AmountMismatch.into());
+        msg!("Burned amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
+             memo_tokens, memo_burned_amount, expected_tokens, expected_amount);
+        return Err(ErrorCode::BurnedAmountMismatch.into());
     }
 
     let token_count = expected_amount / 1_000_000;
-    msg!("Amount validation passed: {} tokens ({} units)", token_count, expected_amount);
+    msg!("Burned amount validation passed: {} tokens ({} units)", token_count, expected_amount);
     Ok(())
 }
 
@@ -231,14 +231,14 @@ pub enum ErrorCode {
     #[msg("Unauthorized token account. User must own the token account.")]
     UnauthorizedTokenAccount,
 
-    #[msg("Missing amount field in memo JSON.")]
-    MissingAmountField,
+    #[msg("Missing burned_amount field in memo JSON.")]
+    MissingBurnedAmountField,
 
-    #[msg("Invalid amount format in memo. Must be a positive integer in units.")]
-    InvalidAmountFormat,
+    #[msg("Invalid burned_amount format in memo. Must be a positive integer in units.")]
+    InvalidBurnedAmountFormat,
 
-    #[msg("Amount mismatch. The amount in memo must match the burn amount (in units).")]
-    AmountMismatch,
+    #[msg("Burned amount mismatch. The burned_amount in memo must match the burn amount (in units).")]
+    BurnedAmountMismatch,
 
     #[msg("Memo too short (minimum 69 bytes).")]
     MemoTooShort,

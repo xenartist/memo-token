@@ -456,7 +456,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 
 fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
     let memo_json = serde_json::json!({
-        "amount": params.burn_amount * 1_000_000, // Convert to units
+        "burned_amount": params.burn_amount * 1_000_000, // Convert to units
         "category": params.category,
         "group_id": group_id,
         "name": params.name,
@@ -497,8 +497,8 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
         println!("   Invalid memo format or JSON parsing failed");
-    } else if error_msg.contains("AmountMismatch") {
-        println!("   Amount in memo doesn't match burn amount");
+    } else if error_msg.contains("BurnedAmountMismatch") {
+        println!("   Burned amount in memo doesn't match burn amount");
     } else if error_msg.contains("GroupIdMismatch") {
         println!("   Group ID in memo doesn't match expected ID");
     } else if error_msg.contains("insufficient funds") {

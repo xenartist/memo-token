@@ -27,6 +27,10 @@ path = "chat/src/admin-init-global-group-counter.rs"
 name = "test-memo-chat-create-group"
 path = "chat/src/test-memo-chat-create-group.rs"
 
+[[bin]]
+name = "check-memo-chat-statistics"
+path = "chat/src/check-memo-chat-statistics.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"
