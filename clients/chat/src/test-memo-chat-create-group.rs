@@ -9,8 +9,8 @@ use solana_sdk::{
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
-    system_program,
 };
+use solana_system_interface::program as system_program;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use serde_json;
@@ -19,67 +19,230 @@ use sha2::{Sha256, Digest};
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
+#[derive(Debug, Clone)]
+struct TestParams {
+    pub burn_amount: u64,           // Burn amount in tokens (not units)
+    pub category: String,           // Category field
+    pub name: String,               // Group name
+    pub description: String,        // Group description
+    pub image: String,              // Group image
+    pub tags: Vec<String>,          // Group tags
+    pub min_memo_interval: Option<i64>, // Min memo interval
+    pub should_succeed: bool,       // Whether the test should succeed
+    pub test_description: String,   // Description of what this test validates
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
     
-    if args.len() < 3 {
-        println!("Usage: cargo run --bin test-memo-chat-create-group -- <burn_amount> <test_type> [memo_length]");
-        println!("Parameters:");
-        println!("  burn_amount   - Number of tokens to burn for group creation (decimal=6)");
-        println!("  test_type     - Type of memo test to perform");
-        println!("  memo_length   - Custom memo length (only for custom-length test)");
-        println!();
-        println!("Note: group_id is automatically assigned by the contract (0, 1, 2, ...)");
-        println!();
-        println!("Test types:");
-        println!("  valid-memo    - Valid memo (between 69-800 bytes) - should succeed");
-        println!("  memo-69       - Memo exactly 69 bytes - should succeed");
-        println!("  memo-800      - Memo exactly 800 bytes - should succeed");
-        println!("  no-memo       - No memo instruction - should fail");
-        println!("  short-memo    - Memo less than 69 bytes - should fail");
-        println!("  long-memo     - Memo more than 800 bytes - should fail");
-        println!("  amount-mismatch - Wrong amount in memo - should fail");
-        println!("  custom-length - Custom memo length (requires memo_length parameter)");
-        println!();
-        println!("Examples:");
-        println!("  cargo run --bin test-memo-chat-create-group -- 5 valid-memo");
-        println!("  cargo run --bin test-memo-chat-create-group -- 10 memo-69");
-        println!("  cargo run --bin test-memo-chat-create-group -- 1 amount-mismatch");
+    if args.len() < 2 {
+        print_usage();
         return Ok(());
     }
 
-    // Parse parameters
-    let burn_amount_tokens = args[1].parse::<u64>().unwrap_or_else(|_| {
-        eprintln!("Error: Invalid burn amount '{}'", args[1]);
-        std::process::exit(1);
-    });
-    let burn_amount = burn_amount_tokens * 1_000_000; // Convert to units (decimal=6)
-    let test_type = &args[2];
-
-    // Parse custom memo length (for custom-length test)
-    let custom_memo_length = if test_type == "custom-length" {
-        if args.len() < 4 {
-            println!("ERROR: custom-length test requires memo_length parameter");
-            println!("Usage: cargo run --bin test-memo-chat-create-group -- <burn_amount> custom-length <memo_length>");
+    let test_case = &args[1];
+    
+    // Define test cases
+    let test_params = match test_case.as_str() {
+        "valid-basic" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "Basic Test Group".to_string(),
+            description: "A basic test group".to_string(),
+            image: "avatar_001.png".to_string(),
+            tags: vec!["test".to_string(), "basic".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: true,
+            test_description: "Valid group creation with all required fields".to_string(),
+        },
+        "invalid-category" => TestParams {
+            burn_amount: 5,
+            category: "invalid".to_string(),  // Wrong category
+            name: "Test Group".to_string(),
+            description: "Testing invalid category".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Invalid category field (should be 'chat')".to_string(),
+        },
+        "empty-name" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "".to_string(),  // Empty name
+            description: "Testing empty name".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Empty group name (should fail)".to_string(),
+        },
+        "long-name" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "x".repeat(65),  // Name too long (>64 chars)
+            description: "Testing long name".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Group name too long (>64 characters)".to_string(),
+        },
+        "long-description" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "Test Group".to_string(),
+            description: "x".repeat(129),  // Description too long (>128 chars)
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Group description too long (>128 characters)".to_string(),
+        },
+        "long-image" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "Test Group".to_string(),
+            description: "Testing long image".to_string(),
+            image: "x".repeat(257),  // Image too long (>256 chars)
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Group image info too long (>256 characters)".to_string(),
+        },
+        "too-many-tags" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "Test Group".to_string(),
+            description: "Testing too many tags".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string(), "tag4".to_string(), "tag5".to_string()], // 5 tags (>4)
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Too many tags (>4 tags)".to_string(),
+        },
+        "long-tag" => TestParams {
+            burn_amount: 5,
+            category: "chat".to_string(),
+            name: "Test Group".to_string(),
+            description: "Testing long tag".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["x".repeat(33)], // Tag too long (>32 chars)
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Tag too long (>32 characters)".to_string(),
+        },
+        "small-burn-amount" => TestParams {
+            burn_amount: 0,  // Less than 1 token
+            category: "chat".to_string(),
+            name: "Test Group".to_string(),
+            description: "Testing small burn amount".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Burn amount too small (<1 token)".to_string(),
+        },
+        "minimal-valid" => TestParams {
+            burn_amount: 1,
+            category: "chat".to_string(),
+            name: "T".to_string(),  // Minimal name
+            description: "".to_string(),  // Empty description (allowed)
+            image: "".to_string(),  // Empty image (allowed)
+            tags: vec![],  // No tags (allowed)
+            min_memo_interval: None,  // No interval specified
+            should_succeed: true,
+            test_description: "Minimal valid group creation".to_string(),
+        },
+        "max-valid" => TestParams {
+            burn_amount: 100,
+            category: "chat".to_string(),
+            name: "x".repeat(64),  // Max name length
+            description: "x".repeat(128),  // Max description length
+            image: "x".repeat(256),  // Max image length
+            tags: vec!["x".repeat(32), "y".repeat(32), "z".repeat(32), "w".repeat(32)], // Max tags
+            min_memo_interval: Some(3600),
+            should_succeed: true,
+            test_description: "Maximum valid field lengths".to_string(),
+        },
+        "custom" => {
+            if args.len() < 9 {
+                println!("Custom test requires additional parameters:");
+                println!("Usage: cargo run --bin test-memo-chat-create-group -- custom <burn_amount> <category> <name> <description> <image> <tags_csv> <min_interval>");
+                println!("Example: cargo run --bin test-memo-chat-create-group -- custom 5 chat \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
+                return Ok(());
+            }
+            
+            let burn_amount = args[2].parse::<u64>().unwrap_or(1);
+            let category = args[3].clone();
+            let name = args[4].clone();
+            let description = args[5].clone();
+            let image = args[6].clone();
+            let tags: Vec<String> = if args[7].is_empty() {
+                vec![]
+            } else {
+                args[7].split(',').map(|s| s.trim().to_string()).collect()
+            };
+            let min_memo_interval = if args.len() > 8 && !args[8].is_empty() {
+                Some(args[8].parse::<i64>().unwrap_or(60))
+            } else {
+                None
+            };
+            
+            TestParams {
+                burn_amount,
+                category,
+                name,
+                description,
+                image,
+                tags,
+                min_memo_interval,
+                should_succeed: true, // Assume custom tests should succeed unless proven otherwise
+                test_description: "Custom test case".to_string(),
+            }
+        },
+        _ => {
+            println!("Unknown test case: {}", test_case);
+            print_usage();
             return Ok(());
         }
-        Some(args[3].parse::<usize>().unwrap_or_else(|_| {
-            eprintln!("Error: Invalid memo length '{}'", args[3]);
-            std::process::exit(1);
-        }))
-    } else {
-        None
     };
 
     println!("=== MEMO-CHAT CREATE GROUP TEST ===");
-    println!("Burn amount: {} tokens ({} units, decimal=6)", burn_amount_tokens, burn_amount);
-    println!("Test type: {}", test_type);
-    if let Some(length) = custom_memo_length {
-        println!("Custom memo length: {} bytes", length);
-    }
+    println!("Test case: {}", test_case);
+    println!("Description: {}", test_params.test_description);
+    println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
+    println!();
+    println!("Test parameters:");
+    println!("  Burn amount: {} tokens", test_params.burn_amount);
+    println!("  Category: {}", test_params.category);
+    println!("  Name: {} (length: {})", test_params.name, test_params.name.len());
+    println!("  Description: {} (length: {})", 
+        if test_params.description.len() > 50 { 
+            format!("{}...", &test_params.description[..50]) 
+        } else { 
+            test_params.description.clone() 
+        }, 
+        test_params.description.len()
+    );
+    println!("  Image: {} (length: {})", 
+        if test_params.image.len() > 50 { 
+            format!("{}...", &test_params.image[..50]) 
+        } else { 
+            test_params.image.clone() 
+        }, 
+        test_params.image.len()
+    );
+    println!("  Tags: {:?} (count: {})", test_params.tags, test_params.tags.len());
+    println!("  Min memo interval: {:?}", test_params.min_memo_interval);
     println!();
 
+    run_test(test_params)?;
+    Ok(())
+}
+
+fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
     let rpc_url = "https://rpc-testnet.x1.wiki";
     let client = RpcClient::new(rpc_url);
@@ -97,32 +260,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 
-    // Calculate global counter PDA
-    let (global_counter_pda, _bump) = Pubkey::find_program_address(
+    // Calculate global counter PDA and get next group_id
+    let (global_counter_pda, _) = Pubkey::find_program_address(
         &[b"global_counter"],
         &memo_chat_program_id,
     );
 
-    // Get current group count to determine next group_id
     let next_group_id = match client.get_account(&global_counter_pda) {
         Ok(account) => {
-            // Parse the account data to get total_groups
-            if account.data.len() >= 16 { // 8 bytes discriminator + 8 bytes u64
+            if account.data.len() >= 16 {
                 let total_groups_bytes = &account.data[8..16];
                 u64::from_le_bytes(total_groups_bytes.try_into().unwrap())
             } else {
-                println!("⚠️  Global counter account exists but has invalid data length");
                 0
             }
         },
         Err(_) => {
-            println!("ℹ️  Global counter not found - this will be group 0 (or counter needs initialization)");
-            0
+            println!("⚠️  Global counter not found. Please run admin-init-global-group-counter first.");
+            return Ok(());
         }
     };
 
-    // Calculate chat group PDA using the next group_id
-    let (chat_group_pda, _bump) = Pubkey::find_program_address(
+    // Calculate chat group PDA
+    let (chat_group_pda, _) = Pubkey::find_program_address(
         &[b"chat_group", &next_group_id.to_le_bytes()],
         &memo_chat_program_id,
     );
@@ -134,388 +294,217 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &token_2022_id(),
     );
 
-    println!("Program addresses:");
-    println!("  Memo-chat program: {}", memo_chat_program_id);
-    println!("  Memo-burn program: {}", memo_burn_program_id);
-    println!("  Mint: {}", mint);
-    println!("  Global counter PDA: {}", global_counter_pda);
+    println!("Runtime info:");
     println!("  Next group ID: {}", next_group_id);
     println!("  Chat group PDA: {}", chat_group_pda);
-    println!("  Creator token account: {}", creator_token_account);
+    println!("  Creator: {}", payer.pubkey());
     println!();
 
-    // Check if group already exists (should not happen with auto-increment)
-    match client.get_account(&chat_group_pda) {
-        Ok(_) => {
-            println!("❌ ERROR: Chat group {} already exists!", next_group_id);
-            println!("   This suggests there's an issue with the group counter or PDA derivation");
-            return Ok(());
-        },
-        Err(_) => {
-            println!("✅ Group ID {} is available", next_group_id);
+    // Check token balance if burn amount > 0
+    if params.burn_amount > 0 {
+        match client.get_token_account_balance(&creator_token_account) {
+            Ok(balance) => {
+                let current_balance = balance.ui_amount.unwrap_or(0.0);
+                println!("Current token balance: {} tokens", current_balance);
+                
+                if current_balance < params.burn_amount as f64 {
+                    println!("❌ ERROR: Insufficient token balance!");
+                    println!("   Required: {} tokens", params.burn_amount);
+                    println!("   Available: {} tokens", current_balance);
+                    return Ok(());
+                }
+            },
+            Err(err) => {
+                println!("❌ Error checking token balance: {}", err);
+                return Ok(());
+            }
         }
     }
 
-    // Check token balance
-    match client.get_token_account_balance(&creator_token_account) {
-        Ok(balance) => {
-            let current_balance = balance.ui_amount.unwrap_or(0.0);
-            println!("Current token balance: {} tokens", current_balance);
-            
-            if current_balance < burn_amount_tokens as f64 {
-                println!("❌ ERROR: Insufficient token balance!");
-                println!("   Required: {} tokens", burn_amount_tokens);
-                println!("   Available: {} tokens", current_balance);
-                return Ok(());
+    // Generate memo
+    let memo_text = generate_memo_from_params(&params, next_group_id);
+    
+    println!("Generated memo:");
+    println!("  Length: {} bytes", memo_text.as_bytes().len());
+    if memo_text.len() > 200 {
+        println!("  Content (first 100 chars): {}...", &memo_text[..100]);
+        println!("  Content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+    } else {
+        println!("  Content: {}", memo_text);
+    }
+    println!();
+
+    // Get latest blockhash
+    let recent_blockhash = client.get_latest_blockhash()?;
+    
+    // Create instructions
+    let memo_ix = spl_memo::build_memo(
+        memo_text.as_bytes(),
+        &[&payer.pubkey()],
+    );
+
+    let create_group_ix = create_chat_group_instruction(
+        &memo_chat_program_id,
+        &payer.pubkey(),
+        &global_counter_pda,
+        &chat_group_pda,
+        &mint,
+        &creator_token_account,
+        &memo_burn_program_id,
+        next_group_id,
+        params.burn_amount * 1_000_000, // Convert to units
+    );
+
+    // First, simulate transaction to get optimal CU limit
+    println!("Simulating transaction to calculate optimal compute units...");
+    
+    let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_000_000);
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[dummy_compute_budget_ix, memo_ix.clone(), create_group_ix.clone()],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    let optimal_cu = match client.simulate_transaction_with_config(
+        &sim_transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::confirmed()),
+            encoding: None,
+            accounts: None,
+            min_context_slot: None,
+            inner_instructions: false,
+        },
+    ) {
+        Ok(result) => {
+            if let Some(err) = result.value.err {
+                println!("Simulation shows expected error: {:?}", err);
+                
+                // For expected errors, use a reasonable default
+                let default_cu = 600_000u32;
+                println!("Using default compute units for error case: {}", default_cu);
+                default_cu
+            } else if let Some(units_consumed) = result.value.units_consumed {
+                // Add 10% margin as requested
+                let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
+                println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                    units_consumed, optimal_cu);
+                optimal_cu
+            } else {
+                let default_cu = 600_000u32;
+                println!("Simulation successful but no CU data, using default: {}", default_cu);
+                default_cu
             }
         },
         Err(err) => {
-            println!("❌ Error checking token balance: {}", err);
-            return Ok(());
+            println!("Simulation failed: {}, using default CU", err);
+            600_000u32
         }
-    }
+    };
 
-    // Generate memo based on test type and get latest blockhash
-    let recent_blockhash = client
-        .get_latest_blockhash()
-        .expect("Failed to get recent blockhash");
+    // Create final transaction with optimal compute budget
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
+    let transaction = Transaction::new_signed_with_payer(
+        &[compute_budget_ix, memo_ix, create_group_ix],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
 
-    let memo_result = generate_memo_for_test(test_type, next_group_id, burn_amount, custom_memo_length);
+    println!("Sending transaction with {} compute units...", optimal_cu);
     
-    match memo_result {
-        Ok(memo_text) => {
-            println!("Generated memo:");
-            println!("  Length: {} bytes", memo_text.as_bytes().len());
+    match client.send_and_confirm_transaction(&transaction) {
+        Ok(signature) => {
+            println!("🎉 TRANSACTION SUCCESSFUL!");
+            println!("Transaction signature: {}", signature);
             
-            // Show memo content appropriately
-            if memo_text.len() > 200 {
-                println!("  Content (first 100 chars): {}...", &memo_text[..100]);
-                println!("  Content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+            if params.should_succeed {
+                println!("✅ EXPECTED SUCCESS: Test passed as expected");
             } else {
-                println!("  Content: {}", memo_text);
+                println!("❌ UNEXPECTED SUCCESS: Test should have failed but succeeded");
             }
-            println!();
-
-            // Create memo instruction
-            let memo_ix = spl_memo::build_memo(
-                memo_text.as_bytes(),
-                &[&payer.pubkey()],
-            );
-
-            // Create create_chat_group instruction
-            let create_group_ix = create_chat_group_instruction(
-                &memo_chat_program_id,
-                &payer.pubkey(),
-                &global_counter_pda,
-                &chat_group_pda,
-                &mint,
-                &creator_token_account,
-                &memo_burn_program_id,
-                next_group_id, // Pass the expected group_id
-                burn_amount,
-            );
-
-            // Simulate transaction to get optimal CU limit
-            let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
-            let sim_transaction = Transaction::new_signed_with_payer(
-                &[dummy_compute_budget_ix, memo_ix.clone(), create_group_ix.clone()],
-                Some(&payer.pubkey()),
-                &[&payer],
-                recent_blockhash,
-            );
-
-            println!("Simulating transaction to calculate optimal compute units...");
-            let optimal_cu = match client.simulate_transaction_with_config(
-                &sim_transaction,
-                RpcSimulateTransactionConfig {
-                    sig_verify: false,
-                    replace_recent_blockhash: false,
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    encoding: None,
-                    accounts: None,
-                    min_context_slot: None,
-                    inner_instructions: false,
+            
+            // Verify group creation
+            match client.get_account(&chat_group_pda) {
+                Ok(account) => {
+                    println!("✅ Chat group {} created successfully!", next_group_id);
+                    println!("   Data length: {} bytes", account.data.len());
                 },
-            ) {
-                Ok(result) => {
-                    if let Some(err) = result.value.err {
-                        println!("Simulation shows expected error: {:?}", err);
-                        let default_cu = 500_000u32;
-                        println!("Using default compute units: {}", default_cu);
-                        default_cu
-                    } else if let Some(units_consumed) = result.value.units_consumed {
-                        let optimal_cu = ((units_consumed as f64) * 1.2) as u32; // 20% margin for group creation
-                        println!("Simulation consumed {} CUs, setting limit to {} CUs (+20% margin)", 
-                            units_consumed, optimal_cu);
-                        optimal_cu
-                    } else {
-                        let default_cu = 500_000u32;
-                        println!("Simulation successful but no CU data, using default: {}", default_cu);
-                        default_cu
-                    }
-                },
-                Err(err) => {
-                    println!("Simulation failed: {}, using default CU", err);
-                    500_000u32
+                Err(e) => {
+                    println!("⚠️  Could not fetch created group: {}", e);
                 }
-            };
-
-            // Create transaction with optimal compute budget
-            let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
-            let transaction = Transaction::new_signed_with_payer(
-                &[compute_budget_ix, memo_ix, create_group_ix],
-                Some(&payer.pubkey()),
-                &[&payer],
-                recent_blockhash,
-            );
-
-            send_and_check_transaction(&client, transaction, test_type, &chat_group_pda, next_group_id, burn_amount_tokens, memo_text.as_bytes().len());
+            }
         },
-        Err(_) => {
-            // For no-memo test case
-            println!("Testing without memo instruction");
-            println!();
-
-            // Create create_chat_group instruction without memo
-            let create_group_ix = create_chat_group_instruction(
-                &memo_chat_program_id,
-                &payer.pubkey(),
-                &global_counter_pda,
-                &chat_group_pda,
-                &mint,
-                &creator_token_account,
-                &memo_burn_program_id,
-                next_group_id, // Pass the next_group_id
-                burn_amount,
-            );
-
-            // Simulate and send transaction without memo
-            let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
-            let sim_transaction = Transaction::new_signed_with_payer(
-                &[dummy_compute_budget_ix, create_group_ix.clone()],
-                Some(&payer.pubkey()),
-                &[&payer],
-                recent_blockhash,
-            );
-
-            println!("Simulating transaction to calculate optimal compute units...");
-            let optimal_cu = match client.simulate_transaction_with_config(
-                &sim_transaction,
-                RpcSimulateTransactionConfig {
-                    sig_verify: false,
-                    replace_recent_blockhash: false,
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    encoding: None,
-                    accounts: None,
-                    min_context_slot: None,
-                    inner_instructions: false,
-                },
-            ) {
-                Ok(result) => {
-                    if let Some(err) = result.value.err {
-                        println!("Simulation shows expected error: {:?}", err);
-                        500_000u32
-                    } else if let Some(units_consumed) = result.value.units_consumed {
-                        ((units_consumed as f64) * 1.2) as u32
-                    } else {
-                        500_000u32
-                    }
-                },
-                Err(_) => 500_000u32
-            };
-
-            let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
-            let transaction = Transaction::new_signed_with_payer(
-                &[compute_budget_ix, create_group_ix],
-                Some(&payer.pubkey()),
-                &[&payer],
-                recent_blockhash,
-            );
-
-            send_and_check_transaction(&client, transaction, test_type, &chat_group_pda, next_group_id, burn_amount_tokens, 0);
+        Err(err) => {
+            println!("❌ TRANSACTION FAILED!");
+            println!("Error: {}", err);
+            
+            if !params.should_succeed {
+                println!("✅ EXPECTED FAILURE: Test failed as expected");
+                analyze_expected_error(&err.to_string(), &params);
+            } else {
+                println!("❌ UNEXPECTED FAILURE: Test should have succeeded");
+                analyze_unexpected_error(&err.to_string());
+            }
         }
     }
 
     Ok(())
 }
 
-fn generate_memo_for_test(
-    test_type: &str, 
-    group_id: u64, 
-    burn_amount: u64, 
-    custom_length: Option<usize>
-) -> Result<String, String> {
-    match test_type {
-        "valid-memo" => {
-            let memo_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "Test Chat Group",
-                "description": "A test group for memo-chat contract testing with comprehensive fields",
-                "tags": ["test", "crypto", "chat"],
-                "min_memo_interval": 60,
-                "operation": "create_group",
-                "timestamp": chrono::Utc::now().timestamp()
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
-        },
-        "memo-69" => {
-            // Create a memo that's exactly 69 bytes with all required fields
-            let mut memo_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "",
-                "description": "",
-                "tags": [],
-                "min_memo_interval": 60
-            });
-            
-            // Calculate current length and adjust name to reach exactly 69 bytes
-            let mut current_str = serde_json::to_string(&memo_json).unwrap();
-            let target_length = 69;
-            
-            if current_str.len() < target_length {
-                let needed_chars = target_length - current_str.len() + 2; // +2 for quotes
-                let padding = "x".repeat(needed_chars);
-                memo_json["name"] = serde_json::Value::String(padding);
-            } else if current_str.len() > target_length {
-                // If it's already too long, make minimal memo
-                memo_json = serde_json::json!({
-                    "amount": burn_amount,
-                    "group_id": group_id,
-                    "name": "T",
-                    "description": "",
-                    "tags": []
-                });
-            }
-            
-            let result = serde_json::to_string(&memo_json).unwrap();
-            println!("Generated {}-byte memo (target: 69)", result.as_bytes().len());
-            Ok(result)
-        },
-        "memo-800" => {
-            // Create a memo that's exactly 800 bytes with all required fields
-            let base_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "Test Group for 800 Byte Memo",
-                "description": "",
-                "tags": ["test", "max-length"],
-                "min_memo_interval": 60
-            });
-            let base_str = serde_json::to_string(&base_json).unwrap();
-            let target_length = 800;
-            
-            if base_str.len() < target_length {
-                let needed_chars = target_length - base_str.len() + 2; // +2 for quotes around description
-                let padding = "x".repeat(needed_chars);
-                
-                let memo_json = serde_json::json!({
-                    "amount": burn_amount,
-                    "group_id": group_id,
-                    "name": "Test Group for 800 Byte Memo",
-                    "description": padding,
-                    "tags": ["test", "max-length"],
-                    "min_memo_interval": 60
-                });
-                let result = serde_json::to_string(&memo_json).unwrap();
-                println!("Generated {}-byte memo (target: 800)", result.as_bytes().len());
-                Ok(result)
-            } else {
-                println!("Base memo already {} bytes, using as-is", base_str.len());
-                Ok(base_str)
-            }
-        },
-        "short-memo" => {
-            // Create a memo shorter than 69 bytes (should fail) - missing some required fields
-            let memo_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "T"
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
-        },
-        "long-memo" => {
-            // Create a memo longer than 800 bytes (should fail)
-            let long_description = "x".repeat(850);
-            let memo_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "Test Group with Very Long Description",
-                "description": long_description,
-                "tags": ["test", "long-description", "should-fail", "exceeds-limit"],
-                "min_memo_interval": 60
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
-        },
-        "amount-mismatch" => {
-            // Create memo with wrong amount (should fail)
-            let wrong_amount = burn_amount + 1_000_000; // Add 1 token
-            let memo_json = serde_json::json!({
-                "amount": wrong_amount,
-                "group_id": group_id,
-                "name": "Amount Mismatch Test Group",
-                "description": "Testing amount validation - this memo has wrong amount",
-                "tags": ["test", "amount-mismatch"],
-                "min_memo_interval": 60,
-                "operation": "create_group"
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
-        },
-        "custom-length" => {
-            // Create a memo with custom specified length
-            let target_length = custom_length.unwrap_or(100);
-            
-            let base_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "Custom Length Test",
-                "description": "",
-                "tags": ["custom"],
-                "min_memo_interval": 60,
-                "operation": "create_group"
-            });
-            let base_str = serde_json::to_string(&base_json).unwrap();
-            
-            if target_length <= base_str.len() {
-                // If target is smaller, create minimal memo with required fields
-                let memo_json = serde_json::json!({
-                    "amount": burn_amount,
-                    "group_id": group_id,
-                    "name": "x".repeat(std::cmp::max(1, target_length.saturating_sub(60))),
-                    "description": "",
-                    "tags": []
-                });
-                return Ok(serde_json::to_string(&memo_json).unwrap());
-            }
-            
-            // Calculate padding needed for description field
-            let needed_chars = target_length - base_str.len() + 2; // +2 for quotes
-            let padding = "x".repeat(needed_chars);
-            
-            let memo_json = serde_json::json!({
-                "amount": burn_amount,
-                "group_id": group_id,
-                "name": "Custom Length Test",
-                "description": padding,
-                "tags": ["custom"],
-                "min_memo_interval": 60,
-                "operation": "create_group"
-            });
-            
-            let result = serde_json::to_string(&memo_json).unwrap();
-            println!("Attempted to create {}-byte memo, actual length: {} bytes", 
-                target_length, result.as_bytes().len());
-            Ok(result)
-        },
-        "no-memo" => {
-            // Return error to indicate no memo should be included
-            Err("no-memo".to_string())
-        },
-        _ => {
-            println!("Unknown test type: {}", test_type);
-            std::process::exit(1);
-        }
+fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
+    let memo_json = serde_json::json!({
+        "amount": params.burn_amount * 1_000_000, // Convert to units
+        "category": params.category,
+        "group_id": group_id,
+        "name": params.name,
+        "description": params.description,
+        "image": params.image,
+        "tags": params.tags,
+        "min_memo_interval": params.min_memo_interval,
+        "operation": "create_group",
+        "timestamp": chrono::Utc::now().timestamp()
+    });
+    
+    serde_json::to_string(&memo_json).unwrap()
+}
+
+fn analyze_expected_error(error_msg: &str, params: &TestParams) {
+    if error_msg.contains("InvalidCategory") && params.category != "chat" {
+        println!("✅ Correct: Invalid category detected");
+    } else if error_msg.contains("InvalidGroupName") && (params.name.is_empty() || params.name.len() > 64) {
+        println!("✅ Correct: Invalid group name detected");
+    } else if error_msg.contains("InvalidGroupDescription") && params.description.len() > 128 {
+        println!("✅ Correct: Invalid group description detected");
+    } else if error_msg.contains("InvalidGroupImage") && params.image.len() > 256 {
+        println!("✅ Correct: Invalid group image detected");
+    } else if error_msg.contains("TooManyTags") && params.tags.len() > 4 {
+        println!("✅ Correct: Too many tags detected");
+    } else if error_msg.contains("InvalidTag") && params.tags.iter().any(|tag| tag.is_empty() || tag.len() > 32) {
+        println!("✅ Correct: Invalid tag detected");
+    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 1 {
+        println!("✅ Correct: Burn amount too small detected");
+    } else {
+        println!("⚠️  Unexpected error type: {}", error_msg);
+    }
+}
+
+fn analyze_unexpected_error(error_msg: &str) {
+    println!("💡 Error analysis:");
+    if error_msg.contains("MemoRequired") {
+        println!("   Missing memo instruction");
+    } else if error_msg.contains("InvalidMemoFormat") {
+        println!("   Invalid memo format or JSON parsing failed");
+    } else if error_msg.contains("AmountMismatch") {
+        println!("   Amount in memo doesn't match burn amount");
+    } else if error_msg.contains("GroupIdMismatch") {
+        println!("   Group ID in memo doesn't match expected ID");
+    } else if error_msg.contains("insufficient funds") {
+        println!("   Insufficient SOL or token balance");
+    } else {
+        println!("   {}", error_msg);
     }
 }
 
@@ -530,187 +519,51 @@ fn create_chat_group_instruction(
     expected_group_id: u64,
     burn_amount: u64,
 ) -> Instruction {
-    // Calculate Anchor instruction sighash for "create_chat_group"
     let mut hasher = Sha256::new();
     hasher.update(b"global:create_chat_group");
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
-    // Add expected_group_id (u64)
     instruction_data.extend_from_slice(&expected_group_id.to_le_bytes());
-    
-    // Add burn_amount (u64)
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
 
     let accounts = vec![
-        AccountMeta::new(*creator, true),                          // creator (signer)
-        AccountMeta::new(*global_counter, false),                  // global_counter (PDA)
-        AccountMeta::new(*chat_group, false),                      // chat_group (PDA)
-        AccountMeta::new(*mint, false),                            // mint
-        AccountMeta::new(*creator_token_account, false),           // creator_token_account
-        AccountMeta::new_readonly(token_2022_id(), false),         // token_program
-        AccountMeta::new_readonly(*memo_burn_program, false),      // memo_burn_program
-        AccountMeta::new_readonly(system_program::id(), false),    // system_program
+        AccountMeta::new(*creator, true),
+        AccountMeta::new(*global_counter, false),
+        AccountMeta::new(*chat_group, false),
+        AccountMeta::new(*mint, false),
+        AccountMeta::new(*creator_token_account, false),
+        AccountMeta::new_readonly(token_2022_id(), false),
+        AccountMeta::new_readonly(*memo_burn_program, false),
+        AccountMeta::new_readonly(system_program::id(), false),
         AccountMeta::new_readonly(
             Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
             false
-        ), // instructions sysvar
+        ),
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
 }
 
-fn send_and_check_transaction(
-    client: &RpcClient,
-    transaction: Transaction,
-    test_type: &str,
-    chat_group_pda: &Pubkey,
-    group_id: u64,
-    burn_amount_tokens: u64,
-    memo_length: usize
-) {
-    println!("Sending create chat group transaction...");
-    
-    match client.send_and_confirm_transaction(&transaction) {
-        Ok(signature) => {
-            println!("🎉 TRANSACTION SUCCESSFUL!");
-            println!("Transaction signature: {}", signature);
-            
-            // Check if this should have succeeded
-            match test_type {
-                "valid-memo" | "memo-69" | "memo-800" => {
-                    println!("✅ EXPECTED SUCCESS: {} test passed", test_type);
-                    println!("Chat group {} created successfully!", group_id);
-                    println!("Burned {} tokens for group creation", burn_amount_tokens);
-                },
-                "custom-length" => {
-                    println!("✅ CUSTOM LENGTH SUCCESS: {}-byte memo test passed", memo_length);
-                    println!("Chat group {} created successfully!", group_id);
-                    
-                    if memo_length < 69 {
-                        println!("⚠️  Note: Memo < 69 bytes succeeded (unexpected)");
-                    } else if memo_length > 800 {
-                        println!("⚠️  Note: Memo > 800 bytes succeeded (unexpected)");
-                    } else {
-                        println!("✅ Memo length within expected range (69-800 bytes)");
-                    }
-                },
-                _ => {
-                    println!("❌ UNEXPECTED SUCCESS: {} test should have failed but succeeded", test_type);
-                }
-            }
-            
-            // Try to fetch the created group
-            match client.get_account(chat_group_pda) {
-                Ok(account) => {
-                    println!("✅ Chat group account created:");
-                    println!("   PDA: {}", chat_group_pda);
-                    println!("   Data length: {} bytes", account.data.len());
-                },
-                Err(e) => {
-                    println!("⚠️  Could not fetch created group: {}", e);
-                }
-            }
-        },
-        Err(err) => {
-            println!("❌ TRANSACTION FAILED!");
-            println!("Error: {}", err);
-            
-            // Check if this failure was expected
-            match test_type {
-                "no-memo" | "short-memo" | "long-memo" | "amount-mismatch" => {
-                    println!("✅ EXPECTED FAILURE: {} test correctly failed", test_type);
-                    print_specific_error_for_test(test_type, &err.to_string());
-                },
-                "custom-length" => {
-                    println!("📊 CUSTOM LENGTH FAILURE: {}-byte memo test failed", memo_length);
-                    print_custom_length_analysis(memo_length, &err.to_string());
-                },
-                _ => {
-                    println!("❌ UNEXPECTED FAILURE: {} test should have succeeded", test_type);
-                    print_error_guidance(&err.to_string());
-                }
-            }
-        }
-    }
-}
-
-fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
-    println!("📊 Custom length analysis for {} bytes:", memo_length);
-    
-    if memo_length < 69 {
-        if error_msg.contains("MemoTooShort") {
-            println!("✅ Expected: Contract correctly rejects memo < 69 bytes");
-        } else {
-            println!("⚠️  Unexpected error for short memo: {}", error_msg);
-        }
-    } else if memo_length > 800 {
-        if error_msg.contains("MemoTooLong") {
-            println!("✅ Expected: Contract correctly rejects memo > 800 bytes");
-        } else {
-            println!("⚠️  Unexpected error for long memo: {}", error_msg);
-        }
-    } else {
-        println!("⚠️  Unexpected failure for memo within valid range (69-800): {}", error_msg);
-    }
-}
-
-fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
-    match test_type {
-        "no-memo" => {
-            if error_msg.contains("MemoRequired") {
-                println!("✅ Correct error: Contract properly requires memo instruction");
-            } else {
-                println!("⚠️  Unexpected error for no-memo test: {}", error_msg);
-            }
-        },
-        "short-memo" => {
-            if error_msg.contains("MemoTooShort") {
-                println!("✅ Correct error: Contract properly rejects memo < 69 bytes");
-            } else {
-                println!("⚠️  Unexpected error for short-memo test: {}", error_msg);
-            }
-        },
-        "long-memo" => {
-            if error_msg.contains("MemoTooLong") {
-                println!("✅ Correct error: Contract properly rejects memo > 800 bytes");
-            } else {
-                println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
-            }
-        },
-        "amount-mismatch" => {
-            if error_msg.contains("AmountMismatch") {
-                println!("✅ Correct error: Contract properly validates amount consistency");
-            } else {
-                println!("⚠️  Unexpected error for amount-mismatch test: {}", error_msg);
-            }
-        },
-        _ => {
-            println!("Unexpected test type: {}", test_type);
-        }
-    }
-}
-
-fn print_error_guidance(error_msg: &str) {
-    println!("\n=== ERROR ANALYSIS ===");
-    
-    if error_msg.contains("MemoRequired") {
-        println!("💡 Missing Memo: This contract requires a memo instruction.");
-    } else if error_msg.contains("MemoTooShort") {
-        println!("💡 Memo Too Short: Memo must be at least 69 bytes long.");
-    } else if error_msg.contains("MemoTooLong") {
-        println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
-    } else if error_msg.contains("AmountMismatch") {
-        println!("💡 Amount Mismatch: The amount field in memo doesn't match burn amount.");
-    } else if error_msg.contains("InvalidGroupIdFormat") {
-        println!("💡 Invalid Group ID Format: Group ID must be a valid u64 number.");
-    } else if error_msg.contains("InvalidGroupName") {
-        println!("💡 Invalid Group Name: Name must be 1-64 characters.");
-    } else if error_msg.contains("BurnAmountTooSmall") {
-        println!("💡 Burn Amount Too Small: Must burn at least 1 token (1,000,000 units).");
-    } else if error_msg.contains("already in use") {
-        println!("💡 Group Already Exists: This group ID is already taken.");
-    } else {
-        println!("💡 Error: {}", error_msg);
-    }
+fn print_usage() {
+    println!("Usage: cargo run --bin test-memo-chat-create-group -- <test_case>");
+    println!();
+    println!("Available test cases:");
+    println!("  valid-basic       - Valid group creation with all fields");
+    println!("  invalid-category  - Test invalid category field");
+    println!("  empty-name        - Test empty group name");
+    println!("  long-name         - Test group name too long (>64 chars)");
+    println!("  long-description  - Test description too long (>128 chars)");
+    println!("  long-image        - Test image info too long (>256 chars)");
+    println!("  too-many-tags     - Test too many tags (>4 tags)");
+    println!("  long-tag          - Test tag too long (>32 chars)");
+    println!("  small-burn-amount - Test burn amount too small (<1 token)");
+    println!("  minimal-valid     - Test minimal valid parameters");
+    println!("  max-valid         - Test maximum valid field lengths");
+    println!("  custom            - Custom test with specified parameters");
+    println!();
+    println!("Examples:");
+    println!("  cargo run --bin test-memo-chat-create-group -- valid-basic");
+    println!("  cargo run --bin test-memo-chat-create-group -- invalid-category");
+    println!("  cargo run --bin test-memo-chat-create-group -- custom 5 chat \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
 } 

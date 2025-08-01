@@ -1,14 +1,18 @@
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::RpcSimulateTransactionConfig,
+};
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction,
     compute_budget::ComputeBudgetInstruction,
-    system_program,
+    commitment_config::CommitmentConfig,
 };
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
+use solana_system_interface::program as system_program;
 
 // This should match the AUTHORIZED_ADMIN in the contract
 const AUTHORIZED_ADMIN: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"; // 请替换为实际的管理员公钥
@@ -118,10 +122,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &global_counter_pda,
     );
 
-    // Set compute budget
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(200_000);
+    // Simulate transaction to get optimal CU limit
+    println!("Simulating transaction to calculate optimal compute units...");
+    
+    let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(500_000);
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[dummy_compute_budget_ix, init_counter_ix.clone()],
+        Some(&admin.pubkey()),
+        &[&admin],
+        recent_blockhash,
+    );
 
-    // Create and send transaction
+    let optimal_cu = match client.simulate_transaction_with_config(
+        &sim_transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::confirmed()),
+            encoding: None,
+            accounts: None,
+            min_context_slot: None,
+            inner_instructions: false,
+        },
+    ) {
+        Ok(result) => {
+            if let Some(err) = result.value.err {
+                println!("Simulation shows expected error: {:?}", err);
+                200_000u32
+            } else if let Some(units_consumed) = result.value.units_consumed {
+                // Add 10% margin
+                let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
+                println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                    units_consumed, optimal_cu);
+                optimal_cu
+            } else {
+                let default_cu = 200_000u32;
+                println!("Simulation successful but no CU data, using default: {}", default_cu);
+                default_cu
+            }
+        },
+        Err(err) => {
+            println!("Simulation failed: {}, using default CU", err);
+            200_000u32
+        }
+    };
+
+    // Create final transaction with optimal compute budget
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     let transaction = Transaction::new_signed_with_payer(
         &[compute_budget_ix, init_counter_ix],
         Some(&admin.pubkey()),
@@ -129,9 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         recent_blockhash,
     );
 
-    println!("Sending initialize global counter transaction...");
-    println!("This operation can only be performed once by the authorized admin.");
-    println!();
+    println!("Sending initialize global counter transaction with {} compute units...", optimal_cu);
     
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {

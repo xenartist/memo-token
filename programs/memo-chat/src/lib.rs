@@ -96,6 +96,7 @@ pub mod memo_chat {
         chat_group.created_at = Clock::get()?.unix_timestamp;
         chat_group.name = group_data.name.clone();
         chat_group.description = group_data.description.clone();
+        chat_group.image = group_data.image.clone();
         chat_group.tags = group_data.tags.clone();
         chat_group.memo_count = 0;
         chat_group.burned_amount = burn_amount;
@@ -113,6 +114,7 @@ pub mod memo_chat {
             creator: ctx.accounts.creator.key(),
             name: group_data.name,
             description: group_data.description,
+            image: group_data.image,
             tags: group_data.tags,
             burn_amount,
             timestamp: Clock::get()?.unix_timestamp,
@@ -291,6 +293,16 @@ fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_
             ErrorCode::InvalidMemoFormat
         })?;
 
+    // Extract and validate category field (must be "chat")
+    let category = json_data["category"]
+        .as_str()
+        .unwrap_or("");
+    
+    if category != "chat" {
+        msg!("Invalid category: expected 'chat', got '{}'", category);
+        return Err(ErrorCode::InvalidCategory.into());
+    }
+
     // Extract and validate amount field (must match burn amount)
     let memo_amount = match &json_data["amount"] {
         Value::Number(n) => {
@@ -361,6 +373,16 @@ fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_
         return Err(ErrorCode::InvalidGroupDescription.into());
     }
 
+    // Extract and validate image field
+    let image = json_data["image"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    
+    if image.len() > 256 {
+        return Err(ErrorCode::InvalidGroupImage.into());
+    }
+
     let tags = match &json_data["tags"] {
         Value::Array(arr) => {
             let mut tags = Vec::new();
@@ -386,13 +408,14 @@ fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_
     let min_memo_interval = json_data["min_memo_interval"]
         .as_i64();
 
-    msg!("Group creation memo parsed successfully: group_id={}, name={}, amount={} tokens", 
-         expected_group_id, name, expected_amount / 1_000_000);
+    msg!("Group creation memo parsed successfully: category=chat, group_id={}, name={}, image_len={}, amount={} tokens", 
+         expected_group_id, name, image.len(), expected_amount / 1_000_000);
 
     Ok(GroupCreationData {
         group_id: expected_group_id,
         name,
         description,
+        image,
         tags,
         min_memo_interval,
     })
@@ -553,6 +576,7 @@ struct GroupCreationData {
     group_id: u64,
     name: String,
     description: String,
+    image: String,
     tags: Vec<String>,
     min_memo_interval: Option<i64>,
 }
@@ -728,6 +752,7 @@ pub struct ChatGroup {
     pub created_at: i64,            // Creation timestamp
     pub name: String,               // Group name
     pub description: String,        // Group description
+    pub image: String,              // Group image info (max 256 chars)
     pub tags: Vec<String>,          // Tags
     pub memo_count: u64,            // Memo count
     pub burned_amount: u64,         // Total burned tokens for this group
@@ -750,6 +775,7 @@ impl ChatGroup {
         1 + // bump
         4 + 64 + // name (max 64 chars)
         4 + 128 + // description (max 128 chars)
+        4 + 256 + // image (max 256 chars)
         4 + (4 + 32) * 4 + // tags (max 4 tags, 32 chars each)
         128 // safety buffer
     }
@@ -762,6 +788,7 @@ pub struct ChatGroupCreatedEvent {
     pub creator: Pubkey,
     pub name: String,
     pub description: String,
+    pub image: String,
     pub tags: Vec<String>,
     pub burn_amount: u64,
     pub timestamp: i64,
@@ -867,4 +894,10 @@ pub enum ErrorCode {
 
     #[msg("Unauthorized admin. Only the authorized admin can perform this operation.")]
     UnauthorizedAdmin,
+
+    #[msg("Invalid group image: Image info must be at most 256 characters.")]
+    InvalidGroupImage,
+
+    #[msg("Invalid category: Must be 'chat' for chat group operations.")]
+    InvalidCategory,
 }
