@@ -138,8 +138,8 @@ pub mod memo_chat {
             return Err(ErrorCode::MemoRequired.into());
         }
         
-        // Parse memo content for display and validation
-        let memo_content = parse_memo_content(&memo_data)?;
+        // Parse and validate memo content with required fields
+        let memo_content = parse_and_validate_memo_for_send(&memo_data, group_id, ctx.accounts.sender.key())?;
         
         let chat_group = &mut ctx.accounts.chat_group;
         let current_time = Clock::get()?.unix_timestamp;
@@ -474,6 +474,16 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     let json_data: Value = serde_json::from_str(&clean_str)
         .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
+    // Validate category field (required) - must be "chat"
+    let category = json_data["category"]
+        .as_str()
+        .unwrap_or("");
+    
+    if category != "chat" {
+        msg!("Invalid category: expected 'chat', got '{}'", category);
+        return Err(ErrorCode::InvalidCategory.into());
+    }
+
     // Extract burned_amount from memo
     let memo_burned_amount = match &json_data["burned_amount"] {
         Value::Number(n) => {
@@ -503,8 +513,187 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     }
 
     let token_count = expected_amount / 1_000_000;
-    msg!("Burned amount validation passed: {} tokens ({} units)", token_count, expected_amount);
+    msg!("Burned amount validation passed: category=chat, {} tokens ({} units)", token_count, expected_amount);
     Ok(())
+}
+
+/// Parse and validate memo content for send memo (with required field validation)
+fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, expected_sender: Pubkey) -> Result<String> {
+    // Enhanced UTF-8 validation
+    let memo_str = match std::str::from_utf8(memo_data) {
+        Ok(s) => s,
+        Err(e) => {
+            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
+            return Err(ErrorCode::InvalidMemoFormat.into());
+        }
+    };
+    
+    // Basic security check
+    if memo_str.contains('\0') {
+        msg!("Memo contains null characters");
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
+    // Clean the string (handle JSON escaping)
+    let clean_str = memo_str
+        .trim_matches('"')
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\");
+    
+    // Parse as JSON
+    let json_data: Value = serde_json::from_str(&clean_str)
+        .map_err(|e| {
+            msg!("JSON parsing failed: {}", e);
+            ErrorCode::InvalidMemoFormat
+        })?;
+
+    // 0. Validate category field (required) - must be "chat"
+    let category = json_data["category"]
+        .as_str()
+        .unwrap_or("");
+    
+    if category != "chat" {
+        msg!("Invalid category: expected 'chat', got '{}'", category);
+        return Err(ErrorCode::InvalidCategory.into());
+    }
+
+    // 1. Validate group_id field (required)
+    let memo_group_id = match &json_data["group_id"] {
+        Value::Number(n) => {
+            if let Some(int_val) = n.as_u64() {
+                int_val
+            } else {
+                return Err(ErrorCode::InvalidGroupIdFormat.into());
+            }
+        },
+        Value::String(s) => {
+            if let Ok(int_val) = s.parse::<u64>() {
+                int_val
+            } else {
+                return Err(ErrorCode::InvalidGroupIdFormat.into());
+            }
+        },
+        _ => return Err(ErrorCode::MissingGroupIdField.into()),
+    };
+    
+    if memo_group_id != expected_group_id {
+        msg!("Group ID mismatch: memo contains {}, expected {}", memo_group_id, expected_group_id);
+        return Err(ErrorCode::GroupIdMismatch.into());
+    }
+
+    // 2. Validate sender field (required)
+    let memo_sender_str = json_data["sender"]
+        .as_str()
+        .ok_or(ErrorCode::MissingSenderField)?;
+    
+    let memo_sender = Pubkey::from_str(memo_sender_str)
+        .map_err(|_| ErrorCode::InvalidSenderFormat)?;
+    
+    if memo_sender != expected_sender {
+        msg!("Sender mismatch: memo contains {}, expected {}", memo_sender, expected_sender);
+        return Err(ErrorCode::SenderMismatch.into());
+    }
+
+    // 3. Validate message field (required)
+    let message = json_data["message"]
+        .as_str()
+        .ok_or(ErrorCode::MissingMessageField)?
+        .to_string();
+    
+    if message.is_empty() {
+        return Err(ErrorCode::EmptyMessage.into());
+    }
+    
+    if message.len() > 512 {
+        return Err(ErrorCode::MessageTooLong.into());
+    }
+
+    // 4. Validate receiver field (optional)
+    let receiver_info = match &json_data["receiver"] {
+        Value::String(s) => {
+            if s.is_empty() {
+                // Empty string is treated as no receiver
+                None
+            } else {
+                // Validate that it's a valid Pubkey
+                match Pubkey::from_str(s) {
+                    Ok(pubkey) => {
+                        msg!("Receiver field validated: {}", pubkey);
+                        Some(pubkey)
+                    },
+                    Err(_) => {
+                        msg!("Invalid receiver format: {}", s);
+                        return Err(ErrorCode::InvalidReceiverFormat.into());
+                    }
+                }
+            }
+        },
+        Value::Null => None, // Explicitly null is OK
+        _ => {
+            // Field exists but is not a string or null
+            if json_data.get("receiver").is_some() {
+                return Err(ErrorCode::InvalidReceiverFormat.into());
+            } else {
+                None // Field doesn't exist, which is OK
+            }
+        }
+    };
+
+    // 5. Validate reply_to_sig field (optional)
+    let reply_to_sig_info = match &json_data["reply_to_sig"] {
+        Value::String(s) => {
+            if s.is_empty() {
+                // Empty string is treated as no reply
+                None
+            } else {
+                // Validate that it's a valid signature format (base58 encoded, 64 bytes when decoded)
+                match bs58::decode(s).into_vec() {
+                    Ok(decoded) => {
+                        if decoded.len() == 64 {
+                            msg!("Reply signature field validated: {}", s);
+                            Some(s.clone())
+                        } else {
+                            msg!("Invalid reply signature length: {} bytes (expected 64)", decoded.len());
+                            return Err(ErrorCode::InvalidReplySignatureFormat.into());
+                        }
+                    },
+                    Err(_) => {
+                        msg!("Invalid reply signature encoding: {}", s);
+                        return Err(ErrorCode::InvalidReplySignatureFormat.into());
+                    }
+                }
+            }
+        },
+        Value::Null => None, // Explicitly null is OK
+        _ => {
+            // Field exists but is not a string or null
+            if json_data.get("reply_to_sig").is_some() {
+                return Err(ErrorCode::InvalidReplySignatureFormat.into());
+            } else {
+                None // Field doesn't exist, which is OK
+            }
+        }
+    };
+
+    // Log validation results
+    let mut log_parts = vec![
+        format!("category=chat"),
+        format!("group_id={}", expected_group_id),
+        format!("sender={}", expected_sender),
+        format!("message_len={}", message.len()),
+    ];
+    
+    if let Some(receiver) = receiver_info {
+        log_parts.push(format!("receiver={}", receiver));
+    }
+    
+    if let Some(ref reply_sig) = reply_to_sig_info {
+        log_parts.push(format!("reply_to_sig={}...", &reply_sig[..16]));
+    }
+
+    msg!("Memo validation passed: {}", log_parts.join(", "));
+
+    Ok(message)
 }
 
 /// Parse memo content for display (simpler parsing for send memo)
@@ -926,4 +1115,28 @@ pub enum ErrorCode {
 
     #[msg("Invalid category: Must be 'chat' for chat group operations.")]
     InvalidCategory,
+    
+    #[msg("Missing sender field in memo JSON.")]
+    MissingSenderField,
+    
+    #[msg("Invalid sender format in memo. Must be a valid Pubkey string.")]
+    InvalidSenderFormat,
+    
+    #[msg("Sender mismatch: The sender in memo must match the transaction signer.")]
+    SenderMismatch,
+    
+    #[msg("Missing message field in memo JSON.")]
+    MissingMessageField,
+    
+    #[msg("Empty message: Message field cannot be empty.")]
+    EmptyMessage,
+    
+    #[msg("Message too long: Message must be at most 512 characters.")]
+    MessageTooLong,
+    
+    #[msg("Invalid receiver format in memo. Must be a valid Pubkey string.")]
+    InvalidReceiverFormat,
+    
+    #[msg("Invalid reply signature format in memo. Must be a valid base58-encoded signature string.")]
+    InvalidReplySignatureFormat,
 }

@@ -67,6 +67,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             should_succeed: false,
             test_description: "Invalid category field (should be 'chat')".to_string(),
         },
+        "missing-category" => TestParams {
+            burn_amount: 5,
+            category: "".to_string(),  // Empty category (will be omitted from JSON)
+            name: "Test Group".to_string(),
+            description: "Testing missing category".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Missing category field (should fail)".to_string(),
+        },
         "empty-name" => TestParams {
             burn_amount: 5,
             category: "chat".to_string(),
@@ -455,9 +466,8 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
-    let memo_json = serde_json::json!({
+    let mut memo_json = serde_json::json!({
         "burned_amount": params.burn_amount * 1_000_000, // Convert to units
-        "category": params.category,
         "group_id": group_id,
         "name": params.name,
         "description": params.description,
@@ -468,12 +478,17 @@ fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
         "timestamp": chrono::Utc::now().timestamp()
     });
     
+    // Only add category field if it's not empty
+    if !params.category.is_empty() {
+        memo_json["category"] = serde_json::Value::String(params.category.clone());
+    }
+    
     serde_json::to_string(&memo_json).unwrap()
 }
 
 fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("InvalidCategory") && params.category != "chat" {
-        println!("✅ Correct: Invalid category detected");
+    if error_msg.contains("InvalidCategory") && (params.category != "chat" || params.category.is_empty()) {
+        println!("✅ Correct: Invalid or missing category detected");
     } else if error_msg.contains("InvalidGroupName") && (params.name.is_empty() || params.name.len() > 64) {
         println!("✅ Correct: Invalid group name detected");
     } else if error_msg.contains("InvalidGroupDescription") && params.description.len() > 128 {
@@ -497,6 +512,8 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
         println!("   Invalid memo format or JSON parsing failed");
+    } else if error_msg.contains("InvalidCategory") {
+        println!("   Category field missing or not 'chat'");
     } else if error_msg.contains("BurnedAmountMismatch") {
         println!("   Burned amount in memo doesn't match burn amount");
     } else if error_msg.contains("GroupIdMismatch") {
@@ -551,6 +568,7 @@ fn print_usage() {
     println!("Available test cases:");
     println!("  valid-basic       - Valid group creation with all fields");
     println!("  invalid-category  - Test invalid category field");
+    println!("  missing-category  - Test missing category field");
     println!("  empty-name        - Test empty group name");
     println!("  long-name         - Test group name too long (>64 chars)");
     println!("  long-description  - Test description too long (>128 chars)");
@@ -565,5 +583,6 @@ fn print_usage() {
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-create-group -- valid-basic");
     println!("  cargo run --bin test-memo-chat-create-group -- invalid-category");
+    println!("  cargo run --bin test-memo-chat-create-group -- missing-category");
     println!("  cargo run --bin test-memo-chat-create-group -- custom 5 chat \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
 } 

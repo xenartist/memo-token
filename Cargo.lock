@@ -2221,6 +2221,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "bs58",
  "memo-burn",
  "memo-mint",
  "serde",

@@ -21,9 +21,45 @@ use spl_token_2022::id as token_2022_id;
 #[derive(Debug, Clone)]
 struct TestParams {
     pub group_id: u64,             // Target group ID
-    pub memo_content: String,      // Memo content to send
+    pub message_content: String,   // Message content to send
     pub should_succeed: bool,      // Whether the test should succeed
     pub test_description: String,  // Description of what this test validates
+}
+
+/// Generate properly formatted memo JSON with required fields (including category)
+fn generate_memo_json(group_id: u64, sender: &Pubkey, message: &str) -> String {
+    serde_json::json!({
+        "category": "chat",
+        "group_id": group_id,
+        "sender": sender.to_string(),
+        "message": message
+    }).to_string()
+}
+
+/// Generate memo JSON with optional receiver and reply_to_sig fields
+fn generate_memo_json_with_optional_fields(
+    group_id: u64, 
+    sender: &Pubkey, 
+    message: &str,
+    receiver: Option<&Pubkey>,
+    reply_to_sig: Option<&str>
+) -> String {
+    let mut memo_obj = serde_json::json!({
+        "category": "chat",
+        "group_id": group_id,
+        "sender": sender.to_string(),
+        "message": message
+    });
+
+    if let Some(recv) = receiver {
+        memo_obj["receiver"] = serde_json::Value::String(recv.to_string());
+    }
+
+    if let Some(reply_sig) = reply_to_sig {
+        memo_obj["reply_to_sig"] = serde_json::Value::String(reply_sig.to_string());
+    }
+
+    serde_json::to_string(&memo_obj).unwrap()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,25 +73,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let test_case = &args[1];
     
+    // Load wallet to get sender pubkey for memo generation
+    let payer = read_keypair_file(
+        shellexpand::tilde("~/.config/solana/id.json").to_string()
+    ).expect("Failed to read keypair file");
+    
     // Define test cases
     let test_params = match test_case.as_str() {
         "simple-text" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0), // Default to group 0
-            memo_content: "Hello, world! This is a test memo.".to_string(),
+            message_content: "Hello, world! This is a test memo.".to_string(),
             should_succeed: true,
-            test_description: "Simple text memo to existing group".to_string(),
+            test_description: "Simple text message to existing group".to_string(),
         },
         "long-text" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: "This is a much longer memo content that tests the memo length limits. ".repeat(5),
+            message_content: "This is a much longer message content that tests the message length limits. ".repeat(5),
             should_succeed: true,
-            test_description: "Longer text memo to test memo length handling".to_string(),
+            test_description: "Longer text message to test message length handling".to_string(),
         },
-        "json-memo" => TestParams {
+        "json-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: serde_json::json!({
+            message_content: serde_json::json!({
                 "type": "chat_message",
-                "content": "Hello from JSON memo!",
+                "content": "Hello from JSON message!",
                 "timestamp": chrono::Utc::now().timestamp(),
                 "sender_info": {
                     "nickname": "TestUser",
@@ -63,52 +104,118 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }).to_string(),
             should_succeed: true,
-            test_description: "JSON formatted memo content".to_string(),
+            test_description: "JSON formatted message content".to_string(),
         },
         "emoji-text" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: "Hello! 😀 This memo contains emojis 🚀✨ and unicode text! 中文测试".to_string(),
+            message_content: "Hello! 😀 This message contains emojis 🚀✨ and unicode text! 中文测试".to_string(),
             should_succeed: true,
-            test_description: "Memo with emojis and unicode characters".to_string(),
+            test_description: "Message with emojis and unicode characters".to_string(),
+        },
+        "with-receiver" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Hello @user! This message mentions someone.".to_string(),
+            should_succeed: true,
+            test_description: "Message with receiver field (@ mention)".to_string(),
+        },
+        "with-reply" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "This is a reply to a previous message.".to_string(),
+            should_succeed: true,
+            test_description: "Message with reply_to_sig field (reply to message)".to_string(),
         },
         "max-length" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: "X".repeat(800), // Maximum memo length
+            message_content: "X".repeat(512), // Maximum message length
             should_succeed: true,
-            test_description: "Maximum length memo (800 bytes)".to_string(),
+            test_description: "Maximum length message (512 chars)".to_string(),
         },
-        "too-long" => TestParams {
+        "too-long-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: "X".repeat(801), // Exceeds maximum memo length
+            message_content: "X".repeat(513), // Exceeds maximum message length
             should_succeed: false,
-            test_description: "Memo exceeding maximum length (should fail)".to_string(),
+            test_description: "Message exceeding maximum length (should fail)".to_string(),
         },
-        "too-short" => TestParams {
+        "empty-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            memo_content: "Short".to_string(), // Less than 69 bytes
+            message_content: "".to_string(), // Empty message
             should_succeed: false,
-            test_description: "Memo shorter than minimum length (should fail)".to_string(),
+            test_description: "Empty message (should fail)".to_string(),
+        },
+        "invalid-category" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid category".to_string(),
+            should_succeed: false,
+            test_description: "Memo with invalid category field (should fail)".to_string(),
+        },
+        "missing-category" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message without category field".to_string(),
+            should_succeed: false,
+            test_description: "Memo missing category field (should fail)".to_string(),
+        },
+        "wrong-group-id" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with wrong group ID in memo".to_string(),
+            should_succeed: false,
+            test_description: "Memo with wrong group_id field (should fail)".to_string(),
+        },
+        "wrong-sender" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with wrong sender in memo".to_string(),
+            should_succeed: false,
+            test_description: "Memo with wrong sender field (should fail)".to_string(),
+        },
+        "missing-group-id" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with missing group_id field".to_string(),
+            should_succeed: false,
+            test_description: "Memo missing group_id field (should fail)".to_string(),
+        },
+        "missing-sender" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with missing sender field".to_string(),
+            should_succeed: false,
+            test_description: "Memo missing sender field (should fail)".to_string(),
+        },
+        "missing-message" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "".to_string(), // Will be handled specially
+            should_succeed: false,
+            test_description: "Memo missing message field (should fail)".to_string(),
+        },
+        "invalid-receiver" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid receiver format".to_string(),
+            should_succeed: false,
+            test_description: "Memo with invalid receiver format (should fail)".to_string(),
+        },
+        "invalid-reply-sig" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid reply signature".to_string(),
+            should_succeed: false,
+            test_description: "Memo with invalid reply_to_sig format (should fail)".to_string(),
         },
         "nonexistent-group" => TestParams {
             group_id: 99999, // Non-existent group ID
-            memo_content: "This memo is for a non-existent group.".to_string(),
+            message_content: "This message is for a non-existent group.".to_string(),
             should_succeed: false,
-            test_description: "Memo to non-existent group (should fail)".to_string(),
+            test_description: "Message to non-existent group (should fail)".to_string(),
         },
         "custom" => {
             if args.len() < 4 {
                 println!("Custom test requires additional parameters:");
-                println!("Usage: cargo run --bin test-memo-chat-send-memo -- custom <group_id> <memo_content>");
+                println!("Usage: cargo run --bin test-memo-chat-send-memo -- custom <group_id> <message_content>");
                 println!("Example: cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello, world!\"");
                 return Ok(());
             }
             
             let group_id = args[2].parse::<u64>().unwrap_or(0);
-            let memo_content = args[3].clone();
+            let message_content = args[3].clone();
             
             TestParams {
                 group_id,
-                memo_content,
+                message_content,
                 should_succeed: true, // Assume custom tests should succeed unless proven otherwise
                 test_description: "Custom test case".to_string(),
             }
@@ -120,6 +227,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Generate memo content based on test case
+    let memo_content = match test_case.as_str() {
+        "with-receiver" => {
+            // Create memo with valid receiver field
+            let dummy_receiver = Pubkey::from_str("11111111111111111111111111111112").unwrap();
+            generate_memo_json_with_optional_fields(
+                test_params.group_id, 
+                &payer.pubkey(), 
+                &test_params.message_content,
+                Some(&dummy_receiver),
+                None
+            )
+        },
+        "with-reply" => {
+            // Create memo with valid reply_to_sig field (example signature)
+            let example_sig = "5VfQvdK2VkgFUBX8bEcAQbVJkchLUdfq4Rn9RDUNwHAK1sF8NNYK2nGChtdkRxLLfq4wnJ2W4FfGwM8EjwzQJsm";
+            generate_memo_json_with_optional_fields(
+                test_params.group_id, 
+                &payer.pubkey(), 
+                &test_params.message_content,
+                None,
+                Some(example_sig)
+            )
+        },
+        "invalid-category" => {
+            // Create memo with wrong category
+            serde_json::json!({
+                "category": "invalid", // Wrong category
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "missing-category" => {
+            // Create memo without category field
+            serde_json::json!({
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "wrong-group-id" => {
+            // Create memo with wrong group_id
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id + 1, // Wrong group ID
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "wrong-sender" => {
+            // Create memo with wrong sender
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": "11111111111111111111111111111111", // Wrong sender
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "missing-group-id" => {
+            // Create memo without group_id field
+            serde_json::json!({
+                "category": "chat",
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "missing-sender" => {
+            // Create memo without sender field
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "missing-message" => {
+            // Create memo without message field
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string()
+            }).to_string()
+        },
+        "invalid-receiver" => {
+            // Create memo with invalid receiver format
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content,
+                "receiver": "invalid_pubkey_format"
+            }).to_string()
+        },
+        "invalid-reply-sig" => {
+            // Create memo with invalid reply signature format
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content,
+                "reply_to_sig": "invalid_signature_format"
+            }).to_string()
+        },
+        _ => {
+            // Generate normal memo with all required fields
+            generate_memo_json(test_params.group_id, &payer.pubkey(), &test_params.message_content)
+        }
+    };
+
     println!("=== MEMO-CHAT SEND MEMO TEST ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
@@ -127,16 +343,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Test parameters:");
     println!("  Target group ID: {}", test_params.group_id);
-    println!("  Memo length: {} bytes", test_params.memo_content.as_bytes().len());
-    if test_params.memo_content.len() > 100 {
-        println!("  Memo content (first 50 chars): {}...", &test_params.memo_content[..50]);
-        println!("  Memo content (last 50 chars): ...{}", &test_params.memo_content[test_params.memo_content.len()-50..]);
+    println!("  Message length: {} chars", test_params.message_content.len());
+    println!("  Memo length: {} bytes", memo_content.as_bytes().len());
+    if test_params.message_content.len() > 100 {
+        println!("  Message content (first 50 chars): {}...", &test_params.message_content[..50]);
+        println!("  Message content (last 50 chars): ...{}", &test_params.message_content[test_params.message_content.len()-50..]);
     } else {
-        println!("  Memo content: {}", test_params.memo_content);
+        println!("  Message content: {}", test_params.message_content);
+    }
+    if memo_content.len() > 200 {
+        println!("  Memo content (first 100 chars): {}...", &memo_content[..100]);
+        println!("  Memo content (last 100 chars): ...{}", &memo_content[memo_content.len()-100..]);
+    } else {
+        println!("  Memo content: {}", memo_content);
     }
     println!();
 
-    run_test(test_params)?;
+    run_test(test_params, memo_content)?;
     Ok(())
 }
 
@@ -148,7 +371,7 @@ fn get_group_id_from_args(args: &[String], index: usize, default: u64) -> u64 {
     }
 }
 
-fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
+fn run_test(params: TestParams, memo_content: String) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
     let rpc_url = "https://rpc-testnet.x1.wiki";
     let client = RpcClient::new(rpc_url);
@@ -239,7 +462,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     
     // Create instructions
     let memo_ix = spl_memo::build_memo(
-        params.memo_content.as_bytes(),
+        memo_content.as_bytes(),
         &[&payer.pubkey()],
     );
 
@@ -357,10 +580,30 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("MemoTooShort") && params.memo_content.as_bytes().len() < 69 {
+    if error_msg.contains("MemoTooShort") {
         println!("✅ Correct: Memo too short detected");
-    } else if error_msg.contains("MemoTooLong") && params.memo_content.as_bytes().len() > 800 {
+    } else if error_msg.contains("MemoTooLong") {
         println!("✅ Correct: Memo too long detected");
+    } else if error_msg.contains("InvalidCategory") {
+        println!("✅ Correct: Invalid category detected");
+    } else if error_msg.contains("MessageTooLong") && params.message_content.len() > 512 {
+        println!("✅ Correct: Message too long detected");
+    } else if error_msg.contains("EmptyMessage") && params.message_content.is_empty() {
+        println!("✅ Correct: Empty message detected");
+    } else if error_msg.contains("GroupIdMismatch") {
+        println!("✅ Correct: Group ID mismatch detected");
+    } else if error_msg.contains("SenderMismatch") {
+        println!("✅ Correct: Sender mismatch detected");
+    } else if error_msg.contains("MissingGroupIdField") {
+        println!("✅ Correct: Missing group_id field detected");
+    } else if error_msg.contains("MissingSenderField") {
+        println!("✅ Correct: Missing sender field detected");
+    } else if error_msg.contains("MissingMessageField") {
+        println!("✅ Correct: Missing message field detected");
+    } else if error_msg.contains("InvalidReceiverFormat") {
+        println!("✅ Correct: Invalid receiver format detected");
+    } else if error_msg.contains("InvalidReplySignatureFormat") {
+        println!("✅ Correct: Invalid reply signature format detected");
     } else if error_msg.contains("GroupNotFound") && params.group_id == 99999 {
         println!("✅ Correct: Non-existent group detected");
     } else if error_msg.contains("MemoTooFrequent") {
@@ -376,6 +619,26 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
         println!("   Invalid memo format or UTF-8 encoding issue");
+    } else if error_msg.contains("InvalidCategory") {
+        println!("   Category field missing or not 'chat'");
+    } else if error_msg.contains("GroupIdMismatch") {
+        println!("   Group ID in memo doesn't match instruction parameter");
+    } else if error_msg.contains("SenderMismatch") {
+        println!("   Sender in memo doesn't match transaction signer");
+    } else if error_msg.contains("MissingGroupIdField") {
+        println!("   Memo JSON missing required group_id field");
+    } else if error_msg.contains("MissingSenderField") {
+        println!("   Memo JSON missing required sender field");
+    } else if error_msg.contains("MissingMessageField") {
+        println!("   Memo JSON missing required message field");
+    } else if error_msg.contains("EmptyMessage") {
+        println!("   Message field in memo is empty");
+    } else if error_msg.contains("MessageTooLong") {
+        println!("   Message field exceeds maximum length (512 characters)");
+    } else if error_msg.contains("InvalidReceiverFormat") {
+        println!("   Receiver field has invalid Pubkey format");
+    } else if error_msg.contains("InvalidReplySignatureFormat") {
+        println!("   Reply signature field has invalid format");
     } else if error_msg.contains("GroupNotFound") {
         println!("   Chat group does not exist - create it first");
     } else if error_msg.contains("MemoTooFrequent") {
@@ -429,22 +692,34 @@ fn print_usage() {
     println!("Usage: cargo run --bin test-memo-chat-send-memo -- <test_case> [group_id]");
     println!();
     println!("Available test cases:");
-    println!("  simple-text       - Simple text memo to existing group");
-    println!("  long-text         - Longer text memo");
-    println!("  json-memo         - JSON formatted memo content");
-    println!("  emoji-text        - Memo with emojis and unicode characters");
-    println!("  max-length        - Maximum length memo (800 bytes)");
-    println!("  too-long          - Memo exceeding maximum length (should fail)");
-    println!("  too-short         - Memo shorter than minimum length (should fail)");
-    println!("  nonexistent-group - Memo to non-existent group (should fail)");
-    println!("  custom            - Custom test with specified parameters");
+    println!("  simple-text         - Simple text message to existing group");
+    println!("  long-text           - Longer text message");
+    println!("  json-message        - JSON formatted message content");
+    println!("  emoji-text          - Message with emojis and unicode characters");
+    println!("  with-receiver       - Message with receiver field (@ mention)");
+    println!("  with-reply          - Message with reply_to_sig field (reply to message)");
+    println!("  max-length          - Maximum length message (512 chars)");
+    println!("  too-long-message    - Message exceeding maximum length (should fail)");
+    println!("  empty-message       - Empty message (should fail)");
+    println!("  invalid-category    - Memo with invalid category field (should fail)");
+    println!("  missing-category    - Memo missing category field (should fail)");
+    println!("  wrong-group-id      - Memo with wrong group_id field (should fail)");
+    println!("  wrong-sender        - Memo with wrong sender field (should fail)");
+    println!("  missing-group-id    - Memo missing group_id field (should fail)");
+    println!("  missing-sender      - Memo missing sender field (should fail)");
+    println!("  missing-message     - Memo missing message field (should fail)");
+    println!("  invalid-receiver    - Memo with invalid receiver format (should fail)");
+    println!("  invalid-reply-sig   - Memo with invalid reply signature format (should fail)");
+    println!("  nonexistent-group   - Message to non-existent group (should fail)");
+    println!("  custom              - Custom test with specified parameters");
     println!();
     println!("Optional parameters:");
-    println!("  [group_id]        - Target group ID (default: 0)");
+    println!("  [group_id]          - Target group ID (default: 0)");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-send-memo -- simple-text 0");
-    println!("  cargo run --bin test-memo-chat-send-memo -- json-memo 1");
+    println!("  cargo run --bin test-memo-chat-send-memo -- with-receiver 1");
+    println!("  cargo run --bin test-memo-chat-send-memo -- invalid-category 0");
     println!("  cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello, world!\"");
     println!();
     println!("Note: Make sure the target group exists before sending memos!");

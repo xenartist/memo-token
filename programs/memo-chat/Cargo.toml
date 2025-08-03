@@ -27,3 +27,4 @@ memo-burn = { path = "../memo-burn", features = ["cpi"] }
 serde = "1.0"
 serde_json = "1.0"
 sha2 = "0.10.8"
+bs58 = "0.5.1"
