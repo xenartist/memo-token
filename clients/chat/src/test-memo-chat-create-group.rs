@@ -467,14 +467,14 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 
 fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
     let mut memo_json = serde_json::json!({
-        "burned_amount": params.burn_amount * 1_000_000, // Convert to units
+        "operation": "create_group",
+        "burn_amount": params.burn_amount * 1_000_000, // Changed from burned_amount
         "group_id": group_id,
         "name": params.name,
         "description": params.description,
         "image": params.image,
         "tags": params.tags,
         "min_memo_interval": params.min_memo_interval,
-        "operation": "create_group",
         "timestamp": chrono::Utc::now().timestamp()
     });
     
@@ -515,7 +515,7 @@ fn analyze_unexpected_error(error_msg: &str) {
     } else if error_msg.contains("InvalidCategory") {
         println!("   Category field missing or not 'chat'");
     } else if error_msg.contains("BurnedAmountMismatch") {
-        println!("   Burned amount in memo doesn't match burn amount");
+        println!("   Burn amount in memo doesn't match burn amount");
     } else if error_msg.contains("GroupIdMismatch") {
         println!("   Group ID in memo doesn't match expected ID");
     } else if error_msg.contains("insufficient funds") {

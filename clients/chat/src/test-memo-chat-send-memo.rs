@@ -26,9 +26,10 @@ struct TestParams {
     pub test_description: String,  // Description of what this test validates
 }
 
-/// Generate properly formatted memo JSON with required fields (including category)
+/// Generate properly formatted memo JSON with required fields (including category and operation)
 fn generate_memo_json(group_id: u64, sender: &Pubkey, message: &str) -> String {
     serde_json::json!({
+        "operation": "send_message",
         "category": "chat",
         "group_id": group_id,
         "sender": sender.to_string(),
@@ -45,6 +46,7 @@ fn generate_memo_json_with_optional_fields(
     reply_to_sig: Option<&str>
 ) -> String {
     let mut memo_obj = serde_json::json!({
+        "operation": "send_message",
         "category": "chat",
         "group_id": group_id,
         "sender": sender.to_string(),
@@ -220,6 +222,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 test_description: "Custom test case".to_string(),
             }
         },
+        "missing-operation" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with missing operation field".to_string(),
+            should_succeed: false,
+            test_description: "Memo missing operation field (should fail)".to_string(),
+        },
+        "invalid-operation" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid operation field".to_string(),
+            should_succeed: false,
+            test_description: "Memo with invalid operation field (should fail)".to_string(),
+        },
         _ => {
             println!("Unknown test case: {}", test_case);
             print_usage();
@@ -254,6 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "invalid-category" => {
             // Create memo with wrong category
             serde_json::json!({
+                "operation": "send_message",
                 "category": "invalid", // Wrong category
                 "group_id": test_params.group_id,
                 "sender": payer.pubkey().to_string(),
@@ -263,6 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "missing-category" => {
             // Create memo without category field
             serde_json::json!({
+                "operation": "send_message",
                 "group_id": test_params.group_id,
                 "sender": payer.pubkey().to_string(),
                 "message": test_params.message_content
@@ -271,6 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "wrong-group-id" => {
             // Create memo with wrong group_id
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id + 1, // Wrong group ID
                 "sender": payer.pubkey().to_string(),
@@ -280,6 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "wrong-sender" => {
             // Create memo with wrong sender
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id,
                 "sender": "11111111111111111111111111111111", // Wrong sender
@@ -289,6 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "missing-group-id" => {
             // Create memo without group_id field
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "sender": payer.pubkey().to_string(),
                 "message": test_params.message_content
@@ -297,6 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "missing-sender" => {
             // Create memo without sender field
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id,
                 "message": test_params.message_content
@@ -305,6 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "missing-message" => {
             // Create memo without message field
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id,
                 "sender": payer.pubkey().to_string()
@@ -313,6 +334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "invalid-receiver" => {
             // Create memo with invalid receiver format
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id,
                 "sender": payer.pubkey().to_string(),
@@ -323,11 +345,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "invalid-reply-sig" => {
             // Create memo with invalid reply signature format
             serde_json::json!({
+                "operation": "send_message",
                 "category": "chat",
                 "group_id": test_params.group_id,
                 "sender": payer.pubkey().to_string(),
                 "message": test_params.message_content,
                 "reply_to_sig": "invalid_signature_format"
+            }).to_string()
+        },
+        "nonexistent-group" => {
+            // Create memo for non-existent group
+            serde_json::json!({
+                "operation": "send_message",
+                "category": "chat",
+                "group_id": 99999, // Non-existent group ID
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "missing-operation" => {
+            // Create memo without operation field
+            serde_json::json!({
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
+            }).to_string()
+        },
+        "invalid-operation" => {
+            // Create memo with wrong operation
+            serde_json::json!({
+                "operation": "invalid_operation",
+                "category": "chat",
+                "group_id": test_params.group_id,
+                "sender": payer.pubkey().to_string(),
+                "message": test_params.message_content
             }).to_string()
         },
         _ => {
@@ -608,6 +660,10 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Non-existent group detected");
     } else if error_msg.contains("MemoTooFrequent") {
         println!("✅ Correct: Memo sent too frequently detected");
+    } else if error_msg.contains("MissingOperationField") {
+        println!("✅ Correct: Missing operation field detected");
+    } else if error_msg.contains("InvalidOperation") {
+        println!("✅ Correct: Invalid operation detected");
     } else {
         println!("⚠️  Unexpected error type: {}", error_msg);
     }
@@ -647,6 +703,10 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Insufficient SOL balance for transaction fees");
     } else if error_msg.contains("InvalidTokenAccount") {
         println!("   Token account issue - check if account exists and belongs to correct mint");
+    } else if error_msg.contains("MissingOperationField") {
+        println!("   Memo JSON missing required operation field");
+    } else if error_msg.contains("InvalidOperation") {
+        println!("   Operation field does not match expected operation for this instruction");
     } else {
         println!("   {}", error_msg);
     }
@@ -712,6 +772,8 @@ fn print_usage() {
     println!("  invalid-reply-sig   - Memo with invalid reply signature format (should fail)");
     println!("  nonexistent-group   - Message to non-existent group (should fail)");
     println!("  custom              - Custom test with specified parameters");
+    println!("  missing-operation   - Memo missing operation field (should fail)");
+    println!("  invalid-operation   - Memo with invalid operation field (should fail)");
     println!();
     println!("Optional parameters:");
     println!("  [group_id]          - Target group ID (default: 0)");
