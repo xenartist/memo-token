@@ -174,8 +174,8 @@ pub mod memo_chat {
         let signer_seeds = [group_seeds];
 
         // Manual instruction construction for process_mint_to (similar to successful test client)
-        use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
-        use sha2::{Sha256, Digest};
+        // use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
+        // use sha2::{Sha256, Digest};
         
         let recipient = ctx.accounts.sender.key();
         
@@ -252,8 +252,8 @@ pub mod memo_chat {
             return Err(ErrorCode::MemoRequired.into());
         }
 
-        // Validate memo contains correct amount
-        validate_memo_amount(&memo_data, amount)?;
+        // Validate memo contains correct amount and group_id
+        validate_memo_for_burn(&memo_data, group_id, amount)?;
 
         // Call memo-burn contract to burn tokens
         let cpi_program = ctx.accounts.memo_burn_program.to_account_info();
@@ -318,6 +318,16 @@ fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_
             msg!("JSON parsing failed: {}", e);
             ErrorCode::InvalidMemoFormat
         })?;
+
+    // Extract and validate operation field (must match expected operation)
+    let operation = json_data["operation"]
+        .as_str()
+        .ok_or(ErrorCode::MissingOperationField)?;
+    
+    if operation != "create_group" {
+        msg!("Invalid operation: expected 'create_group', got '{}'", operation);
+        return Err(ErrorCode::InvalidOperation.into());
+    }
 
     // Extract and validate category field (must be "chat")
     let category = json_data["category"]
@@ -447,8 +457,8 @@ fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_
     })
 }
 
-/// Validate memo amount (copied from memo-burn)
-fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
+/// Validate memo for burn operation (enhanced with operation and group_id validation)
+fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amount: u64) -> Result<()> {
     // Enhanced UTF-8 validation
     let memo_str = match std::str::from_utf8(memo_data) {
         Ok(s) => s,
@@ -474,6 +484,16 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     let json_data: Value = serde_json::from_str(&clean_str)
         .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
+    // Extract and validate operation field (must match expected operation)
+    let operation = json_data["operation"]
+        .as_str()
+        .ok_or(ErrorCode::MissingOperationField)?;
+    
+    if operation != "like_group" {
+        msg!("Invalid operation: expected 'like_group', got '{}'", operation);
+        return Err(ErrorCode::InvalidOperation.into());
+    }
+
     // Validate category field (required) - must be "chat"
     let category = json_data["category"]
         .as_str()
@@ -482,6 +502,30 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     if category != "chat" {
         msg!("Invalid category: expected 'chat', got '{}'", category);
         return Err(ErrorCode::InvalidCategory.into());
+    }
+
+    // Extract and validate group_id field (required for burn operation)
+    let memo_group_id = match &json_data["group_id"] {
+        Value::Number(n) => {
+            if let Some(int_val) = n.as_u64() {
+                int_val
+            } else {
+                return Err(ErrorCode::InvalidGroupIdFormat.into());
+            }
+        },
+        Value::String(s) => {
+            if let Ok(int_val) = s.parse::<u64>() {
+                int_val
+            } else {
+                return Err(ErrorCode::InvalidGroupIdFormat.into());
+            }
+        },
+        _ => return Err(ErrorCode::MissingGroupIdField.into()),
+    };
+    
+    if memo_group_id != expected_group_id {
+        msg!("Group ID mismatch: memo contains {}, expected {}", memo_group_id, expected_group_id);
+        return Err(ErrorCode::GroupIdMismatch.into());
     }
 
     // Extract burned_amount from memo
@@ -513,7 +557,8 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     }
 
     let token_count = expected_amount / 1_000_000;
-    msg!("Burned amount validation passed: category=chat, {} tokens ({} units)", token_count, expected_amount);
+    msg!("Burn memo validation passed: operation=like_group, category=chat, group_id={}, {} tokens ({} units)", 
+         expected_group_id, token_count, expected_amount);
     Ok(())
 }
 
@@ -546,6 +591,16 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
             msg!("JSON parsing failed: {}", e);
             ErrorCode::InvalidMemoFormat
         })?;
+
+    // 0. Validate operation field (required) - must be "send_message"
+    let operation = json_data["operation"]
+        .as_str()
+        .ok_or(ErrorCode::MissingOperationField)?;
+    
+    if operation != "send_message" {
+        msg!("Invalid operation: expected 'send_message', got '{}'", operation);
+        return Err(ErrorCode::InvalidOperation.into());
+    }
 
     // 0. Validate category field (required) - must be "chat"
     let category = json_data["category"]
@@ -1139,4 +1194,10 @@ pub enum ErrorCode {
     
     #[msg("Invalid reply signature format in memo. Must be a valid base58-encoded signature string.")]
     InvalidReplySignatureFormat,
+    
+    #[msg("Missing operation field in memo JSON.")]
+    MissingOperationField,
+    
+    #[msg("Invalid operation: Operation does not match the expected operation for this instruction.")]
+    InvalidOperation,
 }
