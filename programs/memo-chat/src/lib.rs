@@ -49,8 +49,8 @@ pub mod memo_chat {
         expected_group_id: u64, // The group_id that client expects to create
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount
-        if burn_amount < 1_000_000 {
+        // Validate burn amount - require at least 42069 tokens for group creation
+        if burn_amount < 42069_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
@@ -1141,7 +1141,7 @@ pub enum ErrorCode {
     #[msg("Invalid group ID format: Group ID must be a valid u64 number.")]
     InvalidGroupIdFormat,
 
-    #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least 42069 tokens (42,069,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
 
     #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
