@@ -4,7 +4,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::Token2022;
-use memo_mint::cpi::accounts::ProcessMintTo;
 use memo_mint::program::MemoMint;
 use memo_burn::cpi::accounts::ProcessBurn;
 use memo_burn::program::MemoBurn;
@@ -749,32 +748,6 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
     msg!("Memo validation passed: {}", log_parts.join(", "));
 
     Ok(message)
-}
-
-/// Parse memo content for display (simpler parsing for send memo)
-fn parse_memo_content(memo_data: &[u8]) -> Result<String> {
-    // Enhanced UTF-8 validation
-    let memo_str = match std::str::from_utf8(memo_data) {
-        Ok(s) => s,
-        Err(e) => {
-            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        }
-    };
-    
-    // Basic security check
-    if memo_str.contains('\0') {
-        msg!("Memo contains null characters");
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
-    // For display, just return cleaned string
-    let clean_str = memo_str
-        .trim_matches('"')
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\");
-    
-    Ok(clean_str)
 }
 
 /// Check for memo instruction with enhanced validation (following memo-burn pattern)
