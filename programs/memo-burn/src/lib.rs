@@ -16,19 +16,25 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = anchor_lang::solana_program::pubkey!(
 pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
 
+// Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
+pub const DECIMAL_FACTOR: u64 = 1_000_000;
+
+// Minimum burn requirement (1 token)  
+pub const MIN_BURN_TOKENS: u64 = 1;
+
 #[program]
 pub mod memo_burn {
     use super::*;
 
     /// Process burn operation with comma-separated memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
-        // Check burn amount is at least 1 token and is a multiple of 1_000_000 (decimal=6)
-        if amount < 1_000_000 {
+        // Check burn amount is at least 1 token and is a multiple of DECIMAL_FACTOR (decimal=6)
+        if amount < DECIMAL_FACTOR * MIN_BURN_TOKENS {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
-        // Check burn amount is a multiple of 1_000_000 (decimal=6)
-        if amount % 1_000_000 != 0 {
+        // Check burn amount is a multiple of DECIMAL_FACTOR (decimal=6)
+        if amount % DECIMAL_FACTOR != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
@@ -55,7 +61,7 @@ pub mod memo_burn {
             amount,
         )?;
 
-        let token_count = amount / 1_000_000;
+        let token_count = amount / DECIMAL_FACTOR;
         msg!("Successfully burned {} tokens ({} units) with memo validation", token_count, amount);
         
         Ok(())
