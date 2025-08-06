@@ -62,71 +62,51 @@ pub mod memo_burn {
     }
 }
 
-/// Validate memo amount using comma-separated format: "amount,{user_data}"
+/// optimized version: minimize memory allocation and validation
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    // Basic length check (minimum: "X," where X is at least 1 digit)
     if memo_data.len() < 2 {
-        msg!("Memo too short, minimum format: 'amount,'");
         return Err(ErrorCode::InvalidMemoFormat.into());
     }
     
-    // UTF-8 validation
-    let memo_str = match std::str::from_utf8(memo_data) {
-        Ok(s) => s,
-        Err(e) => {
-            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
+    // fast scan: find comma and validate number part
+    let mut comma_pos = None;
+    for (i, &byte) in memo_data.iter().enumerate() {
+        if byte == 0 {
             return Err(ErrorCode::InvalidMemoFormat.into());
         }
-    };
-    
-    // Basic security check (prevent null characters)
-    if memo_str.contains('\0') {
-        msg!("Memo contains null characters");
-        return Err(ErrorCode::InvalidMemoFormat.into());
+        if byte == b',' {
+            comma_pos = Some(i);
+            break;
+        }
+        // only allow ASCII digits in the number part
+        if !byte.is_ascii_digit() {
+            return Err(ErrorCode::InvalidBurnAmountFormat.into());
+        }
     }
     
-    // Find the first comma separator
-    match memo_str.find(',') {
-        Some(comma_pos) => {
-            // Extract the amount part (before comma)
-            let amount_str = memo_str[..comma_pos].trim();
-            
-            // Validate amount string is not empty
-            if amount_str.is_empty() {
-                msg!("Missing burn amount before comma");
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
-            }
-            
-            // Parse amount as u64
-            match amount_str.parse::<u64>() {
-                Ok(memo_amount) => {
-                    // Verify amounts match
-                    if memo_amount == expected_amount {
-                        let token_count = expected_amount / 1_000_000;
-                        let user_data_len = memo_str.len() - comma_pos - 1;
-                        
-                        msg!("Burn amount validation passed: {} tokens ({} units), user data: {} bytes", 
-                             token_count, expected_amount, user_data_len);
-                        Ok(())
-                    } else {
-                        let memo_tokens = memo_amount / 1_000_000;
-                        let expected_tokens = expected_amount / 1_000_000;
-                        
-                        msg!("Burn amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
-                             memo_tokens, memo_amount, expected_tokens, expected_amount);
-                        Err(ErrorCode::BurnAmountMismatch.into())
-                    }
-                },
-                Err(_) => {
-                    msg!("Invalid burn amount format: '{}' is not a valid number", amount_str);
-                    Err(ErrorCode::InvalidBurnAmountFormat.into())
-                }
-            }
-        },
-        None => {
-            msg!("Missing comma separator in memo. Expected format: 'amount,user_data'");
-            Err(ErrorCode::InvalidMemoFormat.into())
+    let comma_pos = comma_pos.ok_or(ErrorCode::InvalidMemoFormat)?;
+    if comma_pos == 0 {
+        return Err(ErrorCode::InvalidBurnAmountFormat.into());
+    }
+    
+    // manually parse the number, avoid UTF-8 conversion
+    let mut amount: u64 = 0;
+    for &byte in &memo_data[..comma_pos] {
+        if byte.is_ascii_digit() {
+            amount = amount.checked_mul(10)
+                .and_then(|a| a.checked_add((byte - b'0') as u64))
+                .ok_or(ErrorCode::InvalidBurnAmountFormat)?;
+        } else {
+            return Err(ErrorCode::InvalidBurnAmountFormat.into());
         }
+    }
+    
+    if amount == expected_amount {
+        msg!("Burn amount validation passed: {} units", expected_amount);
+        Ok(())
+    } else {
+        msg!("Burn amount mismatch: memo {} vs expected {}", amount, expected_amount);
+        Err(ErrorCode::BurnAmountMismatch.into())
     }
 }
 
@@ -163,39 +143,40 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     Ok((true, memo_data.to_vec()))
 }
 
-/// Check for memo instruction with length validation
+/// Check for memo instruction at REQUIRED index 1
+/// 
+/// IMPORTANT: This contract enforces a strict instruction ordering:
+/// - Index 0: Compute budget instruction (optional)
+/// - Index 1: SPL Memo instruction (REQUIRED)
+/// - Index 2+: memo-burn::process_burn (other instructions)
+///
+/// Any deviation from this pattern will result in transaction failure.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
-    // First check the most likely position (index 1)
-    if current_index > 1 {
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
-            Ok(ix) => {
-                if ix.program_id == MEMO_PROGRAM_ID {
-                    return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-                }
-            },
-            Err(_) => {}
-        }
+    // Ensure there are enough instructions (at least index 1 must exist)
+    if current_index <= 1 {
+        msg!("Memo instruction must be at index 1, but transaction only has {} instructions", current_index);
+        return Ok((false, vec![]));
     }
     
-    // If not found at index 1, check other positions as fallback
-    for i in 0..current_index {
-        if i == 1 { continue; } // Skip index 1 as we already checked it
-        
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
-            Ok(ix) => {
-                if ix.program_id == MEMO_PROGRAM_ID {
-                    return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-                }
-            },
-            Err(_) => { continue; }
+    // Check fixed position: index 1
+    match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1, instructions) {
+        Ok(ix) => {
+            if ix.program_id == MEMO_PROGRAM_ID {
+                msg!("Found memo instruction at required index 1");
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+            } else {
+                msg!("Instruction at index 1 is not a memo (program_id: {})", ix.program_id);
+                Ok((false, vec![]))
+            }
+        },
+        Err(e) => {
+            msg!("Failed to load instruction at required index 1: {:?}", e);
+            Ok((false, vec![]))
         }
     }
-    
-    // No valid memo found
-    Ok((false, vec![]))
 }
 
 #[derive(Accounts)]
