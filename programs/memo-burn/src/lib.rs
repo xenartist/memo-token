@@ -5,19 +5,22 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
-use std::str::FromStr;
-use serde_json::Value;
+use spl_memo::ID as MEMO_PROGRAM_ID;
 
 declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
 
-// Authorized mint address
-pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
+// Authorized mint pubkey
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = anchor_lang::solana_program::pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+
+// Memo length constraints
+pub const MEMO_MIN_LENGTH: usize = 69;
+pub const MEMO_MAX_LENGTH: usize = 800;
 
 #[program]
 pub mod memo_burn {
     use super::*;
 
-    /// Process burn operation with enhanced validation
+    /// Process burn operation with comma-separated memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
         // Check burn amount is at least 1 token and is a multiple of 1_000_000 (decimal=6)
         if amount < 1_000_000 {
@@ -29,7 +32,7 @@ pub mod memo_burn {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
-        // Check memo instruction with length validation (69-800 bytes)
+        // Check memo instruction with length validation
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
         if !memo_found {
             msg!("No memo instruction found");
@@ -59,9 +62,15 @@ pub mod memo_burn {
     }
 }
 
-/// Extract and validate memo contains correct amount (in lamports/units)
+/// Validate memo amount using comma-separated format: "amount,{user_data}"
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    // Enhanced UTF-8 validation (simple but effective)
+    // Basic length check (minimum: "X," where X is at least 1 digit)
+    if memo_data.len() < 2 {
+        msg!("Memo too short, minimum format: 'amount,'");
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
+    // UTF-8 validation
     let memo_str = match std::str::from_utf8(memo_data) {
         Ok(s) => s,
         Err(e) => {
@@ -70,62 +79,92 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
         }
     };
     
-    // Basic security check (prevent obvious malicious input)
+    // Basic security check (prevent null characters)
     if memo_str.contains('\0') {
         msg!("Memo contains null characters");
         return Err(ErrorCode::InvalidMemoFormat.into());
     }
     
-    // Clean the string (handle JSON escaping)
-    let clean_str = memo_str
-        .trim_matches('"')
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\");
-    
-    // Parse as JSON
-    let json_data: Value = serde_json::from_str(&clean_str)
-        .map_err(|_| ErrorCode::InvalidMemoFormat)?;
-
-    // Extract burn_amount from memo (expecting exact units/lamports)
-    let memo_burn_amount = match &json_data["burn_amount"] {
-        Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val // Burn amount in units (lamports)
-            } else {
+    // Find the first comma separator
+    match memo_str.find(',') {
+        Some(comma_pos) => {
+            // Extract the amount part (before comma)
+            let amount_str = memo_str[..comma_pos].trim();
+            
+            // Validate amount string is not empty
+            if amount_str.is_empty() {
+                msg!("Missing burn amount before comma");
                 return Err(ErrorCode::InvalidBurnAmountFormat.into());
             }
-        },
-        Value::String(s) => {
-            // Parse string as units (lamports)
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
+            
+            // Parse amount as u64
+            match amount_str.parse::<u64>() {
+                Ok(memo_amount) => {
+                    // Verify amounts match
+                    if memo_amount == expected_amount {
+                        let token_count = expected_amount / 1_000_000;
+                        let user_data_len = memo_str.len() - comma_pos - 1;
+                        
+                        msg!("Burn amount validation passed: {} tokens ({} units), user data: {} bytes", 
+                             token_count, expected_amount, user_data_len);
+                        Ok(())
+                    } else {
+                        let memo_tokens = memo_amount / 1_000_000;
+                        let expected_tokens = expected_amount / 1_000_000;
+                        
+                        msg!("Burn amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
+                             memo_tokens, memo_amount, expected_tokens, expected_amount);
+                        Err(ErrorCode::BurnAmountMismatch.into())
+                    }
+                },
+                Err(_) => {
+                    msg!("Invalid burn amount format: '{}' is not a valid number", amount_str);
+                    Err(ErrorCode::InvalidBurnAmountFormat.into())
+                }
             }
         },
-        _ => return Err(ErrorCode::MissingBurnAmountField.into()),
-    };
-
-    // Check if memo burn amount matches expected burn amount (both in units)
-    if memo_burn_amount != expected_amount {
-        let memo_tokens = memo_burn_amount / 1_000_000;
-        let expected_tokens = expected_amount / 1_000_000;
-        msg!("Burn amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
-             memo_tokens, memo_burn_amount, expected_tokens, expected_amount);
-        return Err(ErrorCode::BurnAmountMismatch.into());
+        None => {
+            msg!("Missing comma separator in memo. Expected format: 'amount,user_data'");
+            Err(ErrorCode::InvalidMemoFormat.into())
+        }
     }
-
-    let token_count = expected_amount / 1_000_000;
-    msg!("Burn amount validation passed: {} tokens ({} units)", token_count, expected_amount);
-    Ok(())
 }
 
-/// Check for memo instruction with length validation (69-800 bytes)
-fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
-    // SPL Memo program ID
-    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
-        .expect("Failed to parse memo program ID");
+/// Validate memo data length and return result
+fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
+    let memo_length = memo_data.len();
     
+    // Ensure data is not empty
+    if memo_data.is_empty() {
+        msg!("Memo data is empty");
+        return Err(ErrorCode::MemoTooShort.into());
+    }
+    
+    // Check minimum length requirement
+    if memo_length < min_length {
+        msg!("Memo too short: {} bytes (minimum: {})", memo_length, min_length);
+        return Err(ErrorCode::MemoTooShort.into());
+    }
+    
+    // Check maximum length requirement
+    if memo_length > max_length {
+        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
+        return Err(ErrorCode::MemoTooLong.into());
+    }
+    
+    // Check for null bytes (security)
+    if memo_data.iter().any(|&b| b == 0) {
+        msg!("Memo contains null bytes");
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
+    // Length is valid, return memo data
+    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
+    Ok((true, memo_data.to_vec()))
+}
+
+/// Check for memo instruction with length validation
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
@@ -133,20 +172,8 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
     if current_index > 1 {
         match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
             Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    // Validate memo length (69-800 bytes)
-                    let memo_length = ix.data.len();
-                    if memo_length < 69 {
-                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
-                        return Err(ErrorCode::MemoTooShort.into());
-                    }
-                    if memo_length > 800 {
-                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
-                        return Err(ErrorCode::MemoTooLong.into());
-                    }
-                    
-                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
-                    return Ok((true, ix.data.to_vec()));
+                if ix.program_id == MEMO_PROGRAM_ID {
+                    return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
                 }
             },
             Err(_) => {}
@@ -159,20 +186,8 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
         
         match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
             Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    // Validate memo length (69-800 bytes)
-                    let memo_length = ix.data.len();
-                    if memo_length < 69 {
-                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
-                        return Err(ErrorCode::MemoTooShort.into());
-                    }
-                    if memo_length > 800 {
-                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
-                        return Err(ErrorCode::MemoTooLong.into());
-                    }
-                    
-                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
-                    return Ok((true, ix.data.to_vec()));
+                if ix.program_id == MEMO_PROGRAM_ID {
+                    return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
                 }
             },
             Err(_) => { continue; }
@@ -190,7 +205,7 @@ pub struct ProcessBurn<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
@@ -213,7 +228,7 @@ pub enum ErrorCode {
     #[msg("Transaction must include a memo.")]
     MemoRequired,
 
-    #[msg("Invalid memo format. Expected JSON format.")]
+    #[msg("Invalid memo format. Expected format: 'burn_amount,user_data'")]
     InvalidMemoFormat,
     
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
@@ -231,13 +246,10 @@ pub enum ErrorCode {
     #[msg("Unauthorized token account. User must own the token account.")]
     UnauthorizedTokenAccount,
 
-    #[msg("Missing burn_amount field in memo JSON.")]
-    MissingBurnAmountField,
-
-    #[msg("Invalid burn_amount format in memo. Must be a positive integer in units.")]
+    #[msg("Invalid burn amount format. Must be a positive integer in units.")]
     InvalidBurnAmountFormat,
 
-    #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]
+    #[msg("Burn amount mismatch. The amount in memo must match the burn amount (in units).")]
     BurnAmountMismatch,
 
     #[msg("Memo too short (minimum 69 bytes).")]

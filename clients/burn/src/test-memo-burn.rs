@@ -12,7 +12,6 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
-use serde_json;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -299,140 +298,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Option<usize>) -> Result<String, String> {
     match test_type {
         "valid-memo" => {
-            let memo_json = serde_json::json!({
-                "message": "Testing memo-burn contract with valid memo length between 69-800 bytes",
-                "burned_amount": burn_amount,
-                "operation": "burn",
-                "timestamp": chrono::Utc::now().timestamp()
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
+            // format: "amount,user_data"
+            let user_data = "Testing memo-burn contract with valid memo length between 69-800 bytes for burn operation";
+            let memo = format!("{},{}", burn_amount, user_data);
+            
+            // ensure length is in valid range
+            if memo.len() < 69 {
+                let padding = "x".repeat(69 - memo.len());
+                Ok(format!("{},{}{}", burn_amount, user_data, padding))
+            } else if memo.len() > 800 {
+                let available_len = 800 - burn_amount.to_string().len() - 1; // -1 for comma
+                let truncated_data = &user_data[..std::cmp::min(user_data.len(), available_len)];
+                Ok(format!("{},{}", burn_amount, truncated_data))
+            } else {
+                Ok(memo)
+            }
         },
         "memo-69" => {
-            // Create a memo that's exactly 69 bytes
-            let base_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "msg": ""
-            });
-            let base_str = serde_json::to_string(&base_json).unwrap();
-            let needed_chars = 69 - base_str.len() + 2; // +2 for quotes around msg
-            let padding = "x".repeat(needed_chars);
-            
-            let memo_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "msg": padding
-            });
-            let result = serde_json::to_string(&memo_json).unwrap();
+            // create memo exactly 69 bytes
+            let amount_part = format!("{},", burn_amount);
+            let needed_chars = 69 - amount_part.len();
+            let user_data = "x".repeat(needed_chars);
+            let result = format!("{}{}", amount_part, user_data);
             assert_eq!(result.as_bytes().len(), 69, "Memo should be exactly 69 bytes");
             Ok(result)
         },
         "memo-800" => {
-            // Create a memo that's exactly 800 bytes
-            let base_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "message": "",
-                "operation": "burn"
-            });
-            let base_str = serde_json::to_string(&base_json).unwrap();
-            let needed_chars = 800 - base_str.len() + 2; // +2 for quotes around message
-            let padding = "x".repeat(needed_chars);
-            
-            let memo_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "message": padding,
-                "operation": "burn"
-            });
-            let result = serde_json::to_string(&memo_json).unwrap();
+            // create memo exactly 800 bytes
+            let amount_part = format!("{},", burn_amount);
+            let needed_chars = 800 - amount_part.len();
+            let user_data = "x".repeat(needed_chars);
+            let result = format!("{}{}", amount_part, user_data);
             assert_eq!(result.as_bytes().len(), 800, "Memo should be exactly 800 bytes");
             Ok(result)
         },
         "short-memo" => {
-            // Create a memo shorter than 69 bytes (should fail)
-            let memo_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "msg": "short"
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
+            // create memo less than 69 bytes (should fail)
+            Ok(format!("{},short", burn_amount))
         },
         "long-memo" => {
-            // Create a memo longer than 800 bytes (should fail)
-            let long_message = "x".repeat(850);
-            let memo_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "message": long_message,
-                "operation": "burn"
-            });
-            Ok(serde_json::to_string(&memo_json).unwrap())
+            // create memo more than 800 bytes (should fail)
+            let long_data = "x".repeat(850);
+            Ok(format!("{},{}", burn_amount, long_data))
         },
         "custom-length" => {
-            // Create a memo with custom specified length
+            // create memo with specified length
             let target_length = custom_length.unwrap_or(100);
+            let amount_part = format!("{},", burn_amount);
             
-            let base_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "operation": "burn",
-                "test_type": "custom-length",
-                "message": ""
-            });
-            let base_str = serde_json::to_string(&base_json).unwrap();
-            
-            if target_length <= base_str.len() {
-                // If target is smaller than base structure, create minimal memo
-                let memo_json = serde_json::json!({
-                    "burned_amount": burn_amount,
-                    "msg": "x".repeat(std::cmp::max(1, target_length.saturating_sub(25)))
-                });
-                let result = serde_json::to_string(&memo_json).unwrap();
-                
-                // Trim or pad to exact length if possible
-                if result.len() > target_length {
-                    return Ok(format!("{{\"burned_amount\":{},\"msg\":\"{}\"}}", 
-                        burn_amount, 
-                        "x".repeat(std::cmp::max(1, target_length.saturating_sub(format!("{{\"burned_amount\":{},\"msg\":\"\"}}", burn_amount).len())))
-                    ));
+            if target_length <= amount_part.len() {
+                // if target length is too small, create minimal memo
+                if target_length < 2 {
+                    Ok("1,".to_string())
                 } else {
-                    return Ok(result);
+                    let minimal_amount = target_length - 2; // leave space for ",x"
+                    Ok(format!("{},x", "1".repeat(std::cmp::max(1, minimal_amount))))
                 }
-            }
-            
-            // Calculate how much padding we need
-            let needed_chars = target_length - base_str.len() + 2; // +2 for quotes around message
-            let padding = "x".repeat(needed_chars);
-            
-            let memo_json = serde_json::json!({
-                "burned_amount": burn_amount,
-                "operation": "burn",
-                "test_type": "custom-length",
-                "message": padding
-            });
-            let result = serde_json::to_string(&memo_json).unwrap();
-            
-            // Fine-tune to exact length
-            let current_len = result.as_bytes().len();
-            if current_len != target_length {
-                let diff = target_length as i32 - current_len as i32;
-                let adjusted_padding = if diff > 0 {
-                    padding + &"x".repeat(diff as usize)
-                } else {
-                    padding[..std::cmp::max(0, padding.len() as i32 + diff) as usize].to_string()
-                };
-                
-                let final_memo_json = serde_json::json!({
-                    "burned_amount": burn_amount,
-                    "operation": "burn",
-                    "test_type": "custom-length",
-                    "message": adjusted_padding
-                });
-                let final_result = serde_json::to_string(&final_memo_json).unwrap();
-                
-                println!("Attempted to create {}-byte memo, actual length: {} bytes", 
-                    target_length, final_result.as_bytes().len());
-                Ok(final_result)
             } else {
+                let needed_chars = target_length - amount_part.len();
+                let user_data = "x".repeat(needed_chars);
+                let result = format!("{}{}", amount_part, user_data);
+                
+                println!("Generated {}-byte memo, actual length: {} bytes", 
+                    target_length, result.as_bytes().len());
                 Ok(result)
             }
         },
         "no-memo" => {
-            // Return error to indicate no memo should be included
+            // return error to indicate no memo should be included
             Err("no-memo".to_string())
         },
         _ => {
@@ -513,13 +446,13 @@ fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
     println!("📊 Custom length analysis for {} bytes:", memo_length);
     
     if memo_length < 69 {
-        if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+        if error_msg.contains("Custom(6010)") || error_msg.contains("MemoTooShort") {
             println!("✅ Expected: Contract correctly rejects memo < 69 bytes");
         } else {
             println!("⚠️  Unexpected error for short memo: {}", error_msg);
         }
     } else if memo_length > 800 {
-        if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
+        if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
             println!("✅ Expected: Contract correctly rejects memo > 800 bytes");
         } else if error_msg.contains("Program failed to complete") {
             println!("⚠️  System limit: Memo might exceed system-level limits");
@@ -548,14 +481,14 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
             }
         },
         "short-memo" => {
-            if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+            if error_msg.contains("Custom(6010)") || error_msg.contains("MemoTooShort") {
                 println!("✅ Correct error: Contract properly rejects memo < 69 bytes");
             } else {
                 println!("⚠️  Unexpected error for short-memo test: {}", error_msg);
             }
         },
         "long-memo" => {
-            if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
+            if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
                 println!("✅ Correct error: Contract properly rejects memo > 800 bytes");
             } else {
                 println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
@@ -571,16 +504,18 @@ fn print_error_guidance(error_msg: &str) {
     println!("\n=== ERROR ANALYSIS ===");
     
     if error_msg.contains("Custom(6000)") || error_msg.contains("MemoRequired") {
-        println!("💡 Missing Memo: This contract requires a memo instruction at index 1.");
-    } else if error_msg.contains("Custom(6004)") || error_msg.contains("MemoTooShort") {
+        println!("💡 Missing Memo: This contract requires a memo instruction.");
+    } else if error_msg.contains("Custom(6010)") || error_msg.contains("MemoTooShort") {
         println!("💡 Memo Too Short: Memo must be at least 69 bytes long.");
-    } else if error_msg.contains("Custom(6008)") || error_msg.contains("MemoTooLong") {
+    } else if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
         println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
-    } else if error_msg.contains("Custom(6009)") || error_msg.contains("BurnedAmountMismatch") {
-        println!("💡 Burned Amount Mismatch: The burned_amount field in memo doesn't match burn amount.");
-    } else if error_msg.contains("Custom(6007)") || error_msg.contains("MissingBurnedAmountField") {
-        println!("💡 Missing Burned Amount: Memo JSON must include a 'burned_amount' field.");
-    } else if error_msg.contains("Custom(6005)") || error_msg.contains("UnauthorizedMint") {
+    } else if error_msg.contains("Custom(6001)") || error_msg.contains("InvalidMemoFormat") {
+        println!("💡 Invalid Memo Format: Expected format 'amount,user_data'");
+    } else if error_msg.contains("Custom(6005)") || error_msg.contains("BurnAmountMismatch") {
+        println!("💡 Burn Amount Mismatch: Amount in memo must match actual burn amount.");
+    } else if error_msg.contains("Custom(6004)") || error_msg.contains("InvalidBurnAmountFormat") {
+        println!("💡 Invalid Amount Format: Amount before comma must be a valid number.");
+    } else if error_msg.contains("Custom(6003)") || error_msg.contains("UnauthorizedMint") {
         println!("💡 Wrong Mint: Only authorized mint can be used.");
         println!("   Expected: HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
     } else {
