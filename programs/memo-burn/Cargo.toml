@@ -23,4 +23,3 @@ anchor-debug = []
 anchor-lang = "0.31.1"
 anchor-spl = "0.31.1"
 spl-memo = "6.0"
-serde_json = "1.0"

@@ -5,12 +5,13 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
+use anchor_lang::solana_program::pubkey;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
 declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
 
 // Authorized mint pubkey
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = anchor_lang::solana_program::pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // Memo length constraints
 pub const MEMO_MIN_LENGTH: usize = 69;
