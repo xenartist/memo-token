@@ -16,6 +16,10 @@ name = "test-memo-batch-mint"
 path = "mint/src/test-memo-batch-mint.rs"
 
 [[bin]]
+name = "pen-test-memo-mint"
+path = "mint/src/pen-test-memo-mint.rs"
+
+[[bin]]
 name = "test-memo-burn"
 path = "burn/src/test-memo-burn.rs"
 
