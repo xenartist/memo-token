@@ -35,7 +35,7 @@ pub const MIN_BURN_TOKENS: u64 = 1;
 pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct BurnMemoBorsh {
+pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
@@ -67,14 +67,14 @@ pub mod memo_burn {
         // Check memo instruction with length validation
         let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
         if !memo_found {
-            msg!("No memo instruction found");
             return Err(ErrorCode::MemoRequired.into());
         }
 
         // Validate Borsh memo contains correct amount matching the burn amount
         validate_memo_amount(&memo_data, amount)?;
 
-        // Burn tokens
+        let token_count = amount / DECIMAL_FACTOR;
+
         token_2022::burn(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -87,8 +87,8 @@ pub mod memo_burn {
             amount,
         )?;
 
-        let token_count = amount / DECIMAL_FACTOR;
-        msg!("Successfully burned {} tokens ({} units) with Borsh memo validation", token_count, amount);
+        msg!("Successfully burned {} tokens ({} units) with Borsh memo validation", 
+             token_count, amount);
         
         Ok(())
     }
@@ -97,9 +97,9 @@ pub mod memo_burn {
 /// validate Borsh-formatted memo data
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     // deserialize Borsh data
-    let burn_memo = BurnMemoBorsh::try_from_slice(memo_data)
-        .map_err(|e| {
-            msg!("Borsh deserialization failed: {}", e);
+    let burn_memo = BurnMemo::try_from_slice(memo_data)
+        .map_err(|_| {
+            msg!("Invalid memo format");
             ErrorCode::InvalidMemoFormat
         })?;
     
@@ -225,7 +225,7 @@ pub enum ErrorCode {
     #[msg("Transaction must include a memo.")]
     MemoRequired,
 
-    #[msg("Invalid memo format. Expected Borsh-serialized BurnMemoBorsh structure.")]
+    #[msg("Invalid memo format. Expected Borsh-serialized structure.")]
     InvalidMemoFormat,
     
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
