@@ -18,12 +18,13 @@ pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
 
 // Borsh serialization fixed overhead calculation
+const BORSH_U8_SIZE: usize = 1;         // version (u8)
 const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
 const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
-const BORSH_FIXED_OVERHEAD: usize = BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
+const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
 
 // maximum user data length = memo maximum length - borsh fixed overhead
-pub const MAX_USER_DATA_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 12 = 788
+pub const MAX_USER_DATA_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
@@ -34,12 +35,18 @@ pub const MIN_BURN_TOKENS: u64 = 1;
 // Maximum burn per transaction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
 pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 
+// Current version of BurnMemo structure
+pub const BURN_MEMO_VERSION: u8 = 1;
+
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct BurnMemo {
+    /// version of the BurnMemo structure (for future compatibility)
+    pub version: u8,
+    
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// user data (variable length, max 788 bytes)
+    /// user data (variable length, max 787 bytes)
     pub user_data: Vec<u8>,
 }
 
@@ -103,6 +110,13 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
             ErrorCode::InvalidMemoFormat
         })?;
     
+    // validate version compatibility
+    if burn_memo.version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", 
+             burn_memo.version, BURN_MEMO_VERSION);
+        return Err(ErrorCode::UnsupportedMemoVersion.into());
+    }
+    
     // validate burn amount matches
     if burn_memo.burn_amount != expected_amount {
         msg!("Burn amount mismatch: memo {} vs expected {}", 
@@ -117,8 +131,8 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
         return Err(ErrorCode::UserDataTooLong.into());
     }
     
-    msg!("Borsh memo validation passed: {} units, user_data: {} bytes (max: {})", 
-         expected_amount, burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
+    msg!("Borsh memo validation passed: version {}, {} units, user_data: {} bytes (max: {})", 
+         burn_memo.version, expected_amount, burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
     
     // record user_data preview
     if !burn_memo.user_data.is_empty() {
@@ -227,6 +241,9 @@ pub enum ErrorCode {
 
     #[msg("Invalid memo format. Expected Borsh-serialized structure.")]
     InvalidMemoFormat,
+
+    #[msg("Unsupported memo version. Please use the correct memo structure version.")]
+    UnsupportedMemoVersion,
     
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
@@ -255,6 +272,6 @@ pub enum ErrorCode {
     #[msg("Memo too long (maximum 800 bytes).")]
     MemoTooLong,
     
-    #[msg("User data too long. (maximum 788 bytes).")]
+    #[msg("User data too long. (maximum 787 bytes).")]
     UserDataTooLong,
 }

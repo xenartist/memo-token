@@ -20,9 +20,16 @@ use spl_token_2022::id as token_2022_id;
 // Borsh memo structure (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, BorshSchema, Debug)]
 pub struct BurnMemo {
+    /// version of the BurnMemo structure (for future compatibility)
+    pub version: u8,
+    /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
+    /// user data (variable length, max 787 bytes)
     pub user_data: Vec<u8>,
 }
+
+// Current version constant
+const BURN_MEMO_VERSION: u8 = 1;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -165,10 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Memo length: {} bytes", memo_bytes.len());
             
             // Show memo structure info
-            if memo_bytes.len() >= 12 {
+            if memo_bytes.len() >= 13 {
                 // Try to deserialize to show structure
                 if let Ok(borsh_memo) = borsh::from_slice::<BurnMemo>(&memo_bytes) {
                     println!("Borsh memo structure:");
+                    println!("  version: {}", borsh_memo.version);
                     println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
                     println!("  user_data: {} bytes", borsh_memo.user_data.len());
                     
@@ -324,6 +332,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             // Create valid Borsh memo with reasonable user data
             let user_data = b"Testing memo-burn contract with Borsh format. This is valid user data for burn operation.".to_vec();
             let memo = BurnMemo {
+                version: BURN_MEMO_VERSION,
                 burn_amount,
                 user_data,
             };
@@ -331,9 +340,10 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
         },
         "memo-69" => {
             // Create memo exactly 69 bytes
-            // 69 = 8 (burn_amount) + 4 (vec length) + 57 (user data)
-            let user_data = vec![b'x'; 57];
+            // 69 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 56 (user data)
+            let user_data = vec![b'x'; 56];
             let memo = BurnMemo {
+                version: BURN_MEMO_VERSION,
                 burn_amount,
                 user_data,
             };
@@ -343,9 +353,10 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
         },
         "memo-800" => {
             // Create memo exactly 800 bytes
-            // 800 = 8 (burn_amount) + 4 (vec length) + 788 (user data)
-            let user_data = vec![b'x'; 788];
+            // 800 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 787 (user data)
+            let user_data = vec![b'x'; 787];
             let memo = BurnMemo {
+                version: BURN_MEMO_VERSION,
                 burn_amount,
                 user_data,
             };
@@ -360,9 +371,10 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
         },
         "long-memo" => {
             // Create memo more than 800 bytes (should fail)
-            // 850 = 8 (burn_amount) + 4 (vec length) + 838 (user data)
+            // 851 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 838 (user data)
             let user_data = vec![b'x'; 838];
             let memo = BurnMemo {
+                version: BURN_MEMO_VERSION,
                 burn_amount,
                 user_data,
             };
@@ -372,12 +384,12 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             // Create memo with specified total length
             let target_length = custom_length.unwrap_or(100);
             
-            if target_length < 12 {
-                // Too small for valid Borsh structure
+            if target_length < 13 {
+                // Too small for valid Borsh structure (1 + 8 + 4 = 13 minimum)
                 Ok(vec![0; target_length])
             } else {
-                // Calculate user data size: total - 8 (burn_amount) - 4 (vec length)
-                let user_data_size = target_length - 12;
+                // Calculate user data size: total - 1 (version) - 8 (burn_amount) - 4 (vec length)
+                let user_data_size = target_length - 13;
                 let user_data = if user_data_size > 0 {
                     // Create meaningful test data
                     let pattern = b"TestData123";
@@ -391,6 +403,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
                 };
                 
                 let memo = BurnMemo {
+                    version: BURN_MEMO_VERSION,
                     burn_amount,
                     user_data,
                 };
@@ -551,11 +564,14 @@ fn print_error_guidance(error_msg: &str) {
     } else if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
         println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
     } else if error_msg.contains("Custom(6001)") || error_msg.contains("InvalidMemoFormat") {
-        println!("💡 Invalid Memo Format: Expected Borsh-serialized BurnMemoBorsh structure");
-        println!("   Structure: {{ burn_amount: u64, user_data: Vec<u8> }}");
+        println!("💡 Invalid Memo Format: Expected Borsh-serialized BurnMemo structure");
+        println!("   Structure: {{ version: u8, burn_amount: u64, user_data: Vec<u8> }}");
+    } else if error_msg.contains("Custom(6002)") || error_msg.contains("UnsupportedMemoVersion") {
+        println!("💡 Unsupported Version: Memo version mismatch (expected version 1)");
+        println!("   Make sure to use the current BurnMemo structure version");
     } else if error_msg.contains("Custom(6012)") || error_msg.contains("UserDataTooLong") {
-        println!("💡 User Data Too Long: User data must not exceed 788 bytes");
-        println!("   Total memo size = 8 (burn_amount) + 4 (vec length) + user_data.len()");
+        println!("💡 User Data Too Long: User data must not exceed 787 bytes");
+        println!("   Total memo size = 1 (version) + 8 (burn_amount) + 4 (vec length) + user_data.len()");
     } else if error_msg.contains("Custom(6005)") || error_msg.contains("BurnAmountMismatch") {
         println!("💡 Burn Amount Mismatch: burn_amount in memo must match actual burn amount.");
     } else if error_msg.contains("Custom(6003)") || error_msg.contains("UnauthorizedMint") {
