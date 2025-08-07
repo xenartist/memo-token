@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     // Program address

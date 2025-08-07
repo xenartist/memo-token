@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let memo_text = ensure_min_length(memo_text, 69);
 
     // Connect to network
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
 
     // Load wallet

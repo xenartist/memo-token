@@ -587,7 +587,7 @@ fn create_memo_with_exact_length(target_length: usize) -> String {
 }
 
 fn create_rpc_client() -> RpcClient {
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     println!("Connecting to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }

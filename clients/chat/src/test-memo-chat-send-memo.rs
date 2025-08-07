@@ -425,7 +425,7 @@ fn get_group_id_from_args(args: &[String], index: usize, default: u64) -> u64 {
 
 fn run_test(params: TestParams, memo_content: String) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
 
     // Load wallet

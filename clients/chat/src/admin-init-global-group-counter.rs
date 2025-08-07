@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
 
     // Load wallet (must be the authorized admin)

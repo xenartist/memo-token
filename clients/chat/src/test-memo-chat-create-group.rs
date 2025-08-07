@@ -255,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
 
     // Load wallet
