@@ -17,6 +17,28 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24c
 pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
 
+// Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
+pub const DECIMAL_FACTOR: u64 = 1_000_000;
+
+// Maximum supply cap (10 trillion tokens)
+pub const MAX_SUPPLY_TOKENS: u64 = 10_000_000_000_000;
+pub const MAX_SUPPLY_LAMPORTS: u64 = MAX_SUPPLY_TOKENS * DECIMAL_FACTOR;
+
+// Supply tier thresholds (in lamports for direct comparison)
+pub const TIER_1_THRESHOLD_LAMPORTS: u64 = 100_000_000 * DECIMAL_FACTOR;        // 100M tokens
+pub const TIER_2_THRESHOLD_LAMPORTS: u64 = 1_000_000_000 * DECIMAL_FACTOR;      // 1B tokens  
+pub const TIER_3_THRESHOLD_LAMPORTS: u64 = 10_000_000_000 * DECIMAL_FACTOR;     // 10B tokens
+pub const TIER_4_THRESHOLD_LAMPORTS: u64 = 100_000_000_000 * DECIMAL_FACTOR;    // 100B tokens
+pub const TIER_5_THRESHOLD_LAMPORTS: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;  // 1T tokens
+
+// Mint amounts per tier (in lamports)
+pub const TIER_1_MINT_AMOUNT: u64 = 1 * DECIMAL_FACTOR;      // 1 token
+pub const TIER_2_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 10;     // 0.1 token
+pub const TIER_3_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 100;    // 0.01 token
+pub const TIER_4_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 1_000;  // 0.001 token
+pub const TIER_5_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 10_000; // 0.0001 token
+pub const TIER_6_MINT_AMOUNT: u64 = 1;                       // 0.000001 token (1 lamport)
+
 #[program]
 pub mod memo_mint {
     use super::*;
@@ -102,8 +124,8 @@ fn execute_mint_operation<'info>(
     )?;
     
     // Log successful mint operation
-    let token_count = amount as f64 / 1_000_000.0;
-    let current_tokens = current_supply / 1_000_000;
+    let token_count = amount as f64 / DECIMAL_FACTOR as f64;
+    let current_tokens = current_supply / DECIMAL_FACTOR;
     let recipient = token_account.owner;
     msg!("Successfully minted {} tokens ({} units) to {}, current supply: {} tokens, memo length: {} bytes", 
          token_count, amount, recipient, current_tokens, memo_data.len());
@@ -182,22 +204,19 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
 
 /// Calculate dynamic mint amount based on current supply with hard cap
 fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
-    // Hard cap: 10 trillion tokens = 10_000_000_000_000 * 1_000_000 lamports
-    const MAX_SUPPLY_LAMPORTS: u64 = 10_000_000_000_000 * 1_000_000;
-    
     // Check hard limit
     if current_supply >= MAX_SUPPLY_LAMPORTS {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
     
-    // Mint amount based on current supply (in lamports)
+    // Mint amount based on current supply tiers (comparing lamports directly)
     let amount = match current_supply {
-        0..=100_000_000_000_000 => 1_000_000,           // 0-100M tokens: 1 token
-        100_000_000_000_001..=1_000_000_000_000_000 => 100_000, // 100M-1B tokens: 0.1 token  
-        1_000_000_000_000_001..=10_000_000_000_000_000 => 10_000, // 1B-10B tokens: 0.01 token
-        10_000_000_000_000_001..=100_000_000_000_000_000 => 1_000, // 10B-100B tokens: 0.001 token
-        100_000_000_000_000_001..=1_000_000_000_000_000_000 => 100, // 100B-1T tokens: 0.0001 token
-        _ => 1, // 1T+ tokens: 0.000001 token (1 lamport)
+        0..=TIER_1_THRESHOLD_LAMPORTS => TIER_1_MINT_AMOUNT,           // 0-100M tokens: 1 token
+        _ if current_supply <= TIER_2_THRESHOLD_LAMPORTS => TIER_2_MINT_AMOUNT, // 100M-1B tokens: 0.1 token  
+        _ if current_supply <= TIER_3_THRESHOLD_LAMPORTS => TIER_3_MINT_AMOUNT, // 1B-10B tokens: 0.01 token
+        _ if current_supply <= TIER_4_THRESHOLD_LAMPORTS => TIER_4_MINT_AMOUNT, // 10B-100B tokens: 0.001 token
+        _ if current_supply <= TIER_5_THRESHOLD_LAMPORTS => TIER_5_MINT_AMOUNT, // 100B-1T tokens: 0.0001 token
+        _ => TIER_6_MINT_AMOUNT, // 1T+ tokens: 0.000001 token (1 lamport)
     };
     
     // Double check: ensure we don't exceed the hard cap
