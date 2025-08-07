@@ -13,6 +13,11 @@ use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
 use sha2::{Sha256, Digest};
+use spl_memo::ID as MEMO_PROGRAM_ID;
+
+// Memo length constraints (consistent with memo-mint and memo-burn)
+pub const MEMO_MIN_LENGTH: usize = 69;
+pub const MEMO_MAX_LENGTH: usize = 800;
 
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
@@ -750,67 +755,73 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
     Ok(message)
 }
 
-/// Check for memo instruction with enhanced validation (following memo-burn pattern)
+/// Check for memo instruction at REQUIRED index 1
+/// 
+/// IMPORTANT: This contract enforces a strict instruction ordering:
+/// - Index 0: Compute budget instruction (optional)
+/// - Index 1: SPL Memo instruction (REQUIRED)
+/// - Index 2+: memo-chat instructions (create_chat_group, send_memo_to_group, etc.)
+///
+/// Any deviation from this pattern will result in transaction failure.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
-    // SPL Memo program ID
-    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
-        .expect("Failed to parse memo program ID");
-    
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
-    // First check the most likely position (index 1)
-    if current_index > 1 {
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
-            Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    // Validate memo length (69-800 bytes)
-                    let memo_length = ix.data.len();
-                    if memo_length < 69 {
-                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
-                        return Err(ErrorCode::MemoTooShort.into());
-                    }
-                    if memo_length > 800 {
-                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
-                        return Err(ErrorCode::MemoTooLong.into());
-                    }
-                    
-                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
-                    return Ok((true, ix.data.to_vec()));
-                }
-            },
-            Err(_) => {}
-        }
+    // Ensure there are enough instructions (at least index 1 must exist)
+    if current_index <= 1 {
+        msg!("Memo instruction must be at index 1, but transaction only has {} instructions", current_index);
+        return Ok((false, vec![]));
     }
     
-    // If not found at index 1, check other positions as fallback
-    for i in 0..current_index {
-        if i == 1 { continue; } // Skip index 1 as we already checked it
-        
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
-            Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    // Validate memo length (69-800 bytes)
-                    let memo_length = ix.data.len();
-                    if memo_length < 69 {
-                        msg!("Memo too short: {} bytes (minimum: 69)", memo_length);
-                        return Err(ErrorCode::MemoTooShort.into());
-                    }
-                    if memo_length > 800 {
-                        msg!("Memo too long: {} bytes (maximum: 800)", memo_length);
-                        return Err(ErrorCode::MemoTooLong.into());
-                    }
-                    
-                    msg!("Memo length validation passed: {} bytes (range: 69-800)", memo_length);
-                    return Ok((true, ix.data.to_vec()));
-                }
-            },
-            Err(_) => { continue; }
+    // Check fixed position: index 1
+    match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1, instructions) {
+        Ok(ix) => {
+            if ix.program_id == MEMO_PROGRAM_ID {
+                msg!("Found memo instruction at required index 1");
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+            } else {
+                msg!("Instruction at index 1 is not a memo (program_id: {})", ix.program_id);
+                Ok((false, vec![]))
+            }
+        },
+        Err(e) => {
+            msg!("Failed to load instruction at required index 1: {:?}", e);
+            Ok((false, vec![]))
         }
     }
+}
+
+/// Validate memo data length and return result
+fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
+    let memo_length = memo_data.len();
     
-    // No valid memo found
-    Ok((false, vec![]))
+    // Ensure data is not empty
+    if memo_data.is_empty() {
+        msg!("Memo data is empty");
+        return Err(ErrorCode::MemoTooShort.into());
+    }
+    
+    // Check minimum length requirement
+    if memo_length < min_length {
+        msg!("Memo too short: {} bytes (minimum: {})", memo_length, min_length);
+        return Err(ErrorCode::MemoTooShort.into());
+    }
+    
+    // Check maximum length requirement
+    if memo_length > max_length {
+        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
+        return Err(ErrorCode::MemoTooLong.into());
+    }
+    
+    // Check for null bytes (security)
+    if memo_data.iter().any(|&b| b == 0) {
+        msg!("Memo contains null bytes");
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
+    // Length is valid, return memo data
+    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
+    Ok((true, memo_data.to_vec()))
 }
 
 /// Data structure for group creation memo
