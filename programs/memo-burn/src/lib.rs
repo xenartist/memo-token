@@ -17,6 +17,14 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24c
 pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
 
+// Borsh serialization fixed overhead calculation
+const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
+const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
+const BORSH_FIXED_OVERHEAD: usize = BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
+
+// maximum user data length = memo maximum length - borsh fixed overhead
+pub const MAX_USER_DATA_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 12 = 788
+
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
 
@@ -26,11 +34,20 @@ pub const MIN_BURN_TOKENS: u64 = 1;
 // Maximum burn per transaction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
 pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct BurnMemoBorsh {
+    /// burn amount (must match actual burn amount)
+    pub burn_amount: u64,
+    
+    /// user data (variable length, max 788 bytes)
+    pub user_data: Vec<u8>,
+}
+
 #[program]
 pub mod memo_burn {
     use super::*;
 
-    /// Process burn operation with comma-separated memo validation
+    /// Process burn operation with Borsh memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
         // Check burn amount is at least 1 token and is a multiple of DECIMAL_FACTOR (decimal=6)
         if amount < DECIMAL_FACTOR * MIN_BURN_TOKENS {
@@ -54,7 +71,7 @@ pub mod memo_burn {
             return Err(ErrorCode::MemoRequired.into());
         }
 
-        // Validate memo contains correct amount matching the burn amount
+        // Validate Borsh memo contains correct amount matching the burn amount
         validate_memo_amount(&memo_data, amount)?;
 
         // Burn tokens
@@ -71,58 +88,48 @@ pub mod memo_burn {
         )?;
 
         let token_count = amount / DECIMAL_FACTOR;
-        msg!("Successfully burned {} tokens ({} units) with memo validation", token_count, amount);
+        msg!("Successfully burned {} tokens ({} units) with Borsh memo validation", token_count, amount);
         
         Ok(())
     }
 }
 
-/// optimized version: minimize memory allocation and validation
+/// validate Borsh-formatted memo data
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    if memo_data.len() < 2 {
-        return Err(ErrorCode::InvalidMemoFormat.into());
+    // deserialize Borsh data
+    let burn_memo = BurnMemoBorsh::try_from_slice(memo_data)
+        .map_err(|e| {
+            msg!("Borsh deserialization failed: {}", e);
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    // validate burn amount matches
+    if burn_memo.burn_amount != expected_amount {
+        msg!("Burn amount mismatch: memo {} vs expected {}", 
+             burn_memo.burn_amount, expected_amount);
+        return Err(ErrorCode::BurnAmountMismatch.into());
     }
     
-    // fast scan: find comma and validate number part
-    let mut comma_pos = None;
-    for (i, &byte) in memo_data.iter().enumerate() {
-        if byte == 0 {
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        }
-        if byte == b',' {
-            comma_pos = Some(i);
-            break;
-        }
-        // only allow ASCII digits in the number part
-        if !byte.is_ascii_digit() {
-            return Err(ErrorCode::InvalidBurnAmountFormat.into());
-        }
+    // validate user_data length does not exceed maximum allowed value (fully utilize space)
+    if burn_memo.user_data.len() > MAX_USER_DATA_LENGTH {
+        msg!("User data too long: {} bytes (max: {})", 
+             burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
+        return Err(ErrorCode::UserDataTooLong.into());
     }
     
-    let comma_pos = comma_pos.ok_or(ErrorCode::InvalidMemoFormat)?;
-    if comma_pos == 0 {
-        return Err(ErrorCode::InvalidBurnAmountFormat.into());
-    }
+    msg!("Borsh memo validation passed: {} units, user_data: {} bytes (max: {})", 
+         expected_amount, burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
     
-    // manually parse the number, avoid UTF-8 conversion
-    let mut amount: u64 = 0;
-    for &byte in &memo_data[..comma_pos] {
-        if byte.is_ascii_digit() {
-            amount = amount.checked_mul(10)
-                .and_then(|a| a.checked_add((byte - b'0') as u64))
-                .ok_or(ErrorCode::InvalidBurnAmountFormat)?;
+    // record user_data preview
+    if !burn_memo.user_data.is_empty() {
+        if let Ok(preview) = std::str::from_utf8(&burn_memo.user_data[..burn_memo.user_data.len().min(32)]) {
+            msg!("User data preview: {}...", preview);
         } else {
-            return Err(ErrorCode::InvalidBurnAmountFormat.into());
+            msg!("User data: [binary data, {} bytes]", burn_memo.user_data.len());
         }
     }
     
-    if amount == expected_amount {
-        msg!("Burn amount validation passed: {} units", expected_amount);
-        Ok(())
-    } else {
-        msg!("Burn amount mismatch: memo {} vs expected {}", amount, expected_amount);
-        Err(ErrorCode::BurnAmountMismatch.into())
-    }
+    Ok(())
 }
 
 /// Validate memo data length and return result
@@ -145,12 +152,6 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     if memo_length > max_length {
         msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
         return Err(ErrorCode::MemoTooLong.into());
-    }
-    
-    // Check for null bytes (security)
-    if memo_data.iter().any(|&b| b == 0) {
-        msg!("Memo contains null bytes");
-        return Err(ErrorCode::InvalidMemoFormat.into());
     }
     
     // Length is valid, return memo data
@@ -224,7 +225,7 @@ pub enum ErrorCode {
     #[msg("Transaction must include a memo.")]
     MemoRequired,
 
-    #[msg("Invalid memo format. Expected format: 'burn_amount,user_data'")]
+    #[msg("Invalid memo format. Expected Borsh-serialized BurnMemoBorsh structure.")]
     InvalidMemoFormat,
     
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
@@ -245,10 +246,7 @@ pub enum ErrorCode {
     #[msg("Unauthorized token account. User must own the token account.")]
     UnauthorizedTokenAccount,
 
-    #[msg("Invalid burn amount format. Must be a positive integer in units.")]
-    InvalidBurnAmountFormat,
-
-    #[msg("Burn amount mismatch. The amount in memo must match the burn amount (in units).")]
+    #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]
     BurnAmountMismatch,
 
     #[msg("Memo too short (minimum 69 bytes).")]
@@ -256,4 +254,7 @@ pub enum ErrorCode {
 
     #[msg("Memo too long (maximum 800 bytes).")]
     MemoTooLong,
+    
+    #[msg("User data too long. (maximum 788 bytes).")]
+    UserDataTooLong,
 }

@@ -12,9 +12,17 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
+
+// Borsh memo structure (must match the contract)
+#[derive(BorshSerialize, BorshDeserialize, BorshSchema, Debug)]
+pub struct BurnMemo {
+    pub burn_amount: u64,
+    pub user_data: Vec<u8>,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -71,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    println!("=== MEMO-BURN CONTRACT TEST ===");
+    println!("=== MEMO-BURN CONTRACT TEST (BORSH FORMAT) ===");
     println!("Burn amount: {} tokens ({} units, decimal=6)", burn_amount_tokens, burn_amount);
     println!("Test type: {}", test_type);
     if let Some(length) = custom_memo_length {
@@ -153,21 +161,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let memo_result = generate_memo_for_test(test_type, burn_amount, custom_memo_length);
     
     match memo_result {
-        Ok(memo_text) => {
-            println!("Memo length: {} bytes", memo_text.as_bytes().len());
+        Ok(memo_bytes) => {
+            println!("Memo length: {} bytes", memo_bytes.len());
             
-            // Show first and last parts of memo if it's very long
-            if memo_text.len() > 200 {
-                println!("Memo content (first 100 chars): {}...", &memo_text[..100]);
-                println!("Memo content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+            // Show memo structure info
+            if memo_bytes.len() >= 12 {
+                // Try to deserialize to show structure
+                if let Ok(borsh_memo) = borsh::from_slice::<BurnMemo>(&memo_bytes) {
+                    println!("Borsh memo structure:");
+                    println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
+                    println!("  user_data: {} bytes", borsh_memo.user_data.len());
+                    
+                    // Show user data preview
+                    if !borsh_memo.user_data.is_empty() {
+                        if let Ok(preview) = std::str::from_utf8(&borsh_memo.user_data[..borsh_memo.user_data.len().min(50)]) {
+                            println!("  user_data preview: {}...", preview);
+                        } else {
+                            println!("  user_data: [binary data]");
+                        }
+                    }
+                } else {
+                    println!("Raw memo bytes (first 50): {:?}...", &memo_bytes[..memo_bytes.len().min(50)]);
+                }
             } else {
-                println!("Memo content: {}", memo_text);
+                println!("Raw memo bytes: {:?}", memo_bytes);
             }
             println!();
 
             // Create memo instruction
             let memo_ix = spl_memo::build_memo(
-                memo_text.as_bytes(),
+                &memo_bytes,
                 &[&payer.pubkey()],
             );
 
@@ -227,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 recent_blockhash,
             );
 
-            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, memo_text.as_bytes().len());
+            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, memo_bytes.len());
         },
         Err(_) => {
             // For no-memo test case
@@ -295,77 +318,91 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Option<usize>) -> Result<String, String> {
+fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Option<usize>) -> Result<Vec<u8>, String> {
     match test_type {
         "valid-memo" => {
-            // format: "amount,user_data"
-            let user_data = "Testing memo-burn contract with valid memo length between 69-800 bytes for burn operation";
-            let memo = format!("{},{}", burn_amount, user_data);
-            
-            // ensure length is in valid range
-            if memo.len() < 69 {
-                let padding = "x".repeat(69 - memo.len());
-                Ok(format!("{},{}{}", burn_amount, user_data, padding))
-            } else if memo.len() > 800 {
-                let available_len = 800 - burn_amount.to_string().len() - 1; // -1 for comma
-                let truncated_data = &user_data[..std::cmp::min(user_data.len(), available_len)];
-                Ok(format!("{},{}", burn_amount, truncated_data))
-            } else {
-                Ok(memo)
-            }
+            // Create valid Borsh memo with reasonable user data
+            let user_data = b"Testing memo-burn contract with Borsh format. This is valid user data for burn operation.".to_vec();
+            let memo = BurnMemo {
+                burn_amount,
+                user_data,
+            };
+            Ok(borsh::to_vec(&memo).unwrap())
         },
         "memo-69" => {
-            // create memo exactly 69 bytes
-            let amount_part = format!("{},", burn_amount);
-            let needed_chars = 69 - amount_part.len();
-            let user_data = "x".repeat(needed_chars);
-            let result = format!("{}{}", amount_part, user_data);
-            assert_eq!(result.as_bytes().len(), 69, "Memo should be exactly 69 bytes");
+            // Create memo exactly 69 bytes
+            // 69 = 8 (burn_amount) + 4 (vec length) + 57 (user data)
+            let user_data = vec![b'x'; 57];
+            let memo = BurnMemo {
+                burn_amount,
+                user_data,
+            };
+            let result = borsh::to_vec(&memo).unwrap();
+            assert_eq!(result.len(), 69, "Memo should be exactly 69 bytes");
             Ok(result)
         },
         "memo-800" => {
-            // create memo exactly 800 bytes
-            let amount_part = format!("{},", burn_amount);
-            let needed_chars = 800 - amount_part.len();
-            let user_data = "x".repeat(needed_chars);
-            let result = format!("{}{}", amount_part, user_data);
-            assert_eq!(result.as_bytes().len(), 800, "Memo should be exactly 800 bytes");
+            // Create memo exactly 800 bytes
+            // 800 = 8 (burn_amount) + 4 (vec length) + 788 (user data)
+            let user_data = vec![b'x'; 788];
+            let memo = BurnMemo {
+                burn_amount,
+                user_data,
+            };
+            let result = borsh::to_vec(&memo).unwrap();
+            assert_eq!(result.len(), 800, "Memo should be exactly 800 bytes");
             Ok(result)
         },
         "short-memo" => {
-            // create memo less than 69 bytes (should fail)
-            Ok(format!("{},short", burn_amount))
+            // Create memo less than 69 bytes (should fail)
+            // Create minimal invalid memo
+            Ok(vec![1, 2, 3, 4, 5]) // 5 bytes, definitely too short
         },
         "long-memo" => {
-            // create memo more than 800 bytes (should fail)
-            let long_data = "x".repeat(850);
-            Ok(format!("{},{}", burn_amount, long_data))
+            // Create memo more than 800 bytes (should fail)
+            // 850 = 8 (burn_amount) + 4 (vec length) + 838 (user data)
+            let user_data = vec![b'x'; 838];
+            let memo = BurnMemo {
+                burn_amount,
+                user_data,
+            };
+            Ok(borsh::to_vec(&memo).unwrap())
         },
         "custom-length" => {
-            // create memo with specified length
+            // Create memo with specified total length
             let target_length = custom_length.unwrap_or(100);
-            let amount_part = format!("{},", burn_amount);
             
-            if target_length <= amount_part.len() {
-                // if target length is too small, create minimal memo
-                if target_length < 2 {
-                    Ok("1,".to_string())
-                } else {
-                    let minimal_amount = target_length - 2; // leave space for ",x"
-                    Ok(format!("{},x", "1".repeat(std::cmp::max(1, minimal_amount))))
-                }
+            if target_length < 12 {
+                // Too small for valid Borsh structure
+                Ok(vec![0; target_length])
             } else {
-                let needed_chars = target_length - amount_part.len();
-                let user_data = "x".repeat(needed_chars);
-                let result = format!("{}{}", amount_part, user_data);
+                // Calculate user data size: total - 8 (burn_amount) - 4 (vec length)
+                let user_data_size = target_length - 12;
+                let user_data = if user_data_size > 0 {
+                    // Create meaningful test data
+                    let pattern = b"TestData123";
+                    let mut data = Vec::with_capacity(user_data_size);
+                    for i in 0..user_data_size {
+                        data.push(pattern[i % pattern.len()]);
+                    }
+                    data
+                } else {
+                    vec![]
+                };
+                
+                let memo = BurnMemo {
+                    burn_amount,
+                    user_data,
+                };
+                let result = borsh::to_vec(&memo).unwrap();
                 
                 println!("Generated {}-byte memo, actual length: {} bytes", 
-                    target_length, result.as_bytes().len());
+                    target_length, result.len());
                 Ok(result)
             }
         },
         "no-memo" => {
-            // return error to indicate no memo should be included
+            // Return error to indicate no memo should be included
             Err("no-memo".to_string())
         },
         _ => {
@@ -454,6 +491,8 @@ fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
     } else if memo_length > 800 {
         if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
             println!("✅ Expected: Contract correctly rejects memo > 800 bytes");
+        } else if error_msg.contains("UserDataTooLong") {
+            println!("✅ Expected: Contract correctly rejects user data > 788 bytes");
         } else if error_msg.contains("Program failed to complete") {
             println!("⚠️  System limit: Memo might exceed system-level limits");
             println!("   This could be a Solana transaction size limit (~1232 bytes total)");
@@ -490,6 +529,8 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
         "long-memo" => {
             if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
                 println!("✅ Correct error: Contract properly rejects memo > 800 bytes");
+            } else if error_msg.contains("UserDataTooLong") {
+                println!("✅ Correct error: Contract properly rejects user data > 788 bytes");
             } else {
                 println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
             }
@@ -501,7 +542,7 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
 }
 
 fn print_error_guidance(error_msg: &str) {
-    println!("\n=== ERROR ANALYSIS ===");
+    println!("\n=== ERROR ANALYSIS (BORSH FORMAT) ===");
     
     if error_msg.contains("Custom(6000)") || error_msg.contains("MemoRequired") {
         println!("💡 Missing Memo: This contract requires a memo instruction.");
@@ -510,11 +551,13 @@ fn print_error_guidance(error_msg: &str) {
     } else if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
         println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
     } else if error_msg.contains("Custom(6001)") || error_msg.contains("InvalidMemoFormat") {
-        println!("💡 Invalid Memo Format: Expected format 'amount,user_data'");
+        println!("💡 Invalid Memo Format: Expected Borsh-serialized BurnMemoBorsh structure");
+        println!("   Structure: {{ burn_amount: u64, user_data: Vec<u8> }}");
+    } else if error_msg.contains("Custom(6012)") || error_msg.contains("UserDataTooLong") {
+        println!("💡 User Data Too Long: User data must not exceed 788 bytes");
+        println!("   Total memo size = 8 (burn_amount) + 4 (vec length) + user_data.len()");
     } else if error_msg.contains("Custom(6005)") || error_msg.contains("BurnAmountMismatch") {
-        println!("💡 Burn Amount Mismatch: Amount in memo must match actual burn amount.");
-    } else if error_msg.contains("Custom(6004)") || error_msg.contains("InvalidBurnAmountFormat") {
-        println!("💡 Invalid Amount Format: Amount before comma must be a valid number.");
+        println!("💡 Burn Amount Mismatch: burn_amount in memo must match actual burn amount.");
     } else if error_msg.contains("Custom(6003)") || error_msg.contains("UnauthorizedMint") {
         println!("💡 Wrong Mint: Only authorized mint can be used.");
         println!("   Expected: HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
