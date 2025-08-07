@@ -235,7 +235,7 @@ fn create_random_valid_memo() -> String {
 }
 
 fn create_rpc_client() -> RpcClient {
-    let rpc_url = "https://rpc-testnet.x1.wiki";
+    let rpc_url = "https://rpc.testnet.x1.xyz";
     println!("connect to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }
