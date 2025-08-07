@@ -22,6 +22,9 @@ pub const DECIMAL_FACTOR: u64 = 1_000_000;
 // Minimum burn requirement (1 token)  
 pub const MIN_BURN_TOKENS: u64 = 1;
 
+// Maximum burn per transaction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
+pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+
 #[program]
 pub mod memo_burn {
     use super::*;
@@ -31,6 +34,11 @@ pub mod memo_burn {
         // Check burn amount is at least 1 token and is a multiple of DECIMAL_FACTOR (decimal=6)
         if amount < DECIMAL_FACTOR * MIN_BURN_TOKENS {
             return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+        
+        // Check burn amount upper limit (prevent excessive burns)
+        if amount > MAX_BURN_PER_TX {
+            return Err(ErrorCode::BurnAmountTooLarge.into());
         }
         
         // Check burn amount is a multiple of DECIMAL_FACTOR (decimal=6)
@@ -220,6 +228,9 @@ pub enum ErrorCode {
     
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
+
+    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per transaction.")]
+    BurnAmountTooLarge,
 
     #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
     InvalidBurnAmount,
