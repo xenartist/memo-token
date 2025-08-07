@@ -5,12 +5,17 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
-use std::str::FromStr;
+use anchor_lang::solana_program::pubkey;
+use spl_memo::ID as MEMO_PROGRAM_ID;
 
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
-// Authorized mint address
-pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
+// Authorized mint pubkey
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+
+// Memo length constraints
+pub const MEMO_MIN_LENGTH: usize = 69;
+pub const MEMO_MAX_LENGTH: usize = 800;
 
 #[program]
 pub mod memo_mint {
@@ -57,9 +62,10 @@ fn execute_mint_operation<'info>(
     program_id: &Pubkey,
     mint_authority_bump: u8,
 ) -> Result<()> {
-    // Check for memo instruction with length constraints (69-800 bytes)
-    let (memo_found, memo_data) = check_memo_instruction(instructions, 69, 800)?;
+    // Check for memo instruction with length constraints
+    let (memo_found, memo_data) = check_memo_instruction(instructions)?;
     if !memo_found {
+        msg!("No memo instruction found");
         return Err(ErrorCode::MemoRequired.into());
     }
     
@@ -105,52 +111,51 @@ fn execute_mint_operation<'info>(
     Ok(())
 }
 
-/// Check for memo instruction in transaction with length validation
-fn check_memo_instruction(
-    instructions: &AccountInfo, 
-    min_length: usize, 
-    max_length: usize
-) -> Result<(bool, Vec<u8>)> {
-    // SPL Memo program ID
-    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
-        .expect("Failed to parse memo program ID");
-    
+/// Check for memo instruction at REQUIRED index 1
+/// 
+/// IMPORTANT: This contract enforces a strict instruction ordering:
+/// - Index 0: Compute budget instruction (optional)
+/// - Index 1: SPL Memo instruction (REQUIRED)
+/// - Index 2+: memo-mint::process_mint or memo-mint::process_mint_to (other instructions)
+///
+/// Any deviation from this pattern will result in transaction failure.
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
-    // Check most likely position first (index 1)
-    if current_index > 1 {
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1_usize, instructions) {
-            Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    return validate_memo_length(&ix.data, min_length, max_length);
-                }
-            },
-            Err(_) => {}
-        }
+    // Ensure there are enough instructions (at least index 1 must exist)
+    if current_index <= 1 {
+        msg!("Memo instruction must be at index 1, but transaction only has {} instructions", current_index);
+        return Ok((false, vec![]));
     }
     
-    // If not found at index 1, check other positions as fallback
-    for i in 0..current_index {
-        if i == 1 { continue; } // Skip index 1 since already checked
-        
-        match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(i.into(), instructions) {
-            Ok(ix) => {
-                if ix.program_id == memo_program_id {
-                    return validate_memo_length(&ix.data, min_length, max_length);
-                }
-            },
-            Err(_) => { continue; }
+    // Check fixed position: index 1
+    match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1, instructions) {
+        Ok(ix) => {
+            if ix.program_id == MEMO_PROGRAM_ID {
+                msg!("Found memo instruction at required index 1");
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+            } else {
+                msg!("Instruction at index 1 is not a memo (program_id: {})", ix.program_id);
+                Ok((false, vec![]))
+            }
+        },
+        Err(e) => {
+            msg!("Failed to load instruction at required index 1: {:?}", e);
+            Ok((false, vec![]))
         }
     }
-    
-    // No valid memo instruction found
-    Ok((false, vec![]))
 }
 
 /// Validate memo data length and return result
 fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
     let memo_length = memo_data.len();
+    
+    // Ensure data is not empty
+    if memo_data.is_empty() {
+        msg!("Memo data is empty");
+        return Err(ErrorCode::MemoTooShort.into());
+    }
     
     // Check minimum length requirement
     if memo_length < min_length {
@@ -162,6 +167,12 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     if memo_length > max_length {
         msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
         return Err(ErrorCode::MemoTooLong.into());
+    }
+    
+    // Check for null bytes (security)
+    if memo_data.iter().any(|&b| b == 0) {
+        msg!("Memo contains null bytes");
+        return Err(ErrorCode::InvalidMemoFormat.into());
     }
     
     // Length is valid, return memo data
@@ -205,7 +216,7 @@ pub struct ProcessMint<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
@@ -239,7 +250,7 @@ pub struct ProcessMintTo<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
@@ -267,14 +278,17 @@ pub struct ProcessMintTo<'info> {
 /// Error code definitions
 #[error_code]
 pub enum ErrorCode {
+    #[msg("Transaction must include a memo instruction.")]
+    MemoRequired,
+
+    #[msg("Invalid memo format. Memo contains null bytes.")]
+    InvalidMemoFormat,
+    
     #[msg("Memo too short. Must be at least 69 bytes.")]
     MemoTooShort,
     
     #[msg("Memo too long. Must be at most 800 bytes.")]
     MemoTooLong,
-    
-    #[msg("Transaction must include a memo instruction.")]
-    MemoRequired,
     
     #[msg("Invalid token account: Account must belong to the correct mint.")]
     InvalidTokenAccount,
