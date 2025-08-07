@@ -17,10 +17,10 @@ use sha2::{Sha256, Digest};
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
 // Authorized mint address
-pub const AUTHORIZED_MINT: &str = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1";
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // Authorized admin key (only this address can initialize the global counter)
-pub const AUTHORIZED_ADMIN: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn";
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 
 #[program]
 pub mod memo_chat {
@@ -29,7 +29,7 @@ pub mod memo_chat {
     /// Initialize the global group counter (one-time setup, admin only)
     pub fn initialize_global_counter(ctx: Context<InitializeGlobalCounter>) -> Result<()> {
         // Verify admin authorization
-        if ctx.accounts.admin.key().to_string() != AUTHORIZED_ADMIN {
+        if ctx.accounts.admin.key() != AUTHORIZED_ADMIN_PUBKEY {
             return Err(ErrorCode::UnauthorizedAdmin.into());
         }
 
@@ -840,7 +840,7 @@ impl GlobalGroupCounter {
 pub struct InitializeGlobalCounter<'info> {
     #[account(
         mut,
-        constraint = admin.key().to_string() == AUTHORIZED_ADMIN @ ErrorCode::UnauthorizedAdmin
+        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
     )]
     pub admin: Signer<'info>,
     
@@ -881,7 +881,7 @@ pub struct CreateChatGroup<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
@@ -920,7 +920,7 @@ pub struct SendMemoToGroup<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
@@ -966,7 +966,7 @@ pub struct BurnTokensForGroup<'info> {
     
     #[account(
         mut,
-        constraint = mint.key().to_string() == AUTHORIZED_MINT @ ErrorCode::UnauthorizedMint
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
