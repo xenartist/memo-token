@@ -17,5 +17,5 @@ url = "https://api.apr.dev"
 
 [provider]
 # testnet
-cluster = "https://rpc-testnet.x1.wiki"
+cluster = "https://rpc.testnet.x1.xyz"
 wallet = "~/.config/solana/id.json"
