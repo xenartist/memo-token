@@ -10,6 +10,23 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
+// compile-time constant safety validation
+const _: () = {
+    // ensure max supply calculation won't overflow
+    assert!(MAX_SUPPLY_TOKENS <= u64::MAX / DECIMAL_FACTOR, "MAX_SUPPLY_TOKENS too large");
+    
+    // ensure tier thresholds are in the correct order
+    assert!(TIER_1_THRESHOLD_LAMPORTS < TIER_2_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
+    assert!(TIER_2_THRESHOLD_LAMPORTS < TIER_3_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
+    assert!(TIER_3_THRESHOLD_LAMPORTS < TIER_4_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
+    assert!(TIER_4_THRESHOLD_LAMPORTS < TIER_5_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
+    assert!(TIER_5_THRESHOLD_LAMPORTS <= MAX_SUPPLY_LAMPORTS, "Final tier exceeds max supply");
+    
+    // ensure mint amounts are reasonable
+    assert!(TIER_1_MINT_AMOUNT > 0, "Mint amounts must be positive");
+    assert!(TIER_6_MINT_AMOUNT > 0, "Minimum mint amount must be positive");
+};
+
 // Authorized mint pubkey
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
@@ -124,8 +141,8 @@ fn execute_mint_operation<'info>(
     )?;
     
     // Log successful mint operation
-    let token_count = amount as f64 / DECIMAL_FACTOR as f64;
-    let current_tokens = current_supply / DECIMAL_FACTOR;
+    let token_count = calculate_token_count_safe(amount)?;
+    let current_tokens = calculate_token_count_safe(current_supply)?;
     let recipient = token_account.owner;
     msg!("Successfully minted {} tokens ({} units) to {}, current supply: {} tokens, memo length: {} bytes", 
          token_count, amount, recipient, current_tokens, memo_data.len());
@@ -204,7 +221,7 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
 
 /// Calculate dynamic mint amount based on current supply with hard cap
 fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
-    // Check hard limit
+    // Check hard limit first
     if current_supply >= MAX_SUPPLY_LAMPORTS {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
@@ -219,13 +236,35 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
         _ => TIER_6_MINT_AMOUNT, // 1T+ tokens: 0.000001 token (1 lamport)
     };
     
-    // Double check: ensure we don't exceed the hard cap
-    if current_supply + amount > MAX_SUPPLY_LAMPORTS {
+    // 🔥 use checked_add to prevent overflow
+    let new_supply = current_supply.checked_add(amount)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
+    
+    // check if it exceeds the hard limit
+    if new_supply > MAX_SUPPLY_LAMPORTS {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
     
     Ok(amount)
 }
+
+/// safe token count calculation helper function
+fn calculate_token_count_safe(lamports: u64) -> Result<f64> {
+    // prevent division by zero (compile-time constant, but good practice)
+    if DECIMAL_FACTOR == 0 {
+        return Err(ErrorCode::ArithmeticOverflow.into());
+    }
+    
+    // ensure conversion is safe (although for f64 u64 range is safe)
+    let result = lamports as f64 / DECIMAL_FACTOR as f64;
+    
+    // check if result is valid (prevent NaN or infinity in extreme cases)
+    if !result.is_finite() {
+        return Err(ErrorCode::ArithmeticOverflow.into());
+    }
+    
+    Ok(result)
+} 
 
 /// Account structure for token minting instruction (original version)
 #[derive(Accounts)]
@@ -323,4 +362,8 @@ pub enum ErrorCode {
 
     #[msg("Supply limit reached. Maximum supply is 10 trillion tokens.")]
     SupplyLimitReached,
+
+    #[msg("Arithmetic overflow detected.")]
+    ArithmeticOverflow,
 } 
+
