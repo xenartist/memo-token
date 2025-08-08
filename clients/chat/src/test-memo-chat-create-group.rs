@@ -561,10 +561,17 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Determine category based on test case
+    let category = if params.test_description.contains("invalid category") {
+        "wrong_category".to_string()  // intentionally use wrong category
+    } else {
+        EXPECTED_CATEGORY.to_string()  // use "chat" in normal case
+    };
+    
     // Create ChatGroupCreationData
     let group_creation_data = ChatGroupCreationData {
         version: CHAT_GROUP_CREATION_DATA_VERSION,
-        category: EXPECTED_CATEGORY.to_string(),
+        category,
         group_id,
         name: params.name.clone(),
         description: params.description.clone(),
