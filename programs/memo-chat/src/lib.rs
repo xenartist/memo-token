@@ -35,6 +35,9 @@ pub const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
 // Expected category for memo-chat contract
 pub const EXPECTED_CATEGORY: &str = "chat";
 
+// Expected operation for group creation
+pub const EXPECTED_OPERATION: &str = "create_group";
+
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
 // Authorized mint address
@@ -64,6 +67,9 @@ pub struct ChatGroupCreationData {
     
     /// Category of the request (must be "chat" for memo-chat contract)
     pub category: String,
+    
+    /// Operation type (must be "create_group" for group creation)
+    pub operation: String,
     
     /// Group ID (must match expected_group_id)
     pub group_id: u64,
@@ -105,6 +111,19 @@ impl ChatGroupCreationData {
             msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
                  self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
             return Err(ErrorCode::InvalidCategoryLength.into());
+        }
+        
+        // Validate operation (must be exactly "create_group")
+        if self.operation != EXPECTED_OPERATION {
+            msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_OPERATION);
+            return Err(ErrorCode::InvalidOperation.into());
+        }
+        
+        // Validate operation length (must be exactly the expected length)
+        if self.operation.len() != EXPECTED_OPERATION.len() {
+            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
+                 self.operation.len(), EXPECTED_OPERATION.len(), EXPECTED_OPERATION);
+            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate group_id
@@ -153,8 +172,8 @@ impl ChatGroupCreationData {
             }
         }
         
-        msg!("Chat group creation data validation passed: category={}, group_id={}, name={}, tags_count={}", 
-             self.category, self.group_id, self.name, self.tags.len());
+        msg!("Chat group creation data validation passed: category={}, operation={}, group_id={}, name={}, tags_count={}", 
+             self.category, self.operation, self.group_id, self.name, self.tags.len());
         
         Ok(())
     }
@@ -1199,6 +1218,9 @@ pub enum ErrorCode {
     
     #[msg("Invalid operation: Operation does not match the expected operation for this instruction.")]
     InvalidOperation,
+
+    #[msg("Invalid operation length. Operation must be exactly the expected length.")]
+    InvalidOperationLength,
 
     #[msg("User data too long. (maximum 787 bytes).")]
     UserDataTooLong,

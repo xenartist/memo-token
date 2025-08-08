@@ -40,6 +40,9 @@ pub struct ChatGroupCreationData {
     /// Category of the request (must be "chat" for memo-chat contract)
     pub category: String,
     
+    /// Operation type (must be "create_group" for group creation)
+    pub operation: String,
+    
     /// Group ID (must match expected_group_id)
     pub group_id: u64,
     
@@ -80,6 +83,19 @@ impl ChatGroupCreationData {
             println!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
                  self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
             return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid category length")));
+        }
+        
+        // Validate operation (must be exactly "create_group")
+        if self.operation != EXPECTED_OPERATION {
+            println!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_OPERATION);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid operation")));
+        }
+        
+        // Validate operation length (must be exactly the expected length)
+        if self.operation.len() != EXPECTED_OPERATION.len() {
+            println!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
+                 self.operation.len(), EXPECTED_OPERATION.len(), EXPECTED_OPERATION);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid operation length")));
         }
         
         // Validate group_id
@@ -128,8 +144,8 @@ impl ChatGroupCreationData {
             }
         }
         
-        println!("Chat group creation data validation passed: category={}, group_id={}, name={}, tags_count={}", 
-             self.category, self.group_id, self.name, self.tags.len());
+        println!("Chat group creation data validation passed: category={}, operation={}, group_id={}, name={}, tags_count={}", 
+             self.category, self.operation, self.group_id, self.name, self.tags.len());
         
         Ok(())
     }
@@ -139,6 +155,7 @@ impl ChatGroupCreationData {
 const BURN_MEMO_VERSION: u8 = 1;
 const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "chat";
+const EXPECTED_OPERATION: &str = "create_group";
 
 #[derive(Debug, Clone)]
 struct TestParams {
@@ -308,6 +325,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_memo_interval: Some(60),
             should_succeed: false,
             test_description: "Invalid category (should fail)".to_string(),
+        },
+        "invalid-operation" => TestParams {
+            burn_amount: 50000,
+            name: "Test Group".to_string(),
+            description: "Testing invalid operation".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Invalid operation (should fail)".to_string(),
         },
         _ => {
             println!("Unknown test case: {}", test_case);
@@ -568,10 +595,18 @@ fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result
         EXPECTED_CATEGORY.to_string()  // use "chat" in normal case
     };
     
+    // Determine operation based on test case
+    let operation = if params.test_description.contains("invalid operation") {
+        "wrong_operation".to_string()  // intentionally use wrong operation
+    } else {
+        EXPECTED_OPERATION.to_string()  // use "create_group" in normal case
+    };
+    
     // Create ChatGroupCreationData
     let group_creation_data = ChatGroupCreationData {
         version: CHAT_GROUP_CREATION_DATA_VERSION,
         category,
+        operation,
         group_id,
         name: params.name.clone(),
         description: params.description.clone(),
@@ -615,6 +650,8 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Burn amount too small detected");
     } else if error_msg.contains("InvalidCategory") && params.test_description.contains("invalid category") {
         println!("✅ Correct: Invalid category detected");
+    } else if error_msg.contains("InvalidOperation") && params.test_description.contains("invalid operation") {
+        println!("✅ Correct: Invalid operation detected");
     } else {
         println!("⚠️  Unexpected error type: {}", error_msg);
     }
@@ -632,6 +669,8 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Burn amount in memo doesn't match burn amount");
     } else if error_msg.contains("GroupIdMismatch") {
         println!("   Group ID in memo doesn't match expected ID");
+    } else if error_msg.contains("InvalidOperationLength") {
+        println!("   Invalid operation length detected");
     } else if error_msg.contains("insufficient funds") {
         println!("   Insufficient SOL or token balance");
     } else {
@@ -692,6 +731,7 @@ fn print_usage() {
     println!("  max-valid         - Test maximum valid field lengths");
     println!("  custom            - Custom test with specified parameters");
     println!("  invalid-category  - Test invalid category (should fail)");
+    println!("  invalid-operation - Test invalid operation (should fail)");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-create-group -- valid-basic");
