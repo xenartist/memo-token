@@ -8,8 +8,8 @@ use memo_mint::program::MemoMint;
 use memo_burn::cpi::accounts::ProcessBurn;
 use memo_burn::program::MemoBurn;
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
-use std::str::FromStr;
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
+use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
@@ -37,6 +37,9 @@ pub const EXPECTED_CATEGORY: &str = "chat";
 
 // Expected operation for group creation
 pub const EXPECTED_OPERATION: &str = "create_group";
+
+// Expected operation for sending messages
+pub const EXPECTED_SEND_MESSAGE_OPERATION: &str = "send_message";
 
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
@@ -179,6 +182,136 @@ impl ChatGroupCreationData {
     }
 }
 
+/// Chat message data structure (stored in BurnMemo.payload for send_memo_to_group)
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ChatMessageData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "chat" for memo-chat contract)
+    pub category: String,
+    
+    /// Operation type (must be "send_message" for sending messages)
+    pub operation: String,
+    
+    /// Group ID (must match the target group)
+    pub group_id: u64,
+    
+    /// Sender pubkey as string (must match the transaction signer)
+    pub sender: String,
+    
+    /// Message content (required, 1-512 characters)
+    pub message: String,
+    
+    /// Optional receiver pubkey as string (for direct messages within group)
+    pub receiver: Option<String>,
+    
+    /// Optional reply to signature (for message threading)
+    pub reply_to_sig: Option<String>,
+}
+
+impl ChatMessageData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_group_id: u64, expected_sender: Pubkey) -> Result<()> {
+        // Validate version
+        if self.version != CHAT_GROUP_CREATION_DATA_VERSION {
+            msg!("Unsupported chat message data version: {} (expected: {})", 
+                 self.version, CHAT_GROUP_CREATION_DATA_VERSION);
+            return Err(ErrorCode::UnsupportedChatMessageDataVersion.into());
+        }
+        
+        // Validate category (must be exactly "chat")
+        if self.category != EXPECTED_CATEGORY {
+            msg!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategory.into());
+        }
+        
+        // Validate category length
+        if self.category.len() != EXPECTED_CATEGORY.len() {
+            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
+                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategoryLength.into());
+        }
+        
+        // Validate operation (must be exactly "send_message")
+        if self.operation != EXPECTED_SEND_MESSAGE_OPERATION {
+            msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_SEND_MESSAGE_OPERATION);
+            return Err(ErrorCode::InvalidOperation.into());
+        }
+        
+        // Validate operation length
+        if self.operation.len() != EXPECTED_SEND_MESSAGE_OPERATION.len() {
+            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
+                 self.operation.len(), EXPECTED_SEND_MESSAGE_OPERATION.len(), EXPECTED_SEND_MESSAGE_OPERATION);
+            return Err(ErrorCode::InvalidOperationLength.into());
+        }
+        
+        // Validate group_id
+        if self.group_id != expected_group_id {
+            msg!("Group ID mismatch: data contains {}, expected {}", 
+                 self.group_id, expected_group_id);
+            return Err(ErrorCode::GroupIdMismatch.into());
+        }
+        
+        // Validate sender (convert string to Pubkey and compare)
+        let sender_pubkey = Pubkey::from_str(&self.sender)
+            .map_err(|_| {
+                msg!("Invalid sender format: {}", self.sender);
+                ErrorCode::InvalidSenderFormat
+            })?;
+            
+        if sender_pubkey != expected_sender {
+            msg!("Sender mismatch: data contains {}, expected {}", 
+                 sender_pubkey, expected_sender);
+            return Err(ErrorCode::SenderMismatch.into());
+        }
+        
+        // Validate message (required, 1-512 characters)
+        if self.message.is_empty() {
+            return Err(ErrorCode::EmptyMessage.into());
+        }
+        
+        if self.message.len() > 512 {
+            return Err(ErrorCode::MessageTooLong.into());
+        }
+        
+        // Validate receiver format if provided
+        if let Some(ref receiver_str) = self.receiver {
+            if !receiver_str.is_empty() {
+                Pubkey::from_str(receiver_str)
+                    .map_err(|_| {
+                        msg!("Invalid receiver format: {}", receiver_str);
+                        ErrorCode::InvalidReceiverFormat
+                    })?;
+            }
+        }
+        
+        // Validate reply_to_sig format if provided
+        if let Some(ref reply_sig) = self.reply_to_sig {
+            if !reply_sig.is_empty() {
+                // Validate signature format (base58 encoded, 64 bytes when decoded)
+                match bs58::decode(reply_sig).into_vec() {
+                    Ok(decoded) => {
+                        if decoded.len() != 64 {
+                            msg!("Invalid reply signature length: {} bytes (expected 64)", decoded.len());
+                            return Err(ErrorCode::InvalidReplySignatureFormat.into());
+                        }
+                    },
+                    Err(_) => {
+                        msg!("Invalid reply signature encoding: {}", reply_sig);
+                        return Err(ErrorCode::InvalidReplySignatureFormat.into());
+                    }
+                }
+            }
+        }
+        
+        msg!("Chat message data validation passed: category={}, operation={}, group_id={}, sender={}, message_len={}", 
+             self.category, self.operation, self.group_id, self.sender, self.message.len());
+        
+        Ok(())
+    }
+}
+
 #[program]
 pub mod memo_chat {
     use super::*;
@@ -294,8 +427,8 @@ pub mod memo_chat {
             return Err(ErrorCode::MemoRequired.into());
         }
         
-        // Parse and validate memo content with required fields
-        let memo_content = parse_and_validate_memo_for_send(&memo_data, group_id, ctx.accounts.sender.key())?;
+        // Parse and validate Borsh memo content
+        let memo_content = parse_message_borsh_memo(&memo_data, group_id, ctx.accounts.sender.key())?;
         
         let chat_group = &mut ctx.accounts.chat_group;
         let current_time = Clock::get()?.unix_timestamp;
@@ -605,193 +738,55 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
     Ok(())
 }
 
-/// Parse and validate memo content for send memo (with required field validation)
-fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, expected_sender: Pubkey) -> Result<String> {
-    // Enhanced UTF-8 validation
-    let memo_str = match std::str::from_utf8(memo_data) {
-        Ok(s) => s,
-        Err(e) => {
-            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        }
-    };
-    
-    // Basic security check
-    if memo_str.contains('\0') {
-        msg!("Memo contains null characters");
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
-    // Clean the string (handle JSON escaping)
-    let clean_str = memo_str
-        .trim_matches('"')
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\");
-    
-    // Parse as JSON
-    let json_data: serde_json::Value = serde_json::from_str(&clean_str)
-        .map_err(|e| {
-            msg!("JSON parsing failed: {}", e);
+/// Parse and validate Borsh-formatted memo data for sending messages
+fn parse_message_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_sender: Pubkey) -> Result<String> {
+    // Deserialize Borsh data (following memo-burn pattern)
+    let burn_memo = BurnMemo::try_from_slice(memo_data)
+        .map_err(|_| {
+            msg!("Invalid memo format");
             ErrorCode::InvalidMemoFormat
         })?;
-
-    // 0. Validate operation field (required) - must be "send_message"
-    let operation = json_data["operation"]
-        .as_str()
-        .ok_or(ErrorCode::MissingOperationField)?;
     
-    if operation != "send_message" {
-        msg!("Invalid operation: expected 'send_message', got '{}'", operation);
-        return Err(ErrorCode::InvalidOperation.into());
-    }
-
-    // 0. Validate category field (required) - must be "chat"
-    let category = json_data["category"]
-        .as_str()
-        .unwrap_or("");
-    
-    if category != EXPECTED_CATEGORY {
-        msg!("Invalid category: expected '{}', got '{}'", EXPECTED_CATEGORY, category);
-        return Err(ErrorCode::InvalidCategory.into());
-    }
-
-    // 1. Validate group_id field (required)
-    let memo_group_id = match &json_data["group_id"] {
-        serde_json::Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        serde_json::Value::String(s) => {
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        _ => return Err(ErrorCode::MissingGroupIdField.into()),
-    };
-    
-    if memo_group_id != expected_group_id {
-        msg!("Group ID mismatch: memo contains {}, expected {}", memo_group_id, expected_group_id);
-        return Err(ErrorCode::GroupIdMismatch.into());
-    }
-
-    // 2. Validate sender field (required)
-    let memo_sender_str = json_data["sender"]
-        .as_str()
-        .ok_or(ErrorCode::MissingSenderField)?;
-    
-    let memo_sender = Pubkey::from_str(memo_sender_str)
-        .map_err(|_| ErrorCode::InvalidSenderFormat)?;
-    
-    if memo_sender != expected_sender {
-        msg!("Sender mismatch: memo contains {}, expected {}", memo_sender, expected_sender);
-        return Err(ErrorCode::SenderMismatch.into());
-    }
-
-    // 3. Validate message field (required)
-    let message = json_data["message"]
-        .as_str()
-        .ok_or(ErrorCode::MissingMessageField)?
-        .to_string();
-    
-    if message.is_empty() {
-        return Err(ErrorCode::EmptyMessage.into());
+    // Validate version compatibility
+    if burn_memo.version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", 
+             burn_memo.version, BURN_MEMO_VERSION);
+        return Err(ErrorCode::UnsupportedMemoVersion.into());
     }
     
-    if message.len() > 512 {
-        return Err(ErrorCode::MessageTooLong.into());
-    }
-
-    // 4. Validate receiver field (optional)
-    let receiver_info = match &json_data["receiver"] {
-        serde_json::Value::String(s) => {
-            if s.is_empty() {
-                // Empty string is treated as no receiver
-                None
-            } else {
-                // Validate that it's a valid Pubkey
-                match Pubkey::from_str(s) {
-                    Ok(pubkey) => {
-                        msg!("Receiver field validated: {}", pubkey);
-                        Some(pubkey)
-                    },
-                    Err(_) => {
-                        msg!("Invalid receiver format: {}", s);
-                        return Err(ErrorCode::InvalidReceiverFormat.into());
-                    }
-                }
-            }
-        },
-        serde_json::Value::Null => None, // Explicitly null is OK
-        _ => {
-            // Field exists but is not a string or null
-            if json_data.get("receiver").is_some() {
-                return Err(ErrorCode::InvalidReceiverFormat.into());
-            } else {
-                None // Field doesn't exist, which is OK
-            }
-        }
-    };
-
-    // 5. Validate reply_to_sig field (optional)
-    let reply_to_sig_info = match &json_data["reply_to_sig"] {
-        serde_json::Value::String(s) => {
-            if s.is_empty() {
-                // Empty string is treated as no reply
-                None
-            } else {
-                // Validate that it's a valid signature format (base58 encoded, 64 bytes when decoded)
-                match bs58::decode(s).into_vec() {
-                    Ok(decoded) => {
-                        if decoded.len() == 64 {
-                            msg!("Reply signature field validated: {}", s);
-                            Some(s.clone())
-                        } else {
-                            msg!("Invalid reply signature length: {} bytes (expected 64)", decoded.len());
-                            return Err(ErrorCode::InvalidReplySignatureFormat.into());
-                        }
-                    },
-                    Err(_) => {
-                        msg!("Invalid reply signature encoding: {}", s);
-                        return Err(ErrorCode::InvalidReplySignatureFormat.into());
-                    }
-                }
-            }
-        },
-        serde_json::Value::Null => None, // Explicitly null is OK
-        _ => {
-            // Field exists but is not a string or null
-            if json_data.get("reply_to_sig").is_some() {
-                return Err(ErrorCode::InvalidReplySignatureFormat.into());
-            } else {
-                None // Field doesn't exist, which is OK
-            }
-        }
-    };
-
-    // Log validation results
-    let mut log_parts = vec![
-        format!("category={}", EXPECTED_CATEGORY),
-        format!("group_id={}", expected_group_id),
-        format!("sender={}", expected_sender),
-        format!("message_len={}", message.len()),
-    ];
+    // Note: For send_message, we don't require burn_amount validation
+    // because sending messages doesn't require burning tokens
     
-    if let Some(receiver) = receiver_info {
-        log_parts.push(format!("receiver={}", receiver));
+    // Validate payload length does not exceed maximum allowed value
+    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
+        msg!("Payload too long: {} bytes (max: {})", 
+             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
+        return Err(ErrorCode::PayloadTooLong.into());
     }
     
-    if let Some(ref reply_sig) = reply_to_sig_info {
-        log_parts.push(format!("reply_to_sig={}...", &reply_sig[..16]));
+    msg!("Borsh memo validation passed: version {}, payload: {} bytes", 
+         burn_memo.version, burn_memo.payload.len());
+    
+    // Record payload preview for debugging
+    if !burn_memo.payload.is_empty() {
+        msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
     }
+    
+    // Deserialize ChatMessageData from payload
+    let message_data = ChatMessageData::try_from_slice(&burn_memo.payload)
+        .map_err(|_| {
+            msg!("Invalid chat message data format in payload");
+            ErrorCode::InvalidChatMessageDataFormat
+        })?;
+    
+    // Validate the message data
+    message_data.validate(expected_group_id, expected_sender)?;
+    
+    msg!("Chat message data parsed successfully: group_id={}, sender={}, message_len={}, receiver={:?}, reply_to={:?}", 
+         message_data.group_id, message_data.sender, message_data.message.len(), 
+         message_data.receiver, message_data.reply_to_sig.as_ref().map(|s| &s[..16.min(s.len())]));
 
-    msg!("Memo validation passed: {}", log_parts.join(", "));
-
-    Ok(message)
+    Ok(message_data.message)
 }
 
 /// Check for memo instruction at REQUIRED index 1
@@ -1230,4 +1225,10 @@ pub enum ErrorCode {
 
     #[msg("Payload too long. (maximum 787 bytes).")]
     PayloadTooLong,
+
+    #[msg("Unsupported chat message data version. Please use the correct structure version.")]
+    UnsupportedChatMessageDataVersion,
+    
+    #[msg("Invalid chat message data format in payload. Must be valid Borsh-serialized data.")]
+    InvalidChatMessageDataFormat,
 }

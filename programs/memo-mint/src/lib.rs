@@ -208,12 +208,6 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooLong.into());
     }
     
-    // Check for null bytes (security)
-    if memo_data.iter().any(|&b| b == 0) {
-        msg!("Memo contains null bytes");
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
     // Length is valid, return memo data
     msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
     Ok((true, memo_data.to_vec()))
