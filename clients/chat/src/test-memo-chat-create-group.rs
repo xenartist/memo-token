@@ -13,16 +13,136 @@ use solana_sdk::{
 use solana_system_interface::program as system_program;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
-use serde_json;
 use sha2::{Sha256, Digest};
+use borsh::{BorshSerialize, BorshDeserialize};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
+// Define structures matching the contract
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct BurnMemo {
+    /// version of the BurnMemo structure (for future compatibility)
+    pub version: u8,
+    
+    /// burn amount (must match actual burn amount)
+    pub burn_amount: u64,
+    
+    /// application payload (variable length, max 787 bytes)
+    pub payload: Vec<u8>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct ChatGroupCreationData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "chat" for memo-chat contract)
+    pub category: String,
+    
+    /// Group ID (must match expected_group_id)
+    pub group_id: u64,
+    
+    /// Group name (required, 1-64 characters)
+    pub name: String,
+    
+    /// Group description (optional, max 128 characters)  
+    pub description: String,
+    
+    /// Group image info (optional, max 256 characters)
+    pub image: String,
+    
+    /// Tags (optional, max 4 tags, each max 32 characters)
+    pub tags: Vec<String>,
+    
+    /// Minimum memo interval in seconds (optional, defaults to 60)
+    pub min_memo_interval: Option<i64>,
+}
+
+impl ChatGroupCreationData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_group_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        // Validate version
+        if self.version != CHAT_GROUP_CREATION_DATA_VERSION {
+            println!("Unsupported chat group creation data version: {} (expected: {})", 
+                 self.version, CHAT_GROUP_CREATION_DATA_VERSION);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unsupported chat group creation data version")));
+        }
+        
+        // Validate category (must be exactly "chat")
+        if self.category != EXPECTED_CATEGORY {
+            println!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid category")));
+        }
+        
+        // Validate category length (must be exactly the expected length)
+        if self.category.len() != EXPECTED_CATEGORY.len() {
+            println!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
+                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid category length")));
+        }
+        
+        // Validate group_id
+        if self.group_id != expected_group_id {
+            println!("Group ID mismatch: data contains {}, expected {}", 
+                 self.group_id, expected_group_id);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Group ID mismatch")));
+        }
+        
+        // Validate name (required, 1-64 characters)
+        if self.name.is_empty() || self.name.len() > 64 {
+            println!("Invalid group name: '{}' (must be 1-64 characters)", self.name);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid group name")));
+        }
+        
+        // Validate description (optional, max 128 characters)
+        if self.description.len() > 128 {
+            println!("Invalid group description: {} characters (max: 128)", self.description.len());
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid group description")));
+        }
+        
+        // Validate image (optional, max 256 characters)
+        if self.image.len() > 256 {
+            println!("Invalid group image: {} characters (max: 256)", self.image.len());
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid group image")));
+        }
+        
+        // Validate tags (optional, max 4 tags, each max 32 characters)
+        if self.tags.len() > 4 {
+            println!("Too many tags: {} (max: 4)", self.tags.len());
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Too many tags")));
+        }
+        
+        for (i, tag) in self.tags.iter().enumerate() {
+            if tag.is_empty() || tag.len() > 32 {
+                println!("Invalid tag {}: '{}' (must be 1-32 characters)", i, tag);
+                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid tag")));
+            }
+        }
+        
+        // Validate min_memo_interval (optional, should be reasonable if provided)
+        if let Some(interval) = self.min_memo_interval {
+            if interval < 0 || interval > 86400 {  // Max 24 hours
+                println!("Invalid min_memo_interval: {} (must be 0-86400 seconds)", interval);
+                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid min_memo_interval")));
+            }
+        }
+        
+        println!("Chat group creation data validation passed: category={}, group_id={}, name={}, tags_count={}", 
+             self.category, self.group_id, self.name, self.tags.len());
+        
+        Ok(())
+    }
+}
+
+// Constants matching the contract
+const BURN_MEMO_VERSION: u8 = 1;
+const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
+const EXPECTED_CATEGORY: &str = "chat";
+
 #[derive(Debug, Clone)]
 struct TestParams {
     pub burn_amount: u64,           // Burn amount in tokens (not units)
-    pub category: String,           // Category field
     pub name: String,               // Group name
     pub description: String,        // Group description
     pub image: String,              // Group image
@@ -43,11 +163,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let test_case = &args[1];
     
-    // Define test cases
+    // Define test cases (removed category field since it's no longer needed)
     let test_params = match test_case.as_str() {
         "valid-basic" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000, // Increased to meet minimum requirement
             name: "Basic Test Group".to_string(),
             description: "A basic test group".to_string(),
             image: "avatar_001.png".to_string(),
@@ -56,31 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             should_succeed: true,
             test_description: "Valid group creation with all required fields".to_string(),
         },
-        "invalid-category" => TestParams {
-            burn_amount: 5,
-            category: "invalid".to_string(),  // Wrong category
-            name: "Test Group".to_string(),
-            description: "Testing invalid category".to_string(),
-            image: "test.png".to_string(),
-            tags: vec!["test".to_string()],
-            min_memo_interval: Some(60),
-            should_succeed: false,
-            test_description: "Invalid category field (should be 'chat')".to_string(),
-        },
-        "missing-category" => TestParams {
-            burn_amount: 5,
-            category: "".to_string(),  // Empty category (will be omitted from JSON)
-            name: "Test Group".to_string(),
-            description: "Testing missing category".to_string(),
-            image: "test.png".to_string(),
-            tags: vec!["test".to_string()],
-            min_memo_interval: Some(60),
-            should_succeed: false,
-            test_description: "Missing category field (should fail)".to_string(),
-        },
         "empty-name" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "".to_string(),  // Empty name
             description: "Testing empty name".to_string(),
             image: "test.png".to_string(),
@@ -90,8 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Empty group name (should fail)".to_string(),
         },
         "long-name" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "x".repeat(65),  // Name too long (>64 chars)
             description: "Testing long name".to_string(),
             image: "test.png".to_string(),
@@ -101,8 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group name too long (>64 characters)".to_string(),
         },
         "long-description" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "Test Group".to_string(),
             description: "x".repeat(129),  // Description too long (>128 chars)
             image: "test.png".to_string(),
@@ -112,8 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group description too long (>128 characters)".to_string(),
         },
         "long-image" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "Test Group".to_string(),
             description: "Testing long image".to_string(),
             image: "x".repeat(257),  // Image too long (>256 chars)
@@ -123,8 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group image info too long (>256 characters)".to_string(),
         },
         "too-many-tags" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "Test Group".to_string(),
             description: "Testing too many tags".to_string(),
             image: "test.png".to_string(),
@@ -134,8 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Too many tags (>4 tags)".to_string(),
         },
         "long-tag" => TestParams {
-            burn_amount: 5,
-            category: "chat".to_string(),
+            burn_amount: 50000,
             name: "Test Group".to_string(),
             description: "Testing long tag".to_string(),
             image: "test.png".to_string(),
@@ -145,19 +236,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Tag too long (>32 characters)".to_string(),
         },
         "small-burn-amount" => TestParams {
-            burn_amount: 0,  // Less than 1 token
-            category: "chat".to_string(),
+            burn_amount: 10000,  // Less than required 42069 tokens
             name: "Test Group".to_string(),
             description: "Testing small burn amount".to_string(),
             image: "test.png".to_string(),
             tags: vec!["test".to_string()],
             min_memo_interval: Some(60),
             should_succeed: false,
-            test_description: "Burn amount too small (<1 token)".to_string(),
+            test_description: "Burn amount too small (<42069 tokens)".to_string(),
         },
         "minimal-valid" => TestParams {
-            burn_amount: 1,
-            category: "chat".to_string(),
+            burn_amount: 42069,  // Minimum required amount
             name: "T".to_string(),  // Minimal name
             description: "".to_string(),  // Empty description (allowed)
             image: "".to_string(),  // Empty image (allowed)
@@ -167,8 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Minimal valid group creation".to_string(),
         },
         "max-valid" => TestParams {
-            burn_amount: 100,
-            category: "chat".to_string(),
+            burn_amount: 100000,
             name: "x".repeat(64),  // Max name length
             description: "x".repeat(128),  // Max description length
             image: "x".repeat(256),  // Max image length
@@ -178,32 +266,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Maximum valid field lengths".to_string(),
         },
         "custom" => {
-            if args.len() < 9 {
+            if args.len() < 8 {
                 println!("Custom test requires additional parameters:");
-                println!("Usage: cargo run --bin test-memo-chat-create-group -- custom <burn_amount> <category> <name> <description> <image> <tags_csv> <min_interval>");
-                println!("Example: cargo run --bin test-memo-chat-create-group -- custom 5 chat \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
+                println!("Usage: cargo run --bin test-memo-chat-create-group -- custom <burn_amount> <name> <description> <image> <tags_csv> <min_interval>");
+                println!("Example: cargo run --bin test-memo-chat-create-group -- custom 50000 \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
                 return Ok(());
             }
             
-            let burn_amount = args[2].parse::<u64>().unwrap_or(1);
-            let category = args[3].clone();
-            let name = args[4].clone();
-            let description = args[5].clone();
-            let image = args[6].clone();
-            let tags: Vec<String> = if args[7].is_empty() {
+            let burn_amount = args[2].parse::<u64>().unwrap_or(42069);
+            let name = args[3].clone();
+            let description = args[4].clone();
+            let image = args[5].clone();
+            let tags: Vec<String> = if args[6].is_empty() {
                 vec![]
             } else {
-                args[7].split(',').map(|s| s.trim().to_string()).collect()
+                args[6].split(',').map(|s| s.trim().to_string()).collect()
             };
-            let min_memo_interval = if args.len() > 8 && !args[8].is_empty() {
-                Some(args[8].parse::<i64>().unwrap_or(60))
+            let min_memo_interval = if args.len() > 7 && !args[7].is_empty() {
+                Some(args[7].parse::<i64>().unwrap_or(60))
             } else {
                 None
             };
             
             TestParams {
                 burn_amount,
-                category,
                 name,
                 description,
                 image,
@@ -213,6 +299,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 test_description: "Custom test case".to_string(),
             }
         },
+        "invalid-category" => TestParams {
+            burn_amount: 50000,
+            name: "Test Group".to_string(),
+            description: "Testing invalid category".to_string(),
+            image: "test.png".to_string(),
+            tags: vec!["test".to_string()],
+            min_memo_interval: Some(60),
+            should_succeed: false,
+            test_description: "Invalid category (should fail)".to_string(),
+        },
         _ => {
             println!("Unknown test case: {}", test_case);
             print_usage();
@@ -220,14 +316,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("=== MEMO-CHAT CREATE GROUP TEST ===");
+    println!("=== MEMO-CHAT CREATE GROUP TEST (BORSH FORMAT) ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
     println!();
     println!("Test parameters:");
     println!("  Burn amount: {} tokens", test_params.burn_amount);
-    println!("  Category: {}", test_params.category);
     println!("  Name: {} (length: {})", test_params.name, test_params.name.len());
     println!("  Description: {} (length: {})", 
         if test_params.description.len() > 50 { 
@@ -332,16 +427,16 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Generate memo
-    let memo_text = generate_memo_from_params(&params, next_group_id);
+    // Generate Borsh memo
+    let memo_bytes = generate_borsh_memo_from_params(&params, next_group_id)?;
     
-    println!("Generated memo:");
-    println!("  Length: {} bytes", memo_text.as_bytes().len());
-    if memo_text.len() > 200 {
-        println!("  Content (first 100 chars): {}...", &memo_text[..100]);
-        println!("  Content (last 100 chars): ...{}", &memo_text[memo_text.len()-100..]);
+    println!("Generated Borsh memo:");
+    println!("  Length: {} bytes", memo_bytes.len());
+    if memo_bytes.len() <= 100 {
+        println!("  Hex: {}", hex::encode(&memo_bytes));
     } else {
-        println!("  Content: {}", memo_text);
+        println!("  Hex (first 50 bytes): {}", hex::encode(&memo_bytes[..50]));
+        println!("  Hex (last 50 bytes): {}", hex::encode(&memo_bytes[memo_bytes.len()-50..]));
     }
     println!();
 
@@ -350,7 +445,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     
     // Create instructions
     let memo_ix = spl_memo::build_memo(
-        memo_text.as_bytes(),
+        &memo_bytes,
         &[&payer.pubkey()],
     );
 
@@ -398,9 +493,9 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Using default compute units for error case: {}", default_cu);
                 default_cu
             } else if let Some(units_consumed) = result.value.units_consumed {
-                // Add 10% margin as requested
-                let optimal_cu = ((units_consumed as f64) * 1.1) as u32;
-                println!("Simulation consumed {} CUs, setting limit to {} CUs (+10% margin)", 
+                // Add 20% margin as requested
+                let optimal_cu = ((units_consumed as f64) * 1.2) as u32;
+                println!("Simulation consumed {} CUs, setting limit to {} CUs (+20% margin)", 
                     units_consumed, optimal_cu);
                 optimal_cu
             } else {
@@ -465,31 +560,41 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn generate_memo_from_params(params: &TestParams, group_id: u64) -> String {
-    let mut memo_json = serde_json::json!({
-        "operation": "create_group",
-        "burn_amount": params.burn_amount * 1_000_000, // Changed from burned_amount
-        "group_id": group_id,
-        "name": params.name,
-        "description": params.description,
-        "image": params.image,
-        "tags": params.tags,
-        "min_memo_interval": params.min_memo_interval,
-        "timestamp": chrono::Utc::now().timestamp()
-    });
+fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Create ChatGroupCreationData
+    let group_creation_data = ChatGroupCreationData {
+        version: CHAT_GROUP_CREATION_DATA_VERSION,
+        category: EXPECTED_CATEGORY.to_string(),
+        group_id,
+        name: params.name.clone(),
+        description: params.description.clone(),
+        image: params.image.clone(),
+        tags: params.tags.clone(),
+        min_memo_interval: params.min_memo_interval,
+    };
     
-    // Only add category field if it's not empty
-    if !params.category.is_empty() {
-        memo_json["category"] = serde_json::Value::String(params.category.clone());
-    }
+    // Serialize ChatGroupCreationData to bytes (this becomes the payload)
+    let payload = group_creation_data.try_to_vec()?;
     
-    serde_json::to_string(&memo_json).unwrap()
+    // Create BurnMemo with the payload
+    let burn_memo = BurnMemo {
+        version: BURN_MEMO_VERSION,
+        burn_amount: params.burn_amount * 1_000_000, // Convert to units
+        payload,
+    };
+    
+    // Serialize the entire BurnMemo to bytes
+    let memo_bytes = burn_memo.try_to_vec()?;
+    
+    println!("Borsh structure sizes:");
+    println!("  ChatGroupCreationData payload: {} bytes", burn_memo.payload.len());
+    println!("  Complete BurnMemo: {} bytes", memo_bytes.len());
+    
+    Ok(memo_bytes)
 }
 
 fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("InvalidCategory") && (params.category != "chat" || params.category.is_empty()) {
-        println!("✅ Correct: Invalid or missing category detected");
-    } else if error_msg.contains("InvalidGroupName") && (params.name.is_empty() || params.name.len() > 64) {
+    if error_msg.contains("InvalidGroupName") && (params.name.is_empty() || params.name.len() > 64) {
         println!("✅ Correct: Invalid group name detected");
     } else if error_msg.contains("InvalidGroupDescription") && params.description.len() > 128 {
         println!("✅ Correct: Invalid group description detected");
@@ -499,8 +604,10 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Too many tags detected");
     } else if error_msg.contains("InvalidTag") && params.tags.iter().any(|tag| tag.is_empty() || tag.len() > 32) {
         println!("✅ Correct: Invalid tag detected");
-    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 1 {
+    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 42069 {
         println!("✅ Correct: Burn amount too small detected");
+    } else if error_msg.contains("InvalidCategory") && params.test_description.contains("invalid category") {
+        println!("✅ Correct: Invalid category detected");
     } else {
         println!("⚠️  Unexpected error type: {}", error_msg);
     }
@@ -511,10 +618,10 @@ fn analyze_unexpected_error(error_msg: &str) {
     if error_msg.contains("MemoRequired") {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
-        println!("   Invalid memo format or JSON parsing failed");
-    } else if error_msg.contains("InvalidCategory") {
-        println!("   Category field missing or not 'chat'");
-    } else if error_msg.contains("BurnedAmountMismatch") {
+        println!("   Invalid memo format or Borsh parsing failed");
+    } else if error_msg.contains("UnsupportedMemoVersion") {
+        println!("   Unsupported memo version");
+    } else if error_msg.contains("BurnAmountMismatch") {
         println!("   Burn amount in memo doesn't match burn amount");
     } else if error_msg.contains("GroupIdMismatch") {
         println!("   Group ID in memo doesn't match expected ID");
@@ -567,22 +674,21 @@ fn print_usage() {
     println!();
     println!("Available test cases:");
     println!("  valid-basic       - Valid group creation with all fields");
-    println!("  invalid-category  - Test invalid category field");
-    println!("  missing-category  - Test missing category field");
     println!("  empty-name        - Test empty group name");
     println!("  long-name         - Test group name too long (>64 chars)");
     println!("  long-description  - Test description too long (>128 chars)");
     println!("  long-image        - Test image info too long (>256 chars)");
     println!("  too-many-tags     - Test too many tags (>4 tags)");
     println!("  long-tag          - Test tag too long (>32 chars)");
-    println!("  small-burn-amount - Test burn amount too small (<1 token)");
+    println!("  small-burn-amount - Test burn amount too small (<42069 tokens)");
     println!("  minimal-valid     - Test minimal valid parameters");
     println!("  max-valid         - Test maximum valid field lengths");
     println!("  custom            - Custom test with specified parameters");
+    println!("  invalid-category  - Test invalid category (should fail)");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-create-group -- valid-basic");
+    println!("  cargo run --bin test-memo-chat-create-group -- empty-name");
+    println!("  cargo run --bin test-memo-chat-create-group -- custom 50000 \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
     println!("  cargo run --bin test-memo-chat-create-group -- invalid-category");
-    println!("  cargo run --bin test-memo-chat-create-group -- missing-category");
-    println!("  cargo run --bin test-memo-chat-create-group -- custom 5 chat \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
 } 

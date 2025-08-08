@@ -101,7 +101,7 @@ cargo run --bin test-memo-burn 1 custom-length 420
 3. Chat Group
 
 ```bash
-cargo run --bin test-memo-chat-create-group -- custom 1 "chat" "solXEN" "solXEN chat group" "avatar.png" "solXEN,X1,Solana" 60
+cargo run --bin test-memo-chat-create-group -- custom 1 "solXEN" "solXEN chat group" "avatar.png" "solXEN,X1,Solana" 60
 
 cargo run --bin test-memo-chat-create-group -- valid-basic
 

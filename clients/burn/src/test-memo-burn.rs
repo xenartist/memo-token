@@ -24,8 +24,8 @@ pub struct BurnMemo {
     pub version: u8,
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
-    /// user data (variable length, max 787 bytes)
-    pub user_data: Vec<u8>,
+    /// application payload (variable length, max 787 bytes)
+    pub payload: Vec<u8>,
 }
 
 // Current version constant
@@ -174,18 +174,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Show memo structure info
             if memo_bytes.len() >= 13 {
                 // Try to deserialize to show structure
-                if let Ok(borsh_memo) = borsh::from_slice::<BurnMemo>(&memo_bytes) {
+                if let Ok(borsh_memo) = BurnMemo::try_from_slice(&memo_bytes) {
                     println!("Borsh memo structure:");
                     println!("  version: {}", borsh_memo.version);
                     println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
-                    println!("  user_data: {} bytes", borsh_memo.user_data.len());
+                    println!("  payload: {} bytes", borsh_memo.payload.len());
                     
-                    // Show user data preview
-                    if !borsh_memo.user_data.is_empty() {
-                        if let Ok(preview) = std::str::from_utf8(&borsh_memo.user_data[..borsh_memo.user_data.len().min(50)]) {
-                            println!("  user_data preview: {}...", preview);
+                    // Show payload preview
+                    if !borsh_memo.payload.is_empty() {
+                        if let Ok(preview) = std::str::from_utf8(&borsh_memo.payload[..borsh_memo.payload.len().min(50)]) {
+                            println!("  payload preview (text): {}...", preview);
                         } else {
-                            println!("  user_data: [binary data]");
+                            println!("  payload preview (hex): {}...", hex::encode(&borsh_memo.payload[..borsh_memo.payload.len().min(32)]));
                         }
                     }
                 } else {
@@ -334,7 +334,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
-                user_data,
+                payload: user_data,
             };
             Ok(borsh::to_vec(&memo).unwrap())
         },
@@ -345,7 +345,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
-                user_data,
+                payload: user_data,
             };
             let result = borsh::to_vec(&memo).unwrap();
             assert_eq!(result.len(), 69, "Memo should be exactly 69 bytes");
@@ -358,7 +358,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
-                user_data,
+                payload: user_data,
             };
             let result = borsh::to_vec(&memo).unwrap();
             assert_eq!(result.len(), 800, "Memo should be exactly 800 bytes");
@@ -376,7 +376,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
-                user_data,
+                payload: user_data,
             };
             Ok(borsh::to_vec(&memo).unwrap())
         },
@@ -405,7 +405,7 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
                 let memo = BurnMemo {
                     version: BURN_MEMO_VERSION,
                     burn_amount,
-                    user_data,
+                    payload: user_data,
                 };
                 let result = borsh::to_vec(&memo).unwrap();
                 

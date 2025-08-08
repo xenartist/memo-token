@@ -9,8 +9,6 @@ use memo_burn::cpi::accounts::ProcessBurn;
 use memo_burn::program::MemoBurn;
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use std::str::FromStr;
-use serde_json::Value;
-use serde::{Deserialize, Serialize};
 use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
 use sha2::{Sha256, Digest};
 use spl_memo::ID as MEMO_PROGRAM_ID;
@@ -19,6 +17,24 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
 
+// Borsh serialization constants (from memo-burn)
+const BORSH_U8_SIZE: usize = 1;         // version (u8)
+const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
+const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
+const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
+
+// maximum payload length = memo maximum length - borsh fixed overhead
+pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
+
+// Current version of BurnMemo structure (consistent with memo-burn)
+pub const BURN_MEMO_VERSION: u8 = 1;
+
+// Current version of ChatGroupCreationData structure
+pub const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
+
+// Expected category for memo-chat contract
+pub const EXPECTED_CATEGORY: &str = "chat";
+
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
 // Authorized mint address
@@ -26,6 +42,123 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24c
 
 // Authorized admin key (only this address can initialize the global counter)
 pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
+
+/// BurnMemo structure (compatible with memo-burn contract)
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct BurnMemo {
+    /// version of the BurnMemo structure (for future compatibility)
+    pub version: u8,
+    
+    /// burn amount (must match actual burn amount)
+    pub burn_amount: u64,
+    
+    /// application payload (variable length, max 787 bytes)
+    pub payload: Vec<u8>,
+}
+
+/// Chat group creation data structure (stored in BurnMemo.payload)
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ChatGroupCreationData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "chat" for memo-chat contract)
+    pub category: String,
+    
+    /// Group ID (must match expected_group_id)
+    pub group_id: u64,
+    
+    /// Group name (required, 1-64 characters)
+    pub name: String,
+    
+    /// Group description (optional, max 128 characters)  
+    pub description: String,
+    
+    /// Group image info (optional, max 256 characters)
+    pub image: String,
+    
+    /// Tags (optional, max 4 tags, each max 32 characters)
+    pub tags: Vec<String>,
+    
+    /// Minimum memo interval in seconds (optional, defaults to 60)
+    pub min_memo_interval: Option<i64>,
+}
+
+impl ChatGroupCreationData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_group_id: u64) -> Result<()> {
+        // Validate version
+        if self.version != CHAT_GROUP_CREATION_DATA_VERSION {
+            msg!("Unsupported chat group creation data version: {} (expected: {})", 
+                 self.version, CHAT_GROUP_CREATION_DATA_VERSION);
+            return Err(ErrorCode::UnsupportedChatGroupDataVersion.into());
+        }
+        
+        // Validate category (must be exactly "chat")
+        if self.category != EXPECTED_CATEGORY {
+            msg!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategory.into());
+        }
+        
+        // Validate category length (must be exactly the expected length)
+        if self.category.len() != EXPECTED_CATEGORY.len() {
+            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
+                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategoryLength.into());
+        }
+        
+        // Validate group_id
+        if self.group_id != expected_group_id {
+            msg!("Group ID mismatch: data contains {}, expected {}", 
+                 self.group_id, expected_group_id);
+            return Err(ErrorCode::GroupIdMismatch.into());
+        }
+        
+        // Validate name (required, 1-64 characters)
+        if self.name.is_empty() || self.name.len() > 64 {
+            msg!("Invalid group name: '{}' (must be 1-64 characters)", self.name);
+            return Err(ErrorCode::InvalidGroupName.into());
+        }
+        
+        // Validate description (optional, max 128 characters)
+        if self.description.len() > 128 {
+            msg!("Invalid group description: {} characters (max: 128)", self.description.len());
+            return Err(ErrorCode::InvalidGroupDescription.into());
+        }
+        
+        // Validate image (optional, max 256 characters)
+        if self.image.len() > 256 {
+            msg!("Invalid group image: {} characters (max: 256)", self.image.len());
+            return Err(ErrorCode::InvalidGroupImage.into());
+        }
+        
+        // Validate tags (optional, max 4 tags, each max 32 characters)
+        if self.tags.len() > 4 {
+            msg!("Too many tags: {} (max: 4)", self.tags.len());
+            return Err(ErrorCode::TooManyTags.into());
+        }
+        
+        for (i, tag) in self.tags.iter().enumerate() {
+            if tag.is_empty() || tag.len() > 32 {
+                msg!("Invalid tag {}: '{}' (must be 1-32 characters)", i, tag);
+                return Err(ErrorCode::InvalidTag.into());
+            }
+        }
+        
+        // Validate min_memo_interval (optional, should be reasonable if provided)
+        if let Some(interval) = self.min_memo_interval {
+            if interval < 0 || interval > 86400 {  // Max 24 hours
+                msg!("Invalid min_memo_interval: {} (must be 0-86400 seconds)", interval);
+                return Err(ErrorCode::InvalidMemoInterval.into());
+            }
+        }
+        
+        msg!("Chat group creation data validation passed: category={}, group_id={}, name={}, tags_count={}", 
+             self.category, self.group_id, self.name, self.tags.len());
+        
+        Ok(())
+    }
+}
 
 #[program]
 pub mod memo_chat {
@@ -54,7 +187,7 @@ pub mod memo_chat {
         burn_amount: u64,
     ) -> Result<()> {
         // Validate burn amount - require at least 42069 tokens for group creation
-        if burn_amount < 42069_000_000 {
+        if burn_amount < 1_000_000 { //ONLY FOR DEBUGGING 
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
@@ -79,8 +212,8 @@ pub mod memo_chat {
             return Err(ErrorCode::MemoRequired.into());
         }
 
-        // Parse and validate memo data
-        let group_data = parse_group_creation_memo(&memo_data, actual_group_id, burn_amount)?;
+        // Parse and validate Borsh memo data for group creation
+        let group_data = parse_group_creation_borsh_memo(&memo_data, actual_group_id, burn_amount)?;
         
         // Call memo-burn contract to burn tokens
         let cpi_program = ctx.accounts.memo_burn_program.to_account_info();
@@ -293,172 +426,59 @@ pub mod memo_chat {
     }
 }
 
-/// Parse and validate group creation memo data
-fn parse_group_creation_memo(memo_data: &[u8], expected_group_id: u64, expected_amount: u64) -> Result<GroupCreationData> {
-    // Enhanced UTF-8 validation (following memo-burn pattern)
-    let memo_str = match std::str::from_utf8(memo_data) {
-        Ok(s) => s,
-        Err(e) => {
-            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        }
-    };
-    
-    // Basic security check (prevent malicious input)
-    if memo_str.contains('\0') {
-        msg!("Memo contains null characters");
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
-    // Clean the string (handle JSON escaping)
-    let clean_str = memo_str
-        .trim_matches('"')
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\");
-    
-    // Parse as JSON
-    let json_data: Value = serde_json::from_str(&clean_str)
-        .map_err(|e| {
-            msg!("JSON parsing failed: {}", e);
+/// Parse and validate Borsh-formatted memo data for group creation
+fn parse_group_creation_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_amount: u64) -> Result<ChatGroupCreationData> {
+    // Deserialize Borsh data (following memo-burn pattern)
+    let burn_memo = BurnMemo::try_from_slice(memo_data)
+        .map_err(|_| {
+            msg!("Invalid memo format");
             ErrorCode::InvalidMemoFormat
         })?;
-
-    // Extract and validate operation field (must match expected operation)
-    let operation = json_data["operation"]
-        .as_str()
-        .ok_or(ErrorCode::MissingOperationField)?;
     
-    if operation != "create_group" {
-        msg!("Invalid operation: expected 'create_group', got '{}'", operation);
-        return Err(ErrorCode::InvalidOperation.into());
+    // Validate version compatibility
+    if burn_memo.version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", 
+             burn_memo.version, BURN_MEMO_VERSION);
+        return Err(ErrorCode::UnsupportedMemoVersion.into());
     }
-
-    // Extract and validate category field (must be "chat")
-    let category = json_data["category"]
-        .as_str()
-        .unwrap_or("");
     
-    if category != "chat" {
-        msg!("Invalid category: expected 'chat', got '{}'", category);
-        return Err(ErrorCode::InvalidCategory.into());
-    }
-
-    // Extract and validate burn_amount field (must match burn amount)
-    let memo_burn_amount = match &json_data["burn_amount"] {
-        Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
-            }
-        },
-        Value::String(s) => {
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
-            }
-        },
-        _ => return Err(ErrorCode::MissingBurnAmountField.into()),
-    };
-
-    // Check if memo burn amount matches expected burn amount
-    if memo_burn_amount != expected_amount {
-        let memo_tokens = memo_burn_amount / 1_000_000;
-        let expected_tokens = expected_amount / 1_000_000;
-        msg!("Burn amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
-             memo_tokens, memo_burn_amount, expected_tokens, expected_amount);
+    // Validate burn amount matches
+    if burn_memo.burn_amount != expected_amount {
+        msg!("Burn amount mismatch: memo {} vs expected {}", 
+             burn_memo.burn_amount, expected_amount);
         return Err(ErrorCode::BurnAmountMismatch.into());
     }
-
-    // Extract and validate group_id field
-    let memo_group_id = match &json_data["group_id"] {
-        Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        Value::String(s) => {
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        _ => return Err(ErrorCode::MissingGroupIdField.into()),
-    };
     
-    if memo_group_id != expected_group_id {
-        msg!("Group ID mismatch: memo contains {}, expected {}", memo_group_id, expected_group_id);
-        return Err(ErrorCode::GroupIdMismatch.into());
+    // Validate payload length does not exceed maximum allowed value
+    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
+        msg!("Payload too long: {} bytes (max: {})", 
+             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
+        return Err(ErrorCode::PayloadTooLong.into());
     }
-
-    let name = json_data["name"]
-        .as_str()
-        .ok_or(ErrorCode::MissingNameField)?
-        .to_string();
     
-    if name.is_empty() || name.len() > 64 {
-        return Err(ErrorCode::InvalidGroupName.into());
-    }
-
-    let description = json_data["description"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    msg!("Borsh memo validation passed: version {}, {} units, payload: {} bytes", 
+         burn_memo.version, expected_amount, burn_memo.payload.len());
     
-    if description.len() > 128 {
-        return Err(ErrorCode::InvalidGroupDescription.into());
+    // Record payload preview for debugging
+    if !burn_memo.payload.is_empty() {
+        msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
     }
-
-    // Extract and validate image field
-    let image = json_data["image"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
     
-    if image.len() > 256 {
-        return Err(ErrorCode::InvalidGroupImage.into());
-    }
+    // Deserialize ChatGroupCreationData from payload
+    let group_data = ChatGroupCreationData::try_from_slice(&burn_memo.payload)
+        .map_err(|_| {
+            msg!("Invalid chat group creation data format in payload");
+            ErrorCode::InvalidChatGroupDataFormat
+        })?;
+    
+    // Validate the group creation data
+    group_data.validate(expected_group_id)?;
+    
+    msg!("Chat group creation data parsed successfully: group_id={}, name={}, description_len={}, image_len={}, tags_count={}", 
+         group_data.group_id, group_data.name, group_data.description.len(), 
+         group_data.image.len(), group_data.tags.len());
 
-    let tags = match &json_data["tags"] {
-        Value::Array(arr) => {
-            let mut tags = Vec::new();
-            for tag_value in arr {
-                if let Some(tag_str) = tag_value.as_str() {
-                    if tag_str.is_empty() || tag_str.len() > 32 {
-                        return Err(ErrorCode::InvalidTag.into());
-                    }
-                    tags.push(tag_str.to_string());
-                } else {
-                    return Err(ErrorCode::InvalidTag.into());
-                }
-            }
-            if tags.len() > 4 {
-                return Err(ErrorCode::TooManyTags.into());
-            }
-            tags
-        },
-        Value::Null => Vec::new(),
-        _ => return Err(ErrorCode::InvalidTagsFormat.into()),
-    };
-
-    let min_memo_interval = json_data["min_memo_interval"]
-        .as_i64();
-
-    msg!("Group creation memo parsed successfully: category=chat, group_id={}, name={}, image_len={}, amount={} tokens", 
-         expected_group_id, name, image.len(), expected_amount / 1_000_000);
-
-    Ok(GroupCreationData {
-        group_id: expected_group_id,
-        name,
-        description,
-        image,
-        tags,
-        min_memo_interval,
-    })
+    Ok(group_data)
 }
 
 /// Validate memo for burn operation (enhanced with operation and group_id validation)
@@ -485,7 +505,7 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
         .replace("\\\\", "\\");
     
     // Parse as JSON
-    let json_data: Value = serde_json::from_str(&clean_str)
+    let json_data: serde_json::Value = serde_json::from_str(&clean_str)
         .map_err(|_| ErrorCode::InvalidMemoFormat)?;
 
     // Extract and validate operation field (must match expected operation)
@@ -503,21 +523,21 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
         .as_str()
         .unwrap_or("");
     
-    if category != "chat" {
-        msg!("Invalid category: expected 'chat', got '{}'", category);
+    if category != EXPECTED_CATEGORY {
+        msg!("Invalid category: expected '{}', got '{}'", EXPECTED_CATEGORY, category);
         return Err(ErrorCode::InvalidCategory.into());
     }
 
     // Extract and validate group_id field (required for burn operation)
     let memo_group_id = match &json_data["group_id"] {
-        Value::Number(n) => {
+        serde_json::Value::Number(n) => {
             if let Some(int_val) = n.as_u64() {
                 int_val
             } else {
                 return Err(ErrorCode::InvalidGroupIdFormat.into());
             }
         },
-        Value::String(s) => {
+        serde_json::Value::String(s) => {
             if let Ok(int_val) = s.parse::<u64>() {
                 int_val
             } else {
@@ -534,14 +554,14 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
 
     // Extract burn_amount from memo
     let memo_burn_amount = match &json_data["burn_amount"] {
-        Value::Number(n) => {
+        serde_json::Value::Number(n) => {
             if let Some(int_val) = n.as_u64() {
                 int_val
             } else {
                 return Err(ErrorCode::InvalidBurnAmountFormat.into());
             }
         },
-        Value::String(s) => {
+        serde_json::Value::String(s) => {
             if let Ok(int_val) = s.parse::<u64>() {
                 int_val
             } else {
@@ -590,7 +610,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
         .replace("\\\\", "\\");
     
     // Parse as JSON
-    let json_data: Value = serde_json::from_str(&clean_str)
+    let json_data: serde_json::Value = serde_json::from_str(&clean_str)
         .map_err(|e| {
             msg!("JSON parsing failed: {}", e);
             ErrorCode::InvalidMemoFormat
@@ -611,21 +631,21 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
         .as_str()
         .unwrap_or("");
     
-    if category != "chat" {
-        msg!("Invalid category: expected 'chat', got '{}'", category);
+    if category != EXPECTED_CATEGORY {
+        msg!("Invalid category: expected '{}', got '{}'", EXPECTED_CATEGORY, category);
         return Err(ErrorCode::InvalidCategory.into());
     }
 
     // 1. Validate group_id field (required)
     let memo_group_id = match &json_data["group_id"] {
-        Value::Number(n) => {
+        serde_json::Value::Number(n) => {
             if let Some(int_val) = n.as_u64() {
                 int_val
             } else {
                 return Err(ErrorCode::InvalidGroupIdFormat.into());
             }
         },
-        Value::String(s) => {
+        serde_json::Value::String(s) => {
             if let Ok(int_val) = s.parse::<u64>() {
                 int_val
             } else {
@@ -669,7 +689,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
 
     // 4. Validate receiver field (optional)
     let receiver_info = match &json_data["receiver"] {
-        Value::String(s) => {
+        serde_json::Value::String(s) => {
             if s.is_empty() {
                 // Empty string is treated as no receiver
                 None
@@ -687,7 +707,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
                 }
             }
         },
-        Value::Null => None, // Explicitly null is OK
+        serde_json::Value::Null => None, // Explicitly null is OK
         _ => {
             // Field exists but is not a string or null
             if json_data.get("receiver").is_some() {
@@ -700,7 +720,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
 
     // 5. Validate reply_to_sig field (optional)
     let reply_to_sig_info = match &json_data["reply_to_sig"] {
-        Value::String(s) => {
+        serde_json::Value::String(s) => {
             if s.is_empty() {
                 // Empty string is treated as no reply
                 None
@@ -723,7 +743,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
                 }
             }
         },
-        Value::Null => None, // Explicitly null is OK
+        serde_json::Value::Null => None, // Explicitly null is OK
         _ => {
             // Field exists but is not a string or null
             if json_data.get("reply_to_sig").is_some() {
@@ -736,7 +756,7 @@ fn parse_and_validate_memo_for_send(memo_data: &[u8], expected_group_id: u64, ex
 
     // Log validation results
     let mut log_parts = vec![
-        format!("category=chat"),
+        format!("category={}", EXPECTED_CATEGORY),
         format!("group_id={}", expected_group_id),
         format!("sender={}", expected_sender),
         format!("message_len={}", message.len()),
@@ -813,26 +833,9 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooLong.into());
     }
     
-    // Check for null bytes (security)
-    if memo_data.iter().any(|&b| b == 0) {
-        msg!("Memo contains null bytes");
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
     // Length is valid, return memo data
     msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
     Ok((true, memo_data.to_vec()))
-}
-
-/// Data structure for group creation memo
-#[derive(Debug, Serialize, Deserialize)]
-struct GroupCreationData {
-    group_id: u64,
-    name: String,
-    description: String,
-    image: String,
-    tags: Vec<String>,
-    min_memo_interval: Option<i64>,
 }
 
 /// Global group counter account
@@ -1107,8 +1110,17 @@ pub enum ErrorCode {
     #[msg("Memo required: SPL Memo instruction must be present with valid memo content.")]
     MemoRequired,
 
-    #[msg("Invalid memo format: Memo must contain valid UTF-8 and properly formatted data.")]
+    #[msg("Invalid memo format: Memo must contain valid Borsh-formatted data.")]
     InvalidMemoFormat,
+
+    #[msg("Unsupported memo version. Please use the correct memo structure version.")]
+    UnsupportedMemoVersion,
+
+    #[msg("Unsupported chat group creation data version. Please use the correct structure version.")]
+    UnsupportedChatGroupDataVersion,
+
+    #[msg("Invalid chat group creation data format in user_data. Must be valid Borsh-serialized data.")]
+    InvalidChatGroupDataFormat,
 
     #[msg("Group ID mismatch: Group ID from memo does not match instruction parameter.")]
     GroupIdMismatch,
@@ -1155,6 +1167,9 @@ pub enum ErrorCode {
     #[msg("Invalid category: Must be 'chat' for chat group operations.")]
     InvalidCategory,
     
+    #[msg("Invalid category length. Category must be exactly the expected length.")]
+    InvalidCategoryLength,
+    
     #[msg("Missing sender field in memo JSON.")]
     MissingSenderField,
     
@@ -1184,4 +1199,13 @@ pub enum ErrorCode {
     
     #[msg("Invalid operation: Operation does not match the expected operation for this instruction.")]
     InvalidOperation,
+
+    #[msg("User data too long. (maximum 787 bytes).")]
+    UserDataTooLong,
+
+    #[msg("Invalid memo interval: Must be between 0 and 86400 seconds (24 hours).")]
+    InvalidMemoInterval,
+
+    #[msg("Payload too long. (maximum 787 bytes).")]
+    PayloadTooLong,
 }
