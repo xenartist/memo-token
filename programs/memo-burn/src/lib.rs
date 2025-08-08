@@ -23,8 +23,8 @@ const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
 const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
 const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
 
-// maximum user data length = memo maximum length - borsh fixed overhead
-pub const MAX_USER_DATA_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
+// maximum payload length = memo maximum length - borsh fixed overhead
+pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
@@ -46,8 +46,8 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// user data (variable length, max 787 bytes)
-    pub user_data: Vec<u8>,
+    /// application payload (variable length, max 787 bytes)
+    pub payload: Vec<u8>,
 }
 
 #[program]
@@ -124,22 +124,22 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
         return Err(ErrorCode::BurnAmountMismatch.into());
     }
     
-    // validate user_data length does not exceed maximum allowed value (fully utilize space)
-    if burn_memo.user_data.len() > MAX_USER_DATA_LENGTH {
-        msg!("User data too long: {} bytes (max: {})", 
-             burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
-        return Err(ErrorCode::UserDataTooLong.into());
+    // validate payload length does not exceed maximum allowed value
+    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
+        msg!("Payload too long: {} bytes (max: {})", 
+             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
+        return Err(ErrorCode::PayloadTooLong.into());
     }
     
-    msg!("Borsh memo validation passed: version {}, {} units, user_data: {} bytes (max: {})", 
-         burn_memo.version, expected_amount, burn_memo.user_data.len(), MAX_USER_DATA_LENGTH);
+    msg!("Borsh memo validation passed: version {}, {} units, payload: {} bytes (max: {})", 
+         burn_memo.version, expected_amount, burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
     
-    // record user_data preview
-    if !burn_memo.user_data.is_empty() {
-        if let Ok(preview) = std::str::from_utf8(&burn_memo.user_data[..burn_memo.user_data.len().min(32)]) {
-            msg!("User data preview: {}...", preview);
+    // record payload preview
+    if !burn_memo.payload.is_empty() {
+        if let Ok(preview) = std::str::from_utf8(&burn_memo.payload[..burn_memo.payload.len().min(32)]) {
+            msg!("Payload preview: {}...", preview);
         } else {
-            msg!("User data: [binary data, {} bytes]", burn_memo.user_data.len());
+            msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
         }
     }
     
@@ -272,6 +272,6 @@ pub enum ErrorCode {
     #[msg("Memo too long (maximum 800 bytes).")]
     MemoTooLong,
     
-    #[msg("User data too long. (maximum 787 bytes).")]
-    UserDataTooLong,
+    #[msg("Payload too long. (maximum 787 bytes).")]
+    PayloadTooLong,
 }
