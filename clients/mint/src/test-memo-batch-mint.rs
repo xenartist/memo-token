@@ -16,102 +16,192 @@ use spl_associated_token_account::{
 };
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
-use serde_json;
+use borsh::{BorshSerialize, BorshDeserialize};
 use rand::{thread_rng, Rng};
 use chrono::Utc;
 
-// import token-2022 program id
+// Import token-2022 program id
 use spl_token_2022::id as token_2022_id;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Memo Token batch mint test client ===\n");
+// simplified borsh data structure - only one string field
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct SimpleMintMemoData {
+    /// single string field, used to control the total length of the memo
+    pub content: String,
+}
+
+// simplified random borsh memo generation function - use ASCII, no Base64
+fn create_random_valid_borsh_memo() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut rng = thread_rng();
     
-    // get command line arguments
+    // generate random length ASCII content
+    let content_length = rng.gen_range(50..500);
+    let content = format!("Batch mint test at {} - {}", 
+                         Utc::now().to_rfc3339(),
+                         "x".repeat(content_length));
+    
+    let borsh_data = SimpleMintMemoData { content };
+    
+    // serialize to Borsh, directly use (no Base64)
+    let borsh_bytes = borsh_data.try_to_vec()?;
+    
+    // check if the length is reasonable
+    if borsh_bytes.len() < 69 {
+        return Err("Generated memo too short".into());
+    }
+    if borsh_bytes.len() > 800 {
+        return Err("Generated memo too long".into());
+    }
+    
+    Ok(borsh_bytes)
+}
+
+// create exact length memo - use ASCII, no Base64
+fn create_exact_length_memo(target_length: usize) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // directly calculate the required string length
+    // Borsh serialization: 4 bytes (string length) + string content
+    if target_length < 4 {
+        return Err("Target length too small for Borsh string".into());
+    }
+    
+    let content_length = target_length - 4; // subtract 4 bytes length prefix
+    let content = "x".repeat(content_length);
+    
+    let borsh_data = SimpleMintMemoData { content };
+    let borsh_bytes = borsh_data.try_to_vec()?;
+    
+    println!("Generated memo: content_length={}, borsh_length={}, target={}", 
+            content_length, borsh_bytes.len(), target_length);
+    
+    if borsh_bytes.len() == target_length {
+        println!("🎯 Found exact target length: {} bytes", target_length);
+        Ok(borsh_bytes)
+    } else {
+        println!("⚠️  Length mismatch: got {} bytes (target: {})", borsh_bytes.len(), target_length);
+        Ok(borsh_bytes) // return the closest result
+    }
+}
+
+// Constants matching the contract patterns
+const BATCH_MINT_MEMO_VERSION: u8 = 1;
+const EXPECTED_CATEGORY: &str = "mint";
+const EXPECTED_OPERATION: &str = "batch_mint";
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== Memo Token batch mint test client (BORSH FORMAT) ===\n");
+    
+    // Get command line arguments - support direct parameter format
     let args: Vec<String> = std::env::args().collect();
     
-    // parse mint count
-    let mint_count = if args.len() > 1 {
-        args[1].parse::<u64>().unwrap_or(0)
+    // Parse command line arguments - the first parameter is the mode
+    let test_mode = if args.len() > 1 {
+        args[1].clone()
     } else {
-        0 // default to 0 means infinite execution
+        "valid-memo".to_string() // default mode
     };
 
-    // show execution plan
-    if mint_count == 0 {
-        println!("execution plan: infinite mint operation");
-    } else {
-        println!("execution plan: mint {} times", mint_count);
+    // Show execution plan
+    match test_mode.as_str() {
+        "valid-memo" => {
+            println!("Execution plan: infinite mint operation with random memo lengths");
+        },
+        "memo-69" => {
+            println!("Execution plan: infinite mint operation testing minimum memo length (69 bytes)");
+        },
+        "memo-800" => {
+            println!("Execution plan: infinite mint operation testing maximum memo length (800 bytes)");
+        },
+        _ => {
+            print_usage();
+            return Ok(());
+        }
     }
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
     let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // ensure token account exists
+    // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // start batch mint operation
+    // Start batch mint operation (infinite loop)
     let mut completed_mints = 0u64;
     let mut successful_mints = 0u64;
-    let mut total_tokens_minted = 0u64; // Track total tokens minted (in lamports)
+    let mut total_tokens_minted = 0u64;
     
     loop {
-        // check if reached the specified number of times
-        if mint_count > 0 && completed_mints >= mint_count {
-            break;
-        }
-        
         completed_mints += 1;
         
-        // get current token balance (raw lamports)
+        // Get current token balance (raw lamports)
         let balance_before = get_token_balance_raw(&client, &token_account);
         
-        // generate random length valid memo (69-800 bytes)
-        let memo_text = create_random_valid_memo();
-        println!("\n🔄 execute the {}th mint operation", completed_mints);
-        println!("memo length: {} bytes", memo_text.len());
+        // Generate memo based on test mode
+        let memo_bytes = match test_mode.as_str() {
+            "valid-memo" => create_random_valid_borsh_memo()?,
+            "memo-69" => create_exact_length_memo(69)?,
+            "memo-800" => create_exact_length_memo(800)?,
+            _ => return Err("Invalid test mode".into())
+        };
         
-        // create memo instruction
-        let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+        println!("\n🔄 Execute the {}th mint operation", completed_mints);
+        println!("Memo length: {} bytes (Borsh format)", memo_bytes.len());
         
-        // create mint instruction
+        // Debug: Show first 50 bytes of memo as ASCII (no Base64) 
+        if memo_bytes.len() <= 100 {
+            if let Ok(ascii_str) = std::str::from_utf8(&memo_bytes) {
+                println!("Memo preview: {}", ascii_str);
+            } else {
+                println!("Memo preview: [binary data, {} bytes]", memo_bytes.len());
+            }
+        } else {
+            if let Ok(ascii_str) = std::str::from_utf8(&memo_bytes[..50]) {
+                println!("Memo preview: {}...", ascii_str);
+            } else {
+                println!("Memo preview: [binary data, {} bytes]", memo_bytes.len());
+            }
+        }
+        
+        // Create memo instruction
+        let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+        
+        // Create mint instruction
         let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
         
-        // execute transaction
+        // Execute transaction
         match execute_transaction(&client, &payer, vec![memo_ix, mint_ix], &format!("batch mint #{}", completed_mints)) {
             Ok(signature) => {
                 successful_mints += 1;
                 
-                // check token balance change - prevent underflow
+                // Check token balance change
                 let balance_after = get_token_balance_raw(&client, &token_account);
                 let raw_minted = if balance_after >= balance_before {
                     balance_after - balance_before
                 } else {
                     println!("   ⚠️  Warning: balance_after ({}) < balance_before ({})", balance_after, balance_before);
-                    0 // if there is an exception, set to 0
+                    0
                 };
                 
                 total_tokens_minted += raw_minted;
                 
-                println!("✅ transaction successful!");
-                println!("   signature: {}", signature);
-                println!("   token balance change: {} -> {} lamports", balance_before, balance_after);
-                println!("   tokens minted this time: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
+                println!("✅ Transaction successful!");
+                println!("   Signature: {}", signature);
+                println!("   Token balance change: {} -> {} lamports", balance_before, balance_after);
+                println!("   Tokens minted this time: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
                 
                 // Show mint stage information
                 let (is_valid, description) = validate_mint_amount(raw_minted);
                 if is_valid {
-                    println!("   📊 mint stage: {}", description);
+                    println!("   📊 Mint stage: {}", description);
                 } else {
                     println!("   ⚠️  {}", description);
                 }
                 
-                println!("   cumulative successful: {}/{}", successful_mints, completed_mints);
-                println!("   total tokens accumulated: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
+                println!("   Cumulative successful: {}/{}", successful_mints, completed_mints);
+                println!("   Total tokens accumulated: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
             },
             Err(e) => {
-                println!("❌ transaction failed!");
-                println!("   error: {}", e);
+                println!("❌ Transaction failed!");
+                println!("   Error: {}", e);
                 
                 // Check for specific errors
                 if e.to_string().contains("SupplyLimitReached") {
@@ -122,7 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 
-                println!("   cumulative successful: {}/{}", successful_mints, completed_mints);
+                println!("   Cumulative successful: {}/{}", successful_mints, completed_mints);
             }
         }
         
@@ -130,23 +220,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     
-    // show final statistics
-    println!("\n📊 batch mint execution statistics:");
-    println!("   total execution times: {}", completed_mints);
-    println!("   successful times: {}", successful_mints);
-    println!("   failed times: {}", completed_mints - successful_mints);
-    println!("   success rate: {:.2}%", (successful_mints as f64 / completed_mints as f64) * 100.0);
-    println!("   total tokens minted: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
+    // Show final statistics
+    println!("\n📊 Batch mint execution statistics:");
+    println!("   Test mode: {}", test_mode);
+    println!("   Total execution times: {}", completed_mints);
+    println!("   Successful times: {}", successful_mints);
+    println!("   Failed times: {}", completed_mints - successful_mints);
+    println!("   Success rate: {:.2}%", (successful_mints as f64 / completed_mints as f64) * 100.0);
+    println!("   Total tokens minted: {} lamports ({})", total_tokens_minted, format_token_amount(total_tokens_minted));
     
     // Final balance check
     let final_balance = get_token_balance_raw(&client, &token_account);
-    println!("   final token balance: {} lamports ({})", final_balance, format_token_amount(final_balance));
+    println!("   Final token balance: {} lamports ({})", final_balance, format_token_amount(final_balance));
     
     Ok(())
 }
 
+fn print_usage() {
+    println!("Usage: cargo run --bin test-memo-batch-mint [mode]");
+    println!();
+    println!("Parameters:");
+    println!("  mode   - Test mode:");
+    println!("           valid-memo - Random memo lengths (default)");
+    println!("           memo-69    - Test minimum length (69 bytes)");
+    println!("           memo-800   - Test maximum length (800 bytes)");
+    println!();
+    println!("Examples:");
+    println!("  cargo run --bin test-memo-batch-mint                # Random lengths");
+    println!("  cargo run --bin test-memo-batch-mint valid-memo     # Random lengths");
+    println!("  cargo run --bin test-memo-batch-mint memo-69        # 69 bytes");
+    println!("  cargo run --bin test-memo-batch-mint memo-800       # 800 bytes");
+}
+
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
-    // try multiple times to ensure consistency
+    // Try multiple times to ensure consistency
     for attempt in 0..3 {
         match client.get_account(token_account) {
             Ok(account) => {
@@ -164,7 +271,7 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
             }
         }
         
-        // if failed, wait a little bit and try again
+        // If failed, wait a little bit and try again
         if attempt < 2 {
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
@@ -205,54 +312,25 @@ fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
     }
 }
 
-// generate random length valid memo (69-800 bytes)
-fn create_random_valid_memo() -> String {
-    let mut rng = thread_rng();
-    let target_length = rng.gen_range(69..=800);
-    
-    let message = format!("Batch mint test at {}", Utc::now().to_rfc3339());
-    let random_data = (0..target_length)
-        .map(|_| rng.gen_range(b'a'..=b'z') as char)
-        .collect::<String>();
-    
-    let memo_json = serde_json::json!({
-        "message": message,
-        "timestamp": Utc::now().to_rfc3339(),
-        "random_data": random_data
-    });
-    
-    let mut memo_text = memo_json.to_string();
-    
-    // fine-tune to reach the target length
-    while memo_text.len() < target_length {
-        memo_text.push('x');
-    }
-    while memo_text.len() > target_length {
-        memo_text.pop();
-    }
-    
-    memo_text
-}
-
 fn create_rpc_client() -> RpcClient {
     let rpc_url = "https://rpc.testnet.x1.xyz";
-    println!("connect to: {}", rpc_url);
+    println!("Connect to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }
 
 fn load_payer_keypair() -> solana_sdk::signature::Keypair {
     let payer = read_keypair_file(
         shellexpand::tilde("~/.config/solana/id.json").to_string()
-    ).expect("cannot read payer keypair file");
-    println!("use payer: {}", payer.pubkey());
+    ).expect("Cannot read payer keypair file");
+    println!("Use payer: {}", payer.pubkey());
     payer
 }
 
 fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     let program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
-        .expect("invalid program id");
+        .expect("Invalid program id");
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("invalid mint address");
+        .expect("Invalid mint address");
     
     let (mint_authority_pda, _bump) = Pubkey::find_program_address(
         &[b"mint_authority"],
@@ -261,7 +339,7 @@ fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     
     let payer = read_keypair_file(
         shellexpand::tilde("~/.config/solana/id.json").to_string()
-    ).expect("cannot read keypair file");
+    ).expect("Cannot read keypair file");
     
     let token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),
@@ -269,10 +347,10 @@ fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
         &token_2022_id(),
     );
     
-    println!("program id: {}", program_id);
-    println!("mint address: {}", mint_address);
-    println!("mint authority pda: {}", mint_authority_pda);
-    println!("token account: {}", token_account);
+    println!("Program ID: {}", program_id);
+    println!("Mint address: {}", mint_address);
+    println!("Mint authority PDA: {}", mint_authority_pda);
+    println!("Token account: {}", token_account);
     println!();
     
     (program_id, mint_address, mint_authority_pda, token_account)
@@ -286,10 +364,10 @@ fn ensure_token_account_exists(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match client.get_account(token_account) {
         Ok(_) => {
-            println!("✅ token account exists: {}", token_account);
+            println!("✅ Token account exists: {}", token_account);
         },
         Err(_) => {
-            println!("⚠️  token account does not exist, creating...");
+            println!("⚠️  Token account does not exist, creating...");
             
             let create_ata_ix = create_associated_token_account(
                 &payer.pubkey(),
@@ -309,12 +387,12 @@ fn ensure_token_account_exists(
             
             match client.send_and_confirm_transaction(&transaction) {
                 Ok(signature) => {
-                    println!("✅ token account created successfully!");
-                    println!("   signature: {}", signature);
-                    println!("   account: {}", token_account);
+                    println!("✅ Token account created successfully!");
+                    println!("   Signature: {}", signature);
+                    println!("   Account: {}", token_account);
                 },
                 Err(e) => {
-                    return Err(format!("failed to create token account: {}", e).into());
+                    return Err(format!("Failed to create token account: {}", e).into());
                 }
             }
         }
