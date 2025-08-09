@@ -740,46 +740,14 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
 
 /// Parse and validate Borsh-formatted memo data for sending messages
 fn parse_message_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_sender: Pubkey) -> Result<String> {
-    // Deserialize Borsh data (following memo-burn pattern)
-    let burn_memo = BurnMemo::try_from_slice(memo_data)
+    // Deserialize ChatMessageData
+    let message_data = ChatMessageData::try_from_slice(memo_data)
         .map_err(|_| {
-            msg!("Invalid memo format");
-            ErrorCode::InvalidMemoFormat
-        })?;
-    
-    // Validate version compatibility
-    if burn_memo.version != BURN_MEMO_VERSION {
-        msg!("Unsupported memo version: {} (expected: {})", 
-             burn_memo.version, BURN_MEMO_VERSION);
-        return Err(ErrorCode::UnsupportedMemoVersion.into());
-    }
-    
-    // Note: For send_message, we don't require burn_amount validation
-    // because sending messages doesn't require burning tokens
-    
-    // Validate payload length does not exceed maximum allowed value
-    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
-        msg!("Payload too long: {} bytes (max: {})", 
-             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-        return Err(ErrorCode::PayloadTooLong.into());
-    }
-    
-    msg!("Borsh memo validation passed: version {}, payload: {} bytes", 
-         burn_memo.version, burn_memo.payload.len());
-    
-    // Record payload preview for debugging
-    if !burn_memo.payload.is_empty() {
-        msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
-    }
-    
-    // Deserialize ChatMessageData from payload
-    let message_data = ChatMessageData::try_from_slice(&burn_memo.payload)
-        .map_err(|_| {
-            msg!("Invalid chat message data format in payload");
+            msg!("Invalid chat message data format");
             ErrorCode::InvalidChatMessageDataFormat
         })?;
     
-    // Validate the message data
+    // Validate message data
     message_data.validate(expected_group_id, expected_sender)?;
     
     msg!("Chat message data parsed successfully: group_id={}, sender={}, message_len={}, receiver={:?}, reply_to={:?}", 

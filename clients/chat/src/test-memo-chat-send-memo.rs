@@ -81,63 +81,23 @@ struct TestParams {
 
 /// Generate Borsh-formatted memo for sending messages
 fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    // Determine category based on test case
-    let category = if params.invalid_category {
-        "invalid".to_string()
-    } else {
-        EXPECTED_CATEGORY.to_string()
-    };
-    
-    // Determine operation based on test case  
-    let operation = if params.invalid_operation {
-        "invalid_operation".to_string()
-    } else {
-        EXPECTED_SEND_MESSAGE_OPERATION.to_string()
-    };
-    
-    // Determine group_id
-    let group_id = if params.wrong_group_id {
-        params.group_id + 1
-    } else {
-        params.group_id
-    };
-    
-    // Determine sender
-    let sender_string = if params.wrong_sender {
-        "11111111111111111111111111111111".to_string()
-    } else {
-        sender.to_string()
-    };
-    
-    // Create ChatMessageData
+    //  Create ChatMessageData
     let message_data = ChatMessageData {
         version: CHAT_GROUP_CREATION_DATA_VERSION,
-        category,
-        operation,
-        group_id,
-        sender: sender_string,  // 使用字符串
+        category: if params.invalid_category { "wrong_category".to_string() } else { EXPECTED_CATEGORY.to_string() },
+        operation: if params.invalid_operation { "wrong_operation".to_string() } else { EXPECTED_SEND_MESSAGE_OPERATION.to_string() },
+        group_id: if params.wrong_group_id { params.group_id + 999 } else { params.group_id },
+        sender: if params.wrong_sender { Pubkey::new_unique().to_string() } else { sender.to_string() },
         message: params.message_content.clone(),
-        receiver: params.receiver.map(|r| r.to_string()),  // 转换为字符串
+        receiver: params.receiver.map(|pk| pk.to_string()),
         reply_to_sig: params.reply_to_sig.clone(),
     };
     
-    // Serialize ChatMessageData to bytes (this becomes the payload)
-    let payload = message_data.try_to_vec()?;
-    
-    // Create BurnMemo with the payload
-    // Note: For send_message, burn_amount can be 0 since we don't require burning
-    let burn_memo = BurnMemo {
-        version: BURN_MEMO_VERSION,
-        burn_amount: 0, // No burning required for sending messages
-        payload,
-    };
-    
-    // Serialize the entire BurnMemo to bytes
-    let memo_bytes = burn_memo.try_to_vec()?;
+    //  Serialize ChatMessageData
+    let memo_bytes = message_data.try_to_vec()?;
     
     println!("Borsh structure sizes:");
-    println!("  ChatMessageData payload: {} bytes", burn_memo.payload.len());
-    println!("  Complete BurnMemo: {} bytes", memo_bytes.len());
+    println!("  ChatMessageData: {} bytes", memo_bytes.len());
     
     Ok(memo_bytes)
 }
