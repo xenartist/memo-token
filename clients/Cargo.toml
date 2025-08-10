@@ -8,6 +8,10 @@ name = "test-memo-mint"
 path = "mint/src/test-memo-mint.rs"
 
 [[bin]]
+name = "test-memo-batch-mint-ascii"
+path = "mint/src/test-memo-batch-mint-ascii.rs"
+
+[[bin]]
 name = "test-memo-mint-to"
 path = "mint/src/test-memo-mint-to.rs"
 
