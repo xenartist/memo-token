@@ -13,6 +13,7 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
+use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -86,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    println!("=== MEMO-BURN CONTRACT TEST (BORSH FORMAT) ===");
+    println!("=== MEMO-BURN CONTRACT TEST (BORSH+BASE64 FORMAT) ===");
     println!("Burn amount: {} tokens ({} units, decimal=6)", burn_amount_tokens, burn_amount);
     println!("Test type: {}", test_type);
     if let Some(length) = custom_memo_length {
@@ -169,30 +170,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     match memo_result {
         Ok(memo_bytes) => {
-            println!("Memo length: {} bytes", memo_bytes.len());
+            println!("Base64-encoded memo length: {} bytes", memo_bytes.len());
             
-            // Show memo structure info
-            if memo_bytes.len() >= 13 {
-                // Try to deserialize to show structure
-                if let Ok(borsh_memo) = BurnMemo::try_from_slice(&memo_bytes) {
-                    println!("Borsh memo structure:");
-                    println!("  version: {}", borsh_memo.version);
-                    println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
-                    println!("  payload: {} bytes", borsh_memo.payload.len());
+            // Show memo structure info by decoding the Base64 first
+            if let Ok(base64_str) = std::str::from_utf8(&memo_bytes) {
+                if let Ok(decoded_data) = general_purpose::STANDARD.decode(base64_str) {
+                    println!("Decoded Borsh data length: {} bytes", decoded_data.len());
                     
-                    // Show payload preview
-                    if !borsh_memo.payload.is_empty() {
-                        if let Ok(preview) = std::str::from_utf8(&borsh_memo.payload[..borsh_memo.payload.len().min(50)]) {
-                            println!("  payload preview (text): {}...", preview);
+                    // Try to deserialize to show structure
+                    if decoded_data.len() >= 13 {
+                        if let Ok(borsh_memo) = BurnMemo::try_from_slice(&decoded_data) {
+                            println!("Borsh memo structure:");
+                            println!("  version: {}", borsh_memo.version);
+                            println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
+                            println!("  payload: {} bytes", borsh_memo.payload.len());
+                            
+                            // Show payload preview
+                            if !borsh_memo.payload.is_empty() {
+                                if let Ok(preview) = std::str::from_utf8(&borsh_memo.payload[..borsh_memo.payload.len().min(50)]) {
+                                    println!("  payload preview (text): {}...", preview);
+                                } else {
+                                    println!("  payload preview (hex): {}...", hex::encode(&borsh_memo.payload[..borsh_memo.payload.len().min(32)]));
+                                }
+                            }
                         } else {
-                            println!("  payload preview (hex): {}...", hex::encode(&borsh_memo.payload[..borsh_memo.payload.len().min(32)]));
+                            println!("Decoded data (hex, first 50): {:?}...", &decoded_data[..decoded_data.len().min(50)]);
                         }
+                    } else {
+                        println!("Decoded data too short: {:?}", decoded_data);
                     }
                 } else {
-                    println!("Raw memo bytes (first 50): {:?}...", &memo_bytes[..memo_bytes.len().min(50)]);
+                    println!("Failed to decode Base64, raw memo bytes (first 50): {:?}...", &memo_bytes[..memo_bytes.len().min(50)]);
                 }
             } else {
-                println!("Raw memo bytes: {:?}", memo_bytes);
+                println!("Invalid UTF-8 in memo bytes");
             }
             println!();
 
@@ -330,88 +341,119 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
     match test_type {
         "valid-memo" => {
             // Create valid Borsh memo with reasonable user data
-            let user_data = b"Testing memo-burn contract with Borsh format. This is valid user data for burn operation.".to_vec();
+            let user_data = b"Testing memo-burn contract with Borsh+Base64 format. This is valid user data for burn operation.".to_vec();
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
                 payload: user_data,
             };
-            Ok(borsh::to_vec(&memo).unwrap())
+            let borsh_data = borsh::to_vec(&memo).unwrap();
+            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+            Ok(base64_encoded.into_bytes())
         },
         "memo-69" => {
-            // Create memo exactly 69 bytes
-            // 69 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 56 (user data)
-            let user_data = vec![b'x'; 56];
+            // Create memo that when Base64 encoded results in exactly 69 bytes
+            // Base64 encoding increases size by ~33%, so target raw data of ~52 bytes
+            // 52 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 39 (user data)
+            let user_data = vec![b'x'; 39];
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
                 payload: user_data,
             };
-            let result = borsh::to_vec(&memo).unwrap();
-            assert_eq!(result.len(), 69, "Memo should be exactly 69 bytes");
-            Ok(result)
+            let borsh_data = borsh::to_vec(&memo).unwrap();
+            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+            
+            // Adjust if needed to get exactly 69 bytes
+            let mut final_encoded = base64_encoded;
+            while final_encoded.len() < 69 {
+                final_encoded.push('=');
+            }
+            final_encoded.truncate(69);
+            
+            println!("Generated Base64 memo: {} bytes (from {} bytes Borsh)", 
+                final_encoded.len(), borsh_data.len());
+            Ok(final_encoded.into_bytes())
         },
         "memo-800" => {
-            // Create memo exactly 800 bytes
-            // 800 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 787 (user data)
-            let user_data = vec![b'x'; 787];
+            // Create memo that when Base64 encoded results in exactly 800 bytes
+            // Base64 encoding: every 3 bytes -> 4 chars, so 800 chars = 600 bytes raw
+            // 600 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 587 (user data)
+            let user_data = vec![b'x'; 587];
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
                 payload: user_data,
             };
-            let result = borsh::to_vec(&memo).unwrap();
-            assert_eq!(result.len(), 800, "Memo should be exactly 800 bytes");
-            Ok(result)
+            let borsh_data = borsh::to_vec(&memo).unwrap();
+            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+            
+            // Ensure exactly 800 bytes
+            let mut final_encoded = base64_encoded;
+            while final_encoded.len() < 800 {
+                final_encoded.push('=');
+            }
+            final_encoded.truncate(800);
+            
+            println!("Generated Base64 memo: {} bytes (from {} bytes Borsh)", 
+                final_encoded.len(), borsh_data.len());
+            Ok(final_encoded.into_bytes())
         },
         "short-memo" => {
             // Create memo less than 69 bytes (should fail)
-            // Create minimal invalid memo
-            Ok(vec![1, 2, 3, 4, 5]) // 5 bytes, definitely too short
+            Ok(b"short".to_vec()) // 5 bytes, definitely too short
         },
         "long-memo" => {
             // Create memo more than 800 bytes (should fail)
-            // 851 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 838 (user data)
-            let user_data = vec![b'x'; 838];
+            let large_data = vec![b'x'; 1000]; // Much larger than needed
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
                 burn_amount,
-                payload: user_data,
+                payload: large_data,
             };
-            Ok(borsh::to_vec(&memo).unwrap())
+            let borsh_data = borsh::to_vec(&memo).unwrap();
+            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+            Ok(base64_encoded.into_bytes())
         },
         "custom-length" => {
-            // Create memo with specified total length
             let target_length = custom_length.unwrap_or(100);
             
             if target_length < 13 {
-                // Too small for valid Borsh structure (1 + 8 + 4 = 13 minimum)
-                Ok(vec![0; target_length])
+                // Too small for valid Base64 of Borsh structure
+                Ok(vec![b'x'; target_length])
             } else {
-                // Calculate user data size: total - 1 (version) - 8 (burn_amount) - 4 (vec length)
-                let user_data_size = target_length - 13;
-                let user_data = if user_data_size > 0 {
-                    // Create meaningful test data
-                    let pattern = b"TestData123";
-                    let mut data = Vec::with_capacity(user_data_size);
-                    for i in 0..user_data_size {
-                        data.push(pattern[i % pattern.len()]);
-                    }
-                    data
+                // Calculate approximate raw data size: target_length / 1.33 (Base64 overhead)
+                let estimated_raw_size = (target_length as f64 / 1.33) as usize;
+                
+                if estimated_raw_size < 13 {
+                    // Too small for valid Borsh structure
+                    Ok(vec![b'x'; target_length])
                 } else {
-                    vec![]
-                };
-                
-                let memo = BurnMemo {
-                    version: BURN_MEMO_VERSION,
-                    burn_amount,
-                    payload: user_data,
-                };
-                let result = borsh::to_vec(&memo).unwrap();
-                
-                println!("Generated {}-byte memo, actual length: {} bytes", 
-                    target_length, result.len());
-                Ok(result)
+                    // Calculate user data size: estimated_raw_size - 13 (Borsh overhead)
+                    let user_data_size = estimated_raw_size.saturating_sub(13);
+                    let user_data = if user_data_size > 0 {
+                        let pattern = b"TestData123";
+                        let mut data = Vec::with_capacity(user_data_size);
+                        for i in 0..user_data_size {
+                            data.push(pattern[i % pattern.len()]);
+                        }
+                        data
+                    } else {
+                        vec![]
+                    };
+                    
+                    let memo = BurnMemo {
+                        version: BURN_MEMO_VERSION,
+                        burn_amount,
+                        payload: user_data,
+                    };
+                    let borsh_data = borsh::to_vec(&memo).unwrap();
+                    let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+                    
+                    println!("Generated Base64 memo: {} bytes (target: {}, from {} bytes Borsh)", 
+                        base64_encoded.len(), target_length, borsh_data.len());
+                    Ok(base64_encoded.into_bytes())
+                }
             }
         },
         "no-memo" => {
@@ -555,7 +597,7 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
 }
 
 fn print_error_guidance(error_msg: &str) {
-    println!("\n=== ERROR ANALYSIS (BORSH FORMAT) ===");
+    println!("\n=== ERROR ANALYSIS (BORSH+BASE64 FORMAT) ===");
     
     if error_msg.contains("Custom(6000)") || error_msg.contains("MemoRequired") {
         println!("💡 Missing Memo: This contract requires a memo instruction.");
@@ -564,8 +606,9 @@ fn print_error_guidance(error_msg: &str) {
     } else if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
         println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
     } else if error_msg.contains("Custom(6001)") || error_msg.contains("InvalidMemoFormat") {
-        println!("💡 Invalid Memo Format: Expected Borsh-serialized BurnMemo structure");
-        println!("   Structure: {{ version: u8, burn_amount: u64, user_data: Vec<u8> }}");
+        println!("💡 Invalid Memo Format: Expected Base64-encoded Borsh-serialized BurnMemo structure");
+        println!("   Structure: {{ version: u8, burn_amount: u64, payload: Vec<u8> }}");
+        println!("   Process: Borsh serialize -> Base64 encode -> UTF-8 memo");
     } else if error_msg.contains("Custom(6002)") || error_msg.contains("UnsupportedMemoVersion") {
         println!("💡 Unsupported Version: Memo version mismatch (expected version 1)");
         println!("   Make sure to use the current BurnMemo structure version");

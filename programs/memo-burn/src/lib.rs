@@ -7,6 +7,7 @@ use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use anchor_lang::solana_program::pubkey;
 use spl_memo::ID as MEMO_PROGRAM_ID;
+use base64::{Engine as _, engine::general_purpose};
 
 declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
 
@@ -94,19 +95,34 @@ pub mod memo_burn {
             amount,
         )?;
 
-        msg!("Successfully burned {} tokens ({} units) with Borsh memo validation", 
+        msg!("Successfully burned {} tokens ({} units) with Borsh+Base64 memo validation", 
              token_count, amount);
         
         Ok(())
     }
 }
 
-/// validate Borsh-formatted memo data
+/// validate Borsh-formatted memo data (with Base64 decoding)
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    // deserialize Borsh data
-    let burn_memo = BurnMemo::try_from_slice(memo_data)
+    // First, decode the Base64-encoded memo data
+    let base64_str = std::str::from_utf8(memo_data)
         .map_err(|_| {
-            msg!("Invalid memo format");
+            msg!("Invalid UTF-8 in memo data");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+        .map_err(|_| {
+            msg!("Invalid Base64 encoding in memo");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    
+    // Then deserialize Borsh data from decoded bytes
+    let burn_memo = BurnMemo::try_from_slice(&decoded_data)
+        .map_err(|_| {
+            msg!("Invalid Borsh format after Base64 decoding");
             ErrorCode::InvalidMemoFormat
         })?;
     
@@ -131,7 +147,7 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
         return Err(ErrorCode::PayloadTooLong.into());
     }
     
-    msg!("Borsh memo validation passed: version {}, {} units, payload: {} bytes (max: {})", 
+    msg!("Borsh+Base64 memo validation passed: version {}, {} units, payload: {} bytes (max: {})", 
          burn_memo.version, expected_amount, burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
     
     // record payload preview

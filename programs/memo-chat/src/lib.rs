@@ -12,6 +12,7 @@ use anchor_lang::solana_program::{instruction::Instruction, program::invoke_sign
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use spl_memo::ID as MEMO_PROGRAM_ID;
+use base64::{Engine as _, engine::general_purpose};
 
 // Memo length constraints (consistent with memo-mint and memo-burn)
 pub const MEMO_MIN_LENGTH: usize = 69;
@@ -578,12 +579,27 @@ pub mod memo_chat {
     }
 }
 
-/// Parse and validate Borsh-formatted memo data for group creation
+/// Parse and validate Borsh-formatted memo data for group creation (with Base64 decoding)
 fn parse_group_creation_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_amount: u64) -> Result<ChatGroupCreationData> {
-    // Deserialize Borsh data (following memo-burn pattern)
-    let burn_memo = BurnMemo::try_from_slice(memo_data)
+    // First, decode the Base64-encoded memo data
+    let base64_str = std::str::from_utf8(memo_data)
         .map_err(|_| {
-            msg!("Invalid memo format");
+            msg!("Invalid UTF-8 in memo data");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+        .map_err(|_| {
+            msg!("Invalid Base64 encoding in memo");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    
+    // Deserialize Borsh data from decoded bytes (following memo-burn pattern)
+    let burn_memo = BurnMemo::try_from_slice(&decoded_data)
+        .map_err(|_| {
+            msg!("Invalid Borsh format after Base64 decoding");
             ErrorCode::InvalidMemoFormat
         })?;
     
@@ -608,7 +624,7 @@ fn parse_group_creation_borsh_memo(memo_data: &[u8], expected_group_id: u64, exp
         return Err(ErrorCode::PayloadTooLong.into());
     }
     
-    msg!("Borsh memo validation passed: version {}, {} units, payload: {} bytes", 
+    msg!("Borsh+Base64 memo validation passed: version {}, {} units, payload: {} bytes", 
          burn_memo.version, expected_amount, burn_memo.payload.len());
     
     // Record payload preview for debugging
@@ -738,12 +754,27 @@ fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amo
     Ok(())
 }
 
-/// Parse and validate Borsh-formatted memo data for sending messages
+/// Parse and validate Borsh-formatted memo data for sending messages (with Base64 decoding)
 fn parse_message_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_sender: Pubkey) -> Result<String> {
-    // Deserialize ChatMessageData
-    let message_data = ChatMessageData::try_from_slice(memo_data)
+    // First, decode the Base64-encoded memo data
+    let base64_str = std::str::from_utf8(memo_data)
         .map_err(|_| {
-            msg!("Invalid chat message data format");
+            msg!("Invalid UTF-8 in memo data");
+            ErrorCode::InvalidChatMessageDataFormat
+        })?;
+    
+    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+        .map_err(|_| {
+            msg!("Invalid Base64 encoding in memo");
+            ErrorCode::InvalidChatMessageDataFormat
+        })?;
+    
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    
+    // Deserialize ChatMessageData from decoded bytes
+    let message_data = ChatMessageData::try_from_slice(&decoded_data)
+        .map_err(|_| {
+            msg!("Invalid Borsh format after Base64 decoding");
             ErrorCode::InvalidChatMessageDataFormat
         })?;
     

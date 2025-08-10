@@ -15,6 +15,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use borsh::{BorshSerialize, BorshDeserialize};
+use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -343,7 +344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("=== MEMO-CHAT CREATE GROUP TEST (BORSH FORMAT) ===");
+    println!("=== MEMO-CHAT CREATE GROUP TEST (BORSH+BASE64 FORMAT) ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
@@ -454,16 +455,39 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Generate Borsh memo
+    // Generate Borsh+Base64 memo
     let memo_bytes = generate_borsh_memo_from_params(&params, next_group_id)?;
     
-    println!("Generated Borsh memo:");
-    println!("  Length: {} bytes", memo_bytes.len());
+    println!("Generated Borsh+Base64 memo:");
+    println!("  Base64 length: {} bytes", memo_bytes.len());
+    
+    // Show the underlying structure by decoding
+    if let Ok(base64_str) = std::str::from_utf8(&memo_bytes) {
+        if let Ok(decoded_data) = general_purpose::STANDARD.decode(base64_str) {
+            println!("  Decoded Borsh length: {} bytes", decoded_data.len());
+            
+            if let Ok(burn_memo) = BurnMemo::try_from_slice(&decoded_data) {
+                println!("  BurnMemo structure:");
+                println!("    version: {}", burn_memo.version);
+                println!("    burn_amount: {} units", burn_memo.burn_amount);
+                println!("    payload: {} bytes", burn_memo.payload.len());
+                
+                if let Ok(group_data) = ChatGroupCreationData::try_from_slice(&burn_memo.payload) {
+                    println!("  ChatGroupCreationData structure:");
+                    println!("    version: {}", group_data.version);
+                    println!("    category: {}", group_data.category);
+                    println!("    operation: {}", group_data.operation);
+                    println!("    group_id: {}", group_data.group_id);
+                    println!("    name: {}", group_data.name);
+                }
+            }
+        }
+    }
+    
     if memo_bytes.len() <= 100 {
-        println!("  Hex: {}", hex::encode(&memo_bytes));
+        println!("  Base64 content: {}", String::from_utf8_lossy(&memo_bytes));
     } else {
-        println!("  Hex (first 50 bytes): {}", hex::encode(&memo_bytes[..50]));
-        println!("  Hex (last 50 bytes): {}", hex::encode(&memo_bytes[memo_bytes.len()-50..]));
+        println!("  Base64 preview: {}...", String::from_utf8_lossy(&memo_bytes[..50]));
     }
     println!();
 
@@ -626,11 +650,16 @@ fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result
     };
     
     // Serialize the entire BurnMemo to bytes
-    let memo_bytes = burn_memo.try_to_vec()?;
+    let borsh_data = burn_memo.try_to_vec()?;
     
-    println!("Borsh structure sizes:");
+    // Encode with Base64
+    let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+    let memo_bytes = base64_encoded.into_bytes();
+    
+    println!("Borsh+Base64 structure sizes:");
     println!("  ChatGroupCreationData payload: {} bytes", burn_memo.payload.len());
-    println!("  Complete BurnMemo: {} bytes", memo_bytes.len());
+    println!("  Complete BurnMemo (Borsh): {} bytes", borsh_data.len());
+    println!("  Base64 encoded memo: {} bytes", memo_bytes.len());
     
     Ok(memo_bytes)
 }
@@ -662,7 +691,7 @@ fn analyze_unexpected_error(error_msg: &str) {
     if error_msg.contains("MemoRequired") {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
-        println!("   Invalid memo format or Borsh parsing failed");
+        println!("   Invalid memo format, Base64 decoding, or Borsh parsing failed");
     } else if error_msg.contains("UnsupportedMemoVersion") {
         println!("   Unsupported memo version");
     } else if error_msg.contains("BurnAmountMismatch") {

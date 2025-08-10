@@ -14,6 +14,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use borsh::{BorshSerialize, BorshDeserialize};
+use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -59,29 +60,26 @@ pub struct ChatMessageData {
 }
 
 // Constants matching the contract
-const BURN_MEMO_VERSION: u8 = 1;
 const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "chat";
 const EXPECTED_SEND_MESSAGE_OPERATION: &str = "send_message";
 
 #[derive(Debug, Clone)]
 struct TestParams {
-    pub group_id: u64,             // Target group ID
-    pub message_content: String,   // Message content to send
-    pub receiver: Option<Pubkey>,  // Optional receiver
-    pub reply_to_sig: Option<String>, // Optional reply signature
-    pub should_succeed: bool,      // Whether the test should succeed
-    pub test_description: String,  // Description of what this test validates
-    pub invalid_category: bool,    // Use invalid category
-    pub invalid_operation: bool,   // Use invalid operation
-    pub wrong_group_id: bool,      // Use wrong group ID
-    pub wrong_sender: bool,        // Use wrong sender
-    pub missing_fields: Vec<String>, // Fields to omit
+    pub group_id: u64,                     // Target group ID
+    pub message_content: String,           // Message to send
+    pub receiver: Option<Pubkey>,          // Optional receiver
+    pub reply_to_sig: Option<String>,      // Optional reply signature
+    pub should_succeed: bool,              // Whether the test should succeed
+    pub test_description: String,          // Description of what this test validates
+    pub invalid_category: bool,            // Use invalid category for negative testing
+    pub invalid_operation: bool,           // Use invalid operation for negative testing
+    pub wrong_group_id: bool,              // Use wrong group ID for negative testing
+    pub wrong_sender: bool,                // Use wrong sender for negative testing
 }
 
-/// Generate Borsh-formatted memo for sending messages
 fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    //  Create ChatMessageData
+    // Create ChatMessageData
     let message_data = ChatMessageData {
         version: CHAT_GROUP_CREATION_DATA_VERSION,
         category: if params.invalid_category { "wrong_category".to_string() } else { EXPECTED_CATEGORY.to_string() },
@@ -93,11 +91,16 @@ fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Resu
         reply_to_sig: params.reply_to_sig.clone(),
     };
     
-    //  Serialize ChatMessageData
-    let memo_bytes = message_data.try_to_vec()?;
+    // Serialize ChatMessageData to Borsh
+    let borsh_data = message_data.try_to_vec()?;
     
-    println!("Borsh structure sizes:");
-    println!("  ChatMessageData: {} bytes", memo_bytes.len());
+    // Encode with Base64
+    let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+    let memo_bytes = base64_encoded.into_bytes();
+    
+    println!("Borsh+Base64 structure sizes:");
+    println!("  ChatMessageData (Borsh): {} bytes", borsh_data.len());
+    println!("  Base64 encoded memo: {} bytes", memo_bytes.len());
     
     Ok(memo_bytes)
 }
@@ -121,94 +124,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             receiver: None,
             reply_to_sig: None,
             should_succeed: true,
-            test_description: "Simple text message to existing group".to_string(),
+            test_description: "Simple text message".to_string(),
             invalid_category: false,
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
         },
-        "long-text" => TestParams {
+        "long-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "This is a much longer message content that tests the message length limits. ".repeat(5),
+            message_content: "a".repeat(512), // Maximum allowed length
             receiver: None,
             reply_to_sig: None,
             should_succeed: true,
-            test_description: "Longer text message to test message length handling".to_string(),
+            test_description: "Maximum length message (512 characters)".to_string(),
             invalid_category: false,
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
-        },
-        "emoji-text" => TestParams {
-            group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Hello! 😀 This message contains emojis 🚀✨ and unicode text! 中文测试".to_string(),
-            receiver: None,
-            reply_to_sig: None,
-            should_succeed: true,
-            test_description: "Message with emojis and unicode characters".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
-        },
-        "with-receiver" => TestParams {
-            group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Hello @user! This message mentions someone.".to_string(),
-            receiver: Some(Pubkey::from_str("11111111111111111111111111111112").unwrap()),
-            reply_to_sig: None,
-            should_succeed: true,
-            test_description: "Message with receiver field (@ mention)".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
-        },
-        "with-reply" => TestParams {
-            group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "This is a reply to a previous message.".to_string(),
-            receiver: None,
-            reply_to_sig: Some("5VfQvdK2VkgFUBX8bEcAQbVJkchLUdfq4Rn9RDUNwHAK1sF8NNYK2nGChtdkRxLLfq4wnJ2W4FfGwM8EjwzQJsm".to_string()),
-            should_succeed: true,
-            test_description: "Message with reply_to_sig field (reply to message)".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
-        },
-        "max-length" => TestParams {
-            group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "X".repeat(512),
-            receiver: None,
-            reply_to_sig: None,
-            should_succeed: true,
-            test_description: "Maximum length message (512 chars)".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
         },
         "too-long-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "X".repeat(513),
+            message_content: "a".repeat(513), // Over maximum length
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
-            test_description: "Message exceeding maximum length (should fail)".to_string(),
+            test_description: "Message too long (>512 characters)".to_string(),
             invalid_category: false,
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
         },
         "empty-message" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "".to_string(),
+            message_content: "".to_string(), // Empty message
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
@@ -217,109 +165,164 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
         },
-        "invalid-category" => TestParams {
+        "with-receiver" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Message with invalid category".to_string(),
+            message_content: "Direct message to specific user.".to_string(),
+            receiver: if args.len() > 3 {
+                Some(Pubkey::from_str(&args[3]).unwrap_or_else(|_| {
+                    eprintln!("Error: Invalid receiver pubkey '{}'", args[3]);
+                    std::process::exit(1);
+                }))
+            } else {
+                Some(Pubkey::new_unique()) // Use random pubkey for testing
+            },
+            reply_to_sig: None,
+            should_succeed: true,
+            test_description: "Message with specific receiver".to_string(),
+            invalid_category: false,
+            invalid_operation: false,
+            wrong_group_id: false,
+            wrong_sender: false,
+        },
+        "with-reply" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "This is a reply to previous message.".to_string(),
+            receiver: None,
+            reply_to_sig: if args.len() > 3 {
+                Some(args[3].clone())
+            } else {
+                Some("5".repeat(88)) // Create a valid looking signature for testing
+            },
+            should_succeed: true,
+            test_description: "Message replying to another message".to_string(),
+            invalid_category: false,
+            invalid_operation: false,
+            wrong_group_id: false,
+            wrong_sender: false,
+        },
+        "invalid-reply-sig" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid reply signature.".to_string(),
+            receiver: None,
+            reply_to_sig: Some("invalid_signature".to_string()), // Invalid signature format
+            should_succeed: false,
+            test_description: "Invalid reply signature format".to_string(),
+            invalid_category: false,
+            invalid_operation: false,
+            wrong_group_id: false,
+            wrong_sender: false,
+        },
+        "nonexistent-group" => TestParams {
+            group_id: 99999, // Non-existent group
+            message_content: "Message to non-existent group.".to_string(),
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
-            test_description: "Message with invalid category field (should fail)".to_string(),
+            test_description: "Message to non-existent group".to_string(),
+            invalid_category: false,
+            invalid_operation: false,
+            wrong_group_id: false,
+            wrong_sender: false,
+        },
+        "unicode-message" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "🚀 Unicode test: 你好世界 こんにちは 🎉 Emoji and multilingual support! 🌟".to_string(),
+            receiver: None,
+            reply_to_sig: None,
+            should_succeed: true,
+            test_description: "Unicode and emoji message".to_string(),
+            invalid_category: false,
+            invalid_operation: false,
+            wrong_group_id: false,
+            wrong_sender: false,
+        },
+        "invalid-category" => TestParams {
+            group_id: get_group_id_from_args(&args, 2, 0),
+            message_content: "Message with invalid category.".to_string(),
+            receiver: None,
+            reply_to_sig: None,
+            should_succeed: false,
+            test_description: "Invalid category field".to_string(),
             invalid_category: true,
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
         },
         "invalid-operation" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Message with invalid operation".to_string(),
+            message_content: "Message with invalid operation.".to_string(),
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
-            test_description: "Message with invalid operation field (should fail)".to_string(),
+            test_description: "Invalid operation field".to_string(),
             invalid_category: false,
             invalid_operation: true,
             wrong_group_id: false,
             wrong_sender: false,
-            missing_fields: vec![],
         },
         "wrong-group-id" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Message with wrong group ID".to_string(),
+            message_content: "Message with mismatched group ID.".to_string(),
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
-            test_description: "Message with wrong group_id field (should fail)".to_string(),
+            test_description: "Group ID mismatch".to_string(),
             invalid_category: false,
             invalid_operation: false,
             wrong_group_id: true,
             wrong_sender: false,
-            missing_fields: vec![],
         },
         "wrong-sender" => TestParams {
             group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Message with wrong sender".to_string(),
+            message_content: "Message with wrong sender.".to_string(),
             receiver: None,
             reply_to_sig: None,
             should_succeed: false,
-            test_description: "Message with wrong sender field (should fail)".to_string(),
+            test_description: "Sender mismatch".to_string(),
             invalid_category: false,
             invalid_operation: false,
             wrong_group_id: false,
             wrong_sender: true,
-            missing_fields: vec![],
-        },
-        "invalid-reply-sig" => TestParams {
-            group_id: get_group_id_from_args(&args, 2, 0),
-            message_content: "Message with invalid reply signature".to_string(),
-            receiver: None,
-            reply_to_sig: Some("invalid_signature_format".to_string()),
-            should_succeed: false,
-            test_description: "Message with invalid reply_to_sig format (should fail)".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
-        },
-        "nonexistent-group" => TestParams {
-            group_id: 99999,
-            message_content: "This message is for a non-existent group.".to_string(),
-            receiver: None,
-            reply_to_sig: None,
-            should_succeed: false,
-            test_description: "Message to non-existent group (should fail)".to_string(),
-            invalid_category: false,
-            invalid_operation: false,
-            wrong_group_id: false,
-            wrong_sender: false,
-            missing_fields: vec![],
         },
         "custom" => {
             if args.len() < 4 {
                 println!("Custom test requires additional parameters:");
-                println!("Usage: cargo run --bin test-memo-chat-send-memo -- custom <group_id> <message_content>");
-                println!("Example: cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello, world!\"");
+                println!("Usage: cargo run --bin test-memo-chat-send-memo -- custom <group_id> <message> [receiver] [reply_to_sig]");
+                println!("Example: cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello world!\"");
                 return Ok(());
             }
             
-            let group_id = args[2].parse::<u64>().unwrap_or(0);
-            let message_content = args[3].clone();
+            let group_id = args[2].parse::<u64>().unwrap_or_else(|_| {
+                eprintln!("Error: Invalid group ID '{}'", args[2]);
+                std::process::exit(1);
+            });
+            let message = args[3].clone();
+            let receiver = if args.len() > 4 && !args[4].is_empty() {
+                Some(Pubkey::from_str(&args[4]).unwrap_or_else(|_| {
+                    eprintln!("Error: Invalid receiver pubkey '{}'", args[4]);
+                    std::process::exit(1);
+                }))
+            } else {
+                None
+            };
+            let reply_to_sig = if args.len() > 5 && !args[5].is_empty() {
+                Some(args[5].clone())
+            } else {
+                None
+            };
             
             TestParams {
                 group_id,
-                message_content,
-                receiver: None,
-                reply_to_sig: None,
+                message_content: message,
+                receiver,
+                reply_to_sig,
                 should_succeed: true,
                 test_description: "Custom test case".to_string(),
                 invalid_category: false,
                 invalid_operation: false,
                 wrong_group_id: false,
                 wrong_sender: false,
-                missing_fields: vec![],
             }
         },
         _ => {
@@ -329,34 +332,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("=== MEMO-CHAT SEND MEMO TEST (BORSH FORMAT) ===");
+    println!("=== MEMO-CHAT SEND MESSAGE TEST (BORSH+BASE64 FORMAT) ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
     println!();
     println!("Test parameters:");
-    println!("  Target group ID: {}", test_params.group_id);
-    println!("  Message length: {} chars", test_params.message_content.len());
-    if test_params.message_content.len() > 100 {
-        println!("  Message content (first 50 chars): {}...", &test_params.message_content[..50]);
-        println!("  Message content (last 50 chars): ...{}", &test_params.message_content[test_params.message_content.len()-50..]);
-    } else {
-        println!("  Message content: {}", test_params.message_content);
-    }
+    println!("  Group ID: {}", test_params.group_id);
+    println!("  Message: {} (length: {})", 
+        if test_params.message_content.len() > 100 { 
+            format!("{}...", &test_params.message_content[..100]) 
+        } else { 
+            test_params.message_content.clone() 
+        }, 
+        test_params.message_content.len()
+    );
     println!("  Receiver: {:?}", test_params.receiver);
-    println!("  Reply to sig: {:?}", test_params.reply_to_sig.as_ref().map(|s| &s[..16.min(s.len())]));
+    println!("  Reply to: {:?}", test_params.reply_to_sig.as_ref().map(|s| &s[..16.min(s.len())]));
     println!();
 
     run_test(test_params)?;
     Ok(())
-}
-
-fn get_group_id_from_args(args: &[String], index: usize, default: u64) -> u64 {
-    if args.len() > index {
-        args[index].parse::<u64>().unwrap_or(default)
-    } else {
-        default
-    }
 }
 
 fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
@@ -383,7 +379,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         &memo_chat_program_id,
     );
 
-    // Calculate mint authority PDA (from memo-mint program)
+    // Calculate mint authority PDA
     let (mint_authority_pda, _) = Pubkey::find_program_address(
         &[b"mint_authority"],
         &memo_mint_program_id,
@@ -397,64 +393,64 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("Runtime info:");
-    println!("  Target group ID: {}", params.group_id);
+    println!("  Group ID: {}", params.group_id);
     println!("  Chat group PDA: {}", chat_group_pda);
-    println!("  Mint authority PDA: {}", mint_authority_pda);
     println!("  Sender: {}", payer.pubkey());
     println!("  Sender token account: {}", sender_token_account);
     println!();
 
     // Check if group exists
     match client.get_account(&chat_group_pda) {
-        Ok(account) => {
-            println!("✅ Chat group {} exists (data length: {} bytes)", params.group_id, account.data.len());
-            
-            // Try to parse some basic group info
-            if account.data.len() >= 16 {
-                // Parse group_id from account data (first u64 after discriminator)
-                let stored_group_id = u64::from_le_bytes(
-                    account.data[8..16].try_into().unwrap()
-                );
-                println!("   Stored group ID: {}", stored_group_id);
-                
-                if stored_group_id != params.group_id {
-                    println!("⚠️  Warning: Stored group ID doesn't match expected ID!");
-                }
-            }
+        Ok(_) => {
+            println!("✅ Chat group {} exists", params.group_id);
         },
         Err(_) => {
             if params.should_succeed {
                 println!("❌ ERROR: Chat group {} does not exist!", params.group_id);
-                println!("   Please create a group first using test-memo-chat-create-group");
+                println!("   Please create the group first using test-memo-chat-create-group");
                 return Ok(());
             } else {
-                println!("✅ Chat group {} does not exist (expected for this test)", params.group_id);
+                println!("ℹ️  Chat group {} does not exist (expected for this test)", params.group_id);
             }
         }
     }
 
-    // Check token account exists
-    match client.get_account(&sender_token_account) {
-        Ok(_) => {
-            println!("✅ Sender token account exists");
-        },
-        Err(_) => {
-            println!("❌ ERROR: Sender token account does not exist!");
-            println!("   Please create the token account first");
-            return Ok(());
-        }
-    }
-
-    // Generate Borsh memo
+    // Generate Borsh+Base64 memo
     let memo_bytes = generate_borsh_memo_from_params(&params, &payer.pubkey())?;
     
-    println!("Generated Borsh memo:");
-    println!("  Length: {} bytes", memo_bytes.len());
+    println!("Generated Borsh+Base64 memo:");
+    println!("  Base64 length: {} bytes", memo_bytes.len());
+    
+    // Show the underlying structure by decoding
+    if let Ok(base64_str) = std::str::from_utf8(&memo_bytes) {
+        if let Ok(decoded_data) = general_purpose::STANDARD.decode(base64_str) {
+            println!("  Decoded Borsh length: {} bytes", decoded_data.len());
+            
+            if let Ok(message_data) = ChatMessageData::try_from_slice(&decoded_data) {
+                println!("  ChatMessageData structure:");
+                println!("    version: {}", message_data.version);
+                println!("    category: {}", message_data.category);
+                println!("    operation: {}", message_data.operation);
+                println!("    group_id: {}", message_data.group_id);
+                println!("    sender: {}", message_data.sender);
+                println!("    message: {} (len: {})", 
+                    if message_data.message.len() > 50 { 
+                        format!("{}...", &message_data.message[..50]) 
+                    } else { 
+                        message_data.message.clone() 
+                    }, 
+                    message_data.message.len()
+                );
+                println!("    receiver: {:?}", message_data.receiver);
+                println!("    reply_to_sig: {:?}", message_data.reply_to_sig.as_ref().map(|s| &s[..16.min(s.len())]));
+            }
+        }
+    }
+    
     if memo_bytes.len() <= 100 {
-        println!("  Hex: {}", hex::encode(&memo_bytes));
+        println!("  Base64 content: {}", String::from_utf8_lossy(&memo_bytes));
     } else {
-        println!("  Hex (first 50 bytes): {}", hex::encode(&memo_bytes[..50]));
-        println!("  Hex (last 50 bytes): {}", hex::encode(&memo_bytes[memo_bytes.len()-50..]));
+        println!("  Base64 preview: {}", String::from_utf8_lossy(&memo_bytes[..50]));
     }
     println!();
 
@@ -540,27 +536,14 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     
     match client.send_and_confirm_transaction(&transaction) {
         Ok(signature) => {
-            println!("🎉 TRANSACTION SUCCESSFUL!");
+            println!("📨 TRANSACTION SUCCESSFUL!");
             println!("Transaction signature: {}", signature);
             
             if params.should_succeed {
                 println!("✅ EXPECTED SUCCESS: Test passed as expected");
+                println!("Message sent to group {} successfully!", params.group_id);
             } else {
                 println!("❌ UNEXPECTED SUCCESS: Test should have failed but succeeded");
-            }
-            
-            // Check group statistics after sending memo
-            match client.get_account(&chat_group_pda) {
-                Ok(account) => {
-                    if let Ok(memo_count) = parse_memo_count_from_group_data(&account.data) {
-                        println!("✅ Memo sent successfully! Group memo count: {}", memo_count);
-                    } else {
-                        println!("✅ Memo sent successfully! (Could not parse memo count)");
-                    }
-                },
-                Err(e) => {
-                    println!("⚠️  Could not fetch updated group data: {}", e);
-                }
             }
         },
         Err(err) => {
@@ -580,19 +563,26 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn get_group_id_from_args(args: &[String], index: usize, default: u64) -> u64 {
+    if args.len() > index {
+        args[index].parse::<u64>().unwrap_or_else(|_| {
+            eprintln!("Error: Invalid group ID '{}'", args[index]);
+            std::process::exit(1);
+        })
+    } else {
+        default
+    }
+}
+
 fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("MemoTooShort") {
-        println!("✅ Correct: Memo too short detected");
-    } else if error_msg.contains("MemoTooLong") {
-        println!("✅ Correct: Memo too long detected");
+    if error_msg.contains("EmptyMessage") && params.message_content.is_empty() {
+        println!("✅ Correct: Empty message detected");
+    } else if error_msg.contains("MessageTooLong") && params.message_content.len() > 512 {
+        println!("✅ Correct: Message too long detected");
     } else if error_msg.contains("InvalidCategory") && params.invalid_category {
         println!("✅ Correct: Invalid category detected");
     } else if error_msg.contains("InvalidOperation") && params.invalid_operation {
         println!("✅ Correct: Invalid operation detected");
-    } else if error_msg.contains("MessageTooLong") && params.message_content.len() > 512 {
-        println!("✅ Correct: Message too long detected");
-    } else if error_msg.contains("EmptyMessage") && params.message_content.is_empty() {
-        println!("✅ Correct: Empty message detected");
     } else if error_msg.contains("GroupIdMismatch") && params.wrong_group_id {
         println!("✅ Correct: Group ID mismatch detected");
     } else if error_msg.contains("SenderMismatch") && params.wrong_sender {
@@ -613,7 +603,7 @@ fn analyze_unexpected_error(error_msg: &str) {
     if error_msg.contains("MemoRequired") {
         println!("   Missing memo instruction");
     } else if error_msg.contains("InvalidMemoFormat") {
-        println!("   Invalid memo format or Borsh parsing failed");
+        println!("   Invalid memo format, Base64 decoding, or Borsh parsing failed");
     } else if error_msg.contains("UnsupportedMemoVersion") {
         println!("   Unsupported memo version");
     } else if error_msg.contains("InvalidCategory") {
@@ -653,141 +643,54 @@ fn send_memo_to_group_instruction(
     memo_mint_program: &Pubkey,
     group_id: u64,
 ) -> Instruction {
-    // Generate instruction discriminator for send_memo_to_group
     let mut hasher = Sha256::new();
     hasher.update(b"global:send_memo_to_group");
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
-    // Add group_id parameter
     instruction_data.extend_from_slice(&group_id.to_le_bytes());
 
     let accounts = vec![
-        AccountMeta::new(*sender, true),                    // sender
-        AccountMeta::new(*chat_group, false),               // chat_group
-        AccountMeta::new(*mint, false),                     // mint
-        AccountMeta::new(*mint_authority, false),           // mint_authority
-        AccountMeta::new(*sender_token_account, false),     // sender_token_account
-        AccountMeta::new_readonly(token_2022_id(), false),  // token_program
-        AccountMeta::new_readonly(*memo_mint_program, false), // memo_mint_program
+        AccountMeta::new(*sender, true),
+        AccountMeta::new(*chat_group, false),
+        AccountMeta::new(*mint, false),
+        AccountMeta::new(*mint_authority, false),
+        AccountMeta::new(*sender_token_account, false),
+        AccountMeta::new_readonly(token_2022_id(), false),
+        AccountMeta::new_readonly(*memo_mint_program, false),
         AccountMeta::new_readonly(
             Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
             false
-        ), // instructions sysvar
+        ),
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
 }
 
 fn print_usage() {
-    println!("Usage: cargo run --bin test-memo-chat-send-memo -- <test_case> [group_id]");
+    println!("Usage: cargo run --bin test-memo-chat-send-memo -- <test_case> [group_id] [additional_params...]");
     println!();
     println!("Available test cases:");
-    println!("  simple-text         - Simple text message to existing group");
-    println!("  long-text           - Longer text message");
-    println!("  emoji-text          - Message with emojis and unicode characters");
-    println!("  with-receiver       - Message with receiver field (@ mention)");
-    println!("  with-reply          - Message with reply_to_sig field (reply to message)");
-    println!("  max-length          - Maximum length message (512 chars)");
-    println!("  too-long-message    - Message exceeding maximum length (should fail)");
-    println!("  empty-message       - Empty message (should fail)");
-    println!("  invalid-category    - Message with invalid category field (should fail)");
-    println!("  invalid-operation   - Message with invalid operation field (should fail)");
-    println!("  wrong-group-id      - Message with wrong group_id field (should fail)");
-    println!("  wrong-sender        - Message with wrong sender field (should fail)");
-    println!("  invalid-reply-sig   - Message with invalid reply signature format (should fail)");
-    println!("  nonexistent-group   - Message to non-existent group (should fail)");
-    println!("  custom              - Custom test with specified parameters");
-    println!();
-    println!("Optional parameters:");
-    println!("  [group_id]          - Target group ID (default: 0)");
+    println!("  simple-text          - Send simple text message");
+    println!("  long-message         - Send maximum length message (512 chars)");
+    println!("  too-long-message     - Send message too long (>512 chars) - should fail");
+    println!("  empty-message        - Send empty message - should fail");
+    println!("  with-receiver        - Send message to specific receiver");
+    println!("  with-reply           - Send message as reply to another message");
+    println!("  invalid-reply-sig    - Send message with invalid reply signature - should fail");
+    println!("  nonexistent-group    - Send message to non-existent group - should fail");
+    println!("  unicode-message      - Send message with Unicode and emoji");
+    println!("  invalid-category     - Send message with invalid category - should fail");
+    println!("  invalid-operation    - Send message with invalid operation - should fail");
+    println!("  wrong-group-id       - Send message with mismatched group ID - should fail");
+    println!("  wrong-sender         - Send message with wrong sender - should fail");
+    println!("  custom               - Custom test with specified parameters");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-send-memo -- simple-text 0");
-    println!("  cargo run --bin test-memo-chat-send-memo -- with-receiver 1");
-    println!("  cargo run --bin test-memo-chat-send-memo -- invalid-category 0");
-    println!("  cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello, world!\"");
+    println!("  cargo run --bin test-memo-chat-send-memo -- with-receiver 0 <receiver_pubkey>");
+    println!("  cargo run --bin test-memo-chat-send-memo -- custom 0 \"Hello world!\"");
+    println!("  cargo run --bin test-memo-chat-send-memo -- unicode-message 0");
     println!();
-    println!("Note: Make sure the target group exists before sending memos!");
-    println!("Use test-memo-chat-create-group to create groups first.");
-} 
-
-// Helper function to parse memo count from ChatGroup account data
-fn parse_memo_count_from_group_data(data: &[u8]) -> Result<u64, Box<dyn std::error::Error>> {
-    if data.len() < 8 {
-        return Err("Data too short for discriminator".into());
-    }
-
-    let mut offset = 8; // Skip discriminator
-
-    // Skip group_id (u64)
-    offset += 8;
-    
-    // Skip creator (32 bytes)  
-    offset += 32;
-    
-    // Skip created_at (i64)
-    offset += 8;
-
-    // Skip name (String)
-    let (_, new_offset) = read_string(data, offset)?;
-    offset = new_offset;
-
-    // Skip description (String)
-    let (_, new_offset) = read_string(data, offset)?;
-    offset = new_offset;
-
-    // Skip image (String)
-    let (_, new_offset) = read_string(data, offset)?;
-    offset = new_offset;
-
-    // Skip tags (Vec<String>)
-    let (_, new_offset) = read_string_vec(data, offset)?;
-    offset = new_offset;
-
-    // Read memo_count (u64)
-    if data.len() < offset + 8 {
-        return Err("Data too short for memo_count".into());
-    }
-    let memo_count = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-    
-    Ok(memo_count)
-}
-
-// Helper function to read a String from account data
-fn read_string(data: &[u8], offset: usize) -> Result<(String, usize), Box<dyn std::error::Error>> {
-    if data.len() < offset + 4 {
-        return Err("Data too short for string length".into());
-    }
-
-    let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-    let new_offset = offset + 4;
-
-    if data.len() < new_offset + len {
-        return Err("Data too short for string content".into());
-    }
-
-    let string_data = &data[new_offset..new_offset + len];
-    let string = String::from_utf8(string_data.to_vec())?;
-
-    Ok((string, new_offset + len))
-}
-
-// Helper function to read a Vec<String> from account data
-fn read_string_vec(data: &[u8], offset: usize) -> Result<(Vec<String>, usize), Box<dyn std::error::Error>> {
-    if data.len() < offset + 4 {
-        return Err("Data too short for vec length".into());
-    }
-
-    let vec_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-    let mut new_offset = offset + 4;
-    let mut strings = Vec::new();
-
-    for _ in 0..vec_len {
-        let (string, next_offset) = read_string(data, new_offset)?;
-        strings.push(string);
-        new_offset = next_offset;
-    }
-
-    Ok((strings, new_offset))
+    println!("Note: Make sure the target group exists before sending messages!");
 } 

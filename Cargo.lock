@@ -2218,6 +2218,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "base64 0.22.1",
  "spl-memo",
 ]
 
@@ -2227,6 +2228,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "base64 0.22.1",
  "bs58",
  "memo-burn",
  "memo-mint",
