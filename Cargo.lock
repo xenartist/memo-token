@@ -2249,7 +2249,10 @@ dependencies = [
 name = "memo-token-test-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bincode",
  "borsh 0.10.4",
+ "bs58",
  "chrono",
  "hex",
  "rand 0.8.5",
