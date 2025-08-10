@@ -18,6 +18,7 @@ use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use borsh::{BorshSerialize, BorshDeserialize};
 use base64::{Engine as _, engine::general_purpose};
+use bs58;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -31,7 +32,7 @@ pub struct ComparisonMemoData {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Format CU Simulation Analysis ===");
-    println!("Comparing: Raw String vs Memo Base64 vs Borsh+Base64");
+    println!("Comparing: Raw String vs Base64 vs Base58 vs Borsh+Base64 vs Borsh+Base58");
     println!("Focus: CU consumption analysis for different character sets and encoding methods\n");
     
     // Get command line arguments for test scenario
@@ -69,10 +70,12 @@ fn print_help(program_name: &str) {
     println!("  long         - Test long message");
     println!("  all          - Run all comparison tests");
     println!("  analysis     - Detailed character set analysis");
-    println!("\nEach test compares THREE formats:");
+    println!("\nEach test compares FIVE formats:");
     println!("  1. Raw String - Direct UTF-8 string as memo");
-    println!("  2. Memo Base64 - String encoded with Base64");
-    println!("  3. Borsh + Base64 - String in Borsh struct, then Base64");
+    println!("  2. Base64 - String encoded with Base64");
+    println!("  3. Base58 - String encoded with Base58 (Bitcoin/Solana style)");
+    println!("  4. Borsh + Base64 - String in Borsh struct, then Base64");
+    println!("  5. Borsh + Base58 - String in Borsh struct, then Base58");
     println!("\nThe test measures:");
     println!("  - Message size differences");
     println!("  - Simulated CU consumption");
@@ -106,17 +109,17 @@ fn test_mixed_message() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_long_message() -> Result<(), Box<dyn std::error::Error>> {
-    let content = "This is a very long message to test the difference in compute unit consumption between raw string, Base64-encoded string, and Borsh+Base64 serialization methods. This message is intentionally long to test how message length affects CU consumption patterns across different encoding strategies. ".repeat(2);
+    let content = "This is a very long message to test the difference in compute unit consumption between raw string, Base64-encoded string, Base58-encoded string, and Borsh+encoding serialization methods. This message is intentionally long to test how message length affects CU consumption patterns across different encoding strategies. ".repeat(2);
     analyze_memo_formats("Long Message", &content)
 }
 
 fn test_all_messages() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Running ALL three-way CU analysis tests...\n");
+    println!("🧪 Running ALL five-way CU analysis tests...\n");
     
     let test_cases = vec![
         ("Simple English", "Hello World! This is a simple test message for memo encoding comparison and CU analysis."),
         ("Chinese Characters", "你好世界！这是一个测试中文字符的消息，用于比较不同的编码方法和CU分析。这个测试很重要。"),
-        ("Japanese Characters", "こんにちは世界！これは異なる符号化方法とCU分析を比較するためのテストメッセージです。"),
+        ("Japanese Characters", "こんにちは世界！これは異なる符号化方法とCU分析を比较するためのテストメッセージです。"),
         ("Korean Characters", "안녕하세요 세계! 이것은 다른 인코딩 방법과 CU 분석을 비교하기 위한 테스트 메시지입니다."),
         ("Arabic Characters", "مرحبا بالعالم! هذه رسالة اختبار لمقارنة طرق التشفير المختلفة وتحليل وحدة الحوسبة."),
         ("Russian Characters", "Привет мир! Это тестовое сообщение для сравнения различных методов кодирования и анализа CU."),
@@ -179,12 +182,15 @@ fn test_detailed_analysis() -> Result<(), Box<dyn std::error::Error>> {
                 
                 println!("  Characters: {}, Bytes: {}, Avg bytes/char: {:.2}", 
                          char_count, byte_count, avg_bytes_per_char);
-                println!("  Raw CU: {}, Base64 CU: {}, Borsh CU: {}", 
-                         result.raw_string_cu, result.memo_base64_cu, result.borsh_base64_cu);
-                println!("  CU efficiency (CU/byte): Raw {:.1}, Base64 {:.1}, Borsh {:.1}",
+                println!("  Raw CU: {}, Base64 CU: {}, Base58 CU: {}, Borsh+B64 CU: {}, Borsh+B58 CU: {}", 
+                         result.raw_string_cu, result.base64_cu, result.base58_cu, 
+                         result.borsh_base64_cu, result.borsh_base58_cu);
+                println!("  CU efficiency (CU/byte): Raw {:.1}, B64 {:.1}, B58 {:.1}, Bor+B64 {:.1}, Bor+B58 {:.1}",
                          result.raw_string_cu as f64 / byte_count as f64,
-                         result.memo_base64_cu as f64 / result.memo_base64_size as f64,
-                         result.borsh_base64_cu as f64 / result.borsh_base64_size as f64);
+                         result.base64_cu as f64 / result.base64_size as f64,
+                         result.base58_cu as f64 / result.base58_size as f64,
+                         result.borsh_base64_cu as f64 / result.borsh_base64_size as f64,
+                         result.borsh_base58_cu as f64 / result.borsh_base58_size as f64);
                 
                 analysis_results.push((test_name.to_string(), result));
                 println!();
@@ -205,36 +211,52 @@ fn test_detailed_analysis() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Debug, Clone)]
 struct ComparisonResult {
     raw_string_size: usize,
-    memo_base64_size: usize,
+    base64_size: usize,
+    base58_size: usize,
     borsh_base64_size: usize,
+    borsh_base58_size: usize,
     raw_string_cu: u64,
-    memo_base64_cu: u64,
+    base64_cu: u64,
+    base58_cu: u64,
     borsh_base64_cu: u64,
-    memo_base64_increase_percent: f64,
+    borsh_base58_cu: u64,
+    base64_increase_percent: f64,
+    base58_increase_percent: f64,
     borsh_base64_increase_percent: f64,
-    memo_base64_cu_diff_percent: f64,
+    borsh_base58_increase_percent: f64,
+    base64_cu_diff_percent: f64,
+    base58_cu_diff_percent: f64,
     borsh_base64_cu_diff_percent: f64,
+    borsh_base58_cu_diff_percent: f64,
 }
 
 impl Default for ComparisonResult {
     fn default() -> Self {
         Self {
             raw_string_size: 0,
-            memo_base64_size: 0,
+            base64_size: 0,
+            base58_size: 0,
             borsh_base64_size: 0,
+            borsh_base58_size: 0,
             raw_string_cu: 0,
-            memo_base64_cu: 0,
+            base64_cu: 0,
+            base58_cu: 0,
             borsh_base64_cu: 0,
-            memo_base64_increase_percent: 0.0,
+            borsh_base58_cu: 0,
+            base64_increase_percent: 0.0,
+            base58_increase_percent: 0.0,
             borsh_base64_increase_percent: 0.0,
-            memo_base64_cu_diff_percent: 0.0,
+            borsh_base58_increase_percent: 0.0,
+            base64_cu_diff_percent: 0.0,
+            base58_cu_diff_percent: 0.0,
             borsh_base64_cu_diff_percent: 0.0,
+            borsh_base58_cu_diff_percent: 0.0,
         }
     }
 }
 
 fn analyze_memo_formats(test_name: &str, content: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Three-way CU analysis for: {}\n", test_name);
+    println!("🧪 Five-way CU analysis for: {}\n", test_name);
     let result = analyze_memo_formats_internal(content)?;
     print_single_analysis_summary(test_name, &result, content);
     Ok(())
@@ -260,37 +282,66 @@ fn analyze_memo_formats_internal(content: &str) -> Result<ComparisonResult, Box<
     
     println!();
     
-    // Test 2: Memo Base64 (only memo content encoded)
-    println!("=== Analysis 2: Memo Base64 (memo content only) ===");
-    let (memo_base64_bytes, memo_base64_cu) = create_and_simulate_memo_base64(
+    // Test 2: Base64
+    println!("=== Analysis 2: Base64 Encoding ===");
+    let (base64_bytes, base64_cu) = create_and_simulate_base64(
         &client, &payer, &program_id, &mint_address, &mint_authority_pda, &token_account, content
     )?;
     
     println!();
     
-    // Test 3: Borsh + Base64
-    println!("=== Analysis 3: Borsh + Base64 ===");
+    // Test 3: Base58
+    println!("=== Analysis 3: Base58 Encoding ===");
+    let (base58_bytes, base58_cu) = create_and_simulate_base58(
+        &client, &payer, &program_id, &mint_address, &mint_authority_pda, &token_account, content
+    )?;
+    
+    println!();
+    
+    // Test 4: Borsh + Base64
+    println!("=== Analysis 4: Borsh + Base64 ===");
     let (borsh_base64_bytes, borsh_base64_cu) = create_and_simulate_borsh_base64(
+        &client, &payer, &program_id, &mint_address, &mint_authority_pda, &token_account, content
+    )?;
+    
+    println!();
+    
+    // Test 5: Borsh + Base58
+    println!("=== Analysis 5: Borsh + Base58 ===");
+    let (borsh_base58_bytes, borsh_base58_cu) = create_and_simulate_borsh_base58(
         &client, &payer, &program_id, &mint_address, &mint_authority_pda, &token_account, content
     )?;
 
     // Calculate differences
-    let memo_base64_increase_percent = ((memo_base64_bytes.len() as f64 - raw_memo_bytes.len() as f64) / raw_memo_bytes.len() as f64) * 100.0;
+    let base64_increase_percent = ((base64_bytes.len() as f64 - raw_memo_bytes.len() as f64) / raw_memo_bytes.len() as f64) * 100.0;
+    let base58_increase_percent = ((base58_bytes.len() as f64 - raw_memo_bytes.len() as f64) / raw_memo_bytes.len() as f64) * 100.0;
     let borsh_base64_increase_percent = ((borsh_base64_bytes.len() as f64 - raw_memo_bytes.len() as f64) / raw_memo_bytes.len() as f64) * 100.0;
-    let memo_base64_cu_diff_percent = ((memo_base64_cu as f64 - raw_cu as f64) / raw_cu as f64) * 100.0;
+    let borsh_base58_increase_percent = ((borsh_base58_bytes.len() as f64 - raw_memo_bytes.len() as f64) / raw_memo_bytes.len() as f64) * 100.0;
+    
+    let base64_cu_diff_percent = ((base64_cu as f64 - raw_cu as f64) / raw_cu as f64) * 100.0;
+    let base58_cu_diff_percent = ((base58_cu as f64 - raw_cu as f64) / raw_cu as f64) * 100.0;
     let borsh_base64_cu_diff_percent = ((borsh_base64_cu as f64 - raw_cu as f64) / raw_cu as f64) * 100.0;
+    let borsh_base58_cu_diff_percent = ((borsh_base58_cu as f64 - raw_cu as f64) / raw_cu as f64) * 100.0;
     
     let result = ComparisonResult {
         raw_string_size: raw_memo_bytes.len(),
-        memo_base64_size: memo_base64_bytes.len(),
+        base64_size: base64_bytes.len(),
+        base58_size: base58_bytes.len(),
         borsh_base64_size: borsh_base64_bytes.len(),
+        borsh_base58_size: borsh_base58_bytes.len(),
         raw_string_cu: raw_cu,
-        memo_base64_cu: memo_base64_cu,
+        base64_cu: base64_cu,
+        base58_cu: base58_cu,
         borsh_base64_cu: borsh_base64_cu,
-        memo_base64_increase_percent,
+        borsh_base58_cu: borsh_base58_cu,
+        base64_increase_percent,
+        base58_increase_percent,
         borsh_base64_increase_percent,
-        memo_base64_cu_diff_percent,
+        borsh_base58_increase_percent,
+        base64_cu_diff_percent,
+        base58_cu_diff_percent,
         borsh_base64_cu_diff_percent,
+        borsh_base58_cu_diff_percent,
     };
     
     Ok(result)
@@ -332,7 +383,7 @@ fn create_and_simulate_raw_string(
     Ok((memo_bytes, simulated_cu))
 }
 
-fn create_and_simulate_memo_base64(
+fn create_and_simulate_base64(
     client: &RpcClient,
     payer: &solana_sdk::signature::Keypair,
     program_id: &Pubkey,
@@ -341,7 +392,7 @@ fn create_and_simulate_memo_base64(
     token_account: &Pubkey,
     content: &str,
 ) -> Result<(Vec<u8>, u64), Box<dyn std::error::Error>> {
-    // Encode only memo content with Base64
+    // Encode with Base64
     let base64_encoded = general_purpose::STANDARD.encode(content.as_bytes());
     let memo_bytes = base64_encoded.as_bytes().to_vec();
     
@@ -356,6 +407,46 @@ fn create_and_simulate_memo_base64(
     }
     if memo_bytes.len() > 800 {
         println!("  ❌ Error: Base64 memo too long ({} bytes, maximum 800)", memo_bytes.len());
+        return Ok((memo_bytes, 0));
+    }
+    
+    println!("  ✅ Length validation passed");
+    
+    // Simulate CU consumption
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
+    
+    let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
+    println!("  📊 Simulated CU: {} units", simulated_cu);
+    println!("  📈 CU efficiency: {:.2} CU/byte", simulated_cu as f64 / memo_bytes.len() as f64);
+    
+    Ok((memo_bytes, simulated_cu))
+}
+
+fn create_and_simulate_base58(
+    client: &RpcClient,
+    payer: &solana_sdk::signature::Keypair,
+    program_id: &Pubkey,
+    mint_address: &Pubkey,
+    mint_authority_pda: &Pubkey,
+    token_account: &Pubkey,
+    content: &str,
+) -> Result<(Vec<u8>, u64), Box<dyn std::error::Error>> {
+    // Encode with Base58
+    let base58_encoded = bs58::encode(content.as_bytes()).into_string();
+    let memo_bytes = base58_encoded.as_bytes().to_vec();
+    
+    println!("  Original: {} chars → {} bytes", content.chars().count(), content.as_bytes().len());
+    println!("  Base58: {} bytes (+{:.1}%)", memo_bytes.len(), 
+             ((memo_bytes.len() as f64 / content.as_bytes().len() as f64) - 1.0) * 100.0);
+    
+    // Check memo length constraints
+    if memo_bytes.len() < 69 {
+        println!("  ❌ Error: Base58 memo too short ({} bytes, minimum 69)", memo_bytes.len());
+        return Ok((memo_bytes, 0));
+    }
+    if memo_bytes.len() > 800 {
+        println!("  ❌ Error: Base58 memo too long ({} bytes, maximum 800)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
     
@@ -418,9 +509,55 @@ fn create_and_simulate_borsh_base64(
     Ok((memo_bytes, simulated_cu))
 }
 
+fn create_and_simulate_borsh_base58(
+    client: &RpcClient,
+    payer: &solana_sdk::signature::Keypair,
+    program_id: &Pubkey,
+    mint_address: &Pubkey,
+    mint_authority_pda: &Pubkey,
+    token_account: &Pubkey,
+    content: &str,
+) -> Result<(Vec<u8>, u64), Box<dyn std::error::Error>> {
+    // Borsh serialize then Base58 encode
+    let memo_data = ComparisonMemoData {
+        content: content.to_string(),
+    };
+    
+    let borsh_bytes = memo_data.try_to_vec()?;
+    let base58_encoded = bs58::encode(&borsh_bytes).into_string();
+    let memo_bytes = base58_encoded.as_bytes().to_vec();
+    
+    println!("  Original: {} chars → {} bytes", content.chars().count(), content.as_bytes().len());
+    println!("  Borsh: {} bytes", borsh_bytes.len());
+    println!("  Borsh+Base58: {} bytes (+{:.1}%)", memo_bytes.len(),
+             ((memo_bytes.len() as f64 / content.as_bytes().len() as f64) - 1.0) * 100.0);
+    
+    // Check memo length constraints
+    if memo_bytes.len() < 69 {
+        println!("  ❌ Error: Borsh+Base58 memo too short ({} bytes, minimum 69)", memo_bytes.len());
+        return Ok((memo_bytes, 0));
+    }
+    if memo_bytes.len() > 800 {
+        println!("  ❌ Error: Borsh+Base58 memo too long ({} bytes, maximum 800)", memo_bytes.len());
+        return Ok((memo_bytes, 0));
+    }
+    
+    println!("  ✅ Length validation passed");
+    
+    // Simulate CU consumption
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
+    
+    let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
+    println!("  📊 Simulated CU: {} units", simulated_cu);
+    println!("  📈 CU efficiency: {:.2} CU/byte", simulated_cu as f64 / memo_bytes.len() as f64);
+    
+    Ok((memo_bytes, simulated_cu))
+}
+
 fn print_single_analysis_summary(test_name: &str, result: &ComparisonResult, content: &str) {
     println!("\n📊 CU ANALYSIS SUMMARY: {}", test_name);
-    println!("{}", "=".repeat(70));
+    println!("{}", "=".repeat(80));
     
     // Character analysis
     let char_count = content.chars().count();
@@ -435,46 +572,79 @@ fn print_single_analysis_summary(test_name: &str, result: &ComparisonResult, con
     
     println!("\n📏 SIZE COMPARISON:");
     println!("   • Raw String:     {} bytes", result.raw_string_size);
-    println!("   • Base64:         {} bytes (+{:.1}%)", result.memo_base64_size, result.memo_base64_increase_percent);
+    println!("   • Base64:         {} bytes (+{:.1}%)", result.base64_size, result.base64_increase_percent);
+    println!("   • Base58:         {} bytes (+{:.1}%)", result.base58_size, result.base58_increase_percent);
     println!("   • Borsh+Base64:   {} bytes (+{:.1}%)", result.borsh_base64_size, result.borsh_base64_increase_percent);
+    println!("   • Borsh+Base58:   {} bytes (+{:.1}%)", result.borsh_base58_size, result.borsh_base58_increase_percent);
     
     println!("\n⚡ CU CONSUMPTION:");
     println!("   • Raw String:     {} CU", result.raw_string_cu);
-    println!("   • Base64:         {} CU ({:+.1}%)", result.memo_base64_cu, result.memo_base64_cu_diff_percent);
+    println!("   • Base64:         {} CU ({:+.1}%)", result.base64_cu, result.base64_cu_diff_percent);
+    println!("   • Base58:         {} CU ({:+.1}%)", result.base58_cu, result.base58_cu_diff_percent);
     println!("   • Borsh+Base64:   {} CU ({:+.1}%)", result.borsh_base64_cu, result.borsh_base64_cu_diff_percent);
+    println!("   • Borsh+Base58:   {} CU ({:+.1}%)", result.borsh_base58_cu, result.borsh_base58_cu_diff_percent);
     
     println!("\n📈 CU EFFICIENCY (CU per byte):");
     if result.raw_string_size > 0 {
         println!("   • Raw String:     {:.2} CU/byte", result.raw_string_cu as f64 / result.raw_string_size as f64);
     }
-    if result.memo_base64_size > 0 {
-        println!("   • Base64:         {:.2} CU/byte", result.memo_base64_cu as f64 / result.memo_base64_size as f64);
+    if result.base64_size > 0 {
+        println!("   • Base64:         {:.2} CU/byte", result.base64_cu as f64 / result.base64_size as f64);
+    }
+    if result.base58_size > 0 {
+        println!("   • Base58:         {:.2} CU/byte", result.base58_cu as f64 / result.base58_size as f64);
     }
     if result.borsh_base64_size > 0 {
         println!("   • Borsh+Base64:   {:.2} CU/byte", result.borsh_base64_cu as f64 / result.borsh_base64_size as f64);
     }
+    if result.borsh_base58_size > 0 {
+        println!("   • Borsh+Base58:   {:.2} CU/byte", result.borsh_base58_cu as f64 / result.borsh_base58_size as f64);
+    }
     
     println!("\n💡 OBSERVATIONS:");
-    if result.memo_base64_cu_diff_percent < -5.0 {
-        println!("   • 🎯 Base64 encoding REDUCES CU by {:.1}% - potentially due to simplified UTF-8 processing!", result.memo_base64_cu_diff_percent.abs());
-    } else if result.memo_base64_cu_diff_percent > 5.0 {
-        println!("   • ⚠️  Base64 encoding increases CU by {:.1}%", result.memo_base64_cu_diff_percent);
+    
+    // Base64 vs Base58 comparison
+    if result.base58_size < result.base64_size {
+        let size_diff = ((result.base64_size as f64 - result.base58_size as f64) / result.base58_size as f64) * 100.0;
+        println!("   • 📦 Base58 is {:.1}% more compact than Base64", size_diff);
     } else {
-        println!("   • ✅ Base64 encoding has minimal CU impact ({:+.1}%)", result.memo_base64_cu_diff_percent);
+        let size_diff = ((result.base58_size as f64 - result.base64_size as f64) / result.base64_size as f64) * 100.0;
+        println!("   • 📦 Base64 is {:.1}% more compact than Base58", size_diff);
+    }
+    
+    // CU efficiency observations
+    if result.base64_cu_diff_percent < -5.0 {
+        println!("   • 🎯 Base64 encoding REDUCES CU by {:.1}% - simplified UTF-8 processing!", result.base64_cu_diff_percent.abs());
+    }
+    if result.base58_cu_diff_percent < -5.0 {
+        println!("   • 🎯 Base58 encoding REDUCES CU by {:.1}% - simplified UTF-8 processing!", result.base58_cu_diff_percent.abs());
+    }
+    
+    // Best performing encoding
+    let cu_values = vec![
+        ("Raw", result.raw_string_cu),
+        ("Base64", result.base64_cu),
+        ("Base58", result.base58_cu),
+        ("Borsh+B64", result.borsh_base64_cu),
+        ("Borsh+B58", result.borsh_base58_cu),
+    ];
+    
+    if let Some((best_name, best_cu)) = cu_values.iter().filter(|(_, cu)| *cu > 0).min_by_key(|(_, cu)| *cu) {
+        println!("   • 🏆 Best CU efficiency: {} with {} CU", best_name, best_cu);
     }
     
     if avg_bytes_per_char > 2.0 {
-        println!("   • 🌍 Multi-byte characters detected - UTF-8 complexity may affect performance");
+        println!("   • 🌍 Multi-byte characters detected - encoding may provide CU benefits");
     } else {
-        println!("   • 📝 Mostly ASCII characters - straightforward UTF-8 processing");
+        println!("   • 📝 Mostly ASCII characters - raw string likely most efficient");
     }
     
     println!();
 }
 
 fn print_comprehensive_analysis(results: &[(String, ComparisonResult)]) {
-    println!("\n🏁 COMPREHENSIVE CU ANALYSIS REPORT");
-    println!("{}", "=".repeat(80));
+    println!("\n🏁 COMPREHENSIVE FIVE-WAY CU ANALYSIS REPORT");
+    println!("{}", "=".repeat(100));
     
     if results.is_empty() {
         println!("No results to analyze.");
@@ -493,75 +663,97 @@ fn print_comprehensive_analysis(results: &[(String, ComparisonResult)]) {
     
     // Calculate averages
     let avg_raw_cu = valid_results.iter().map(|r| r.raw_string_cu).sum::<u64>() as f64 / valid_results.len() as f64;
-    let avg_base64_cu_diff = valid_results.iter().map(|r| r.memo_base64_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
-    let avg_borsh_cu_diff = valid_results.iter().map(|r| r.borsh_base64_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
+    let avg_base64_cu_diff = valid_results.iter().map(|r| r.base64_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
+    let avg_base58_cu_diff = valid_results.iter().map(|r| r.base58_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
+    let avg_borsh_base64_cu_diff = valid_results.iter().map(|r| r.borsh_base64_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
+    let avg_borsh_base58_cu_diff = valid_results.iter().map(|r| r.borsh_base58_cu_diff_percent).sum::<f64>() / valid_results.len() as f64;
     
     println!("\n📊 OVERALL STATISTICS:");
     println!("   • Tests analyzed: {}", valid_results.len());
     println!("   • Average raw CU: {:.0}", avg_raw_cu);
     println!("   • Average Base64 CU difference: {:+.1}%", avg_base64_cu_diff);
-    println!("   • Average Borsh CU difference: {:+.1}%", avg_borsh_cu_diff);
+    println!("   • Average Base58 CU difference: {:+.1}%", avg_base58_cu_diff);
+    println!("   • Average Borsh+Base64 CU difference: {:+.1}%", avg_borsh_base64_cu_diff);
+    println!("   • Average Borsh+Base58 CU difference: {:+.1}%", avg_borsh_base58_cu_diff);
     
     // Print detailed table
     println!("\n📋 DETAILED RESULTS:");
-    println!("{:<20} | {:>6} | {:>6} | {:>6} | {:>7} | {:>7} | {:>7} | {:>6} | {:>6}", 
-             "Test Case", "RawSz", "B64Sz", "BorSz", "RawCU", "B64CU", "BorCU", "B64%", "Bor%");
-    println!("{}", "-".repeat(90));
+    println!("{:<18} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>4} | {:>4} | {:>4} | {:>4}", 
+             "Test Case", "Raw", "B64", "B58", "BB64", "BB58", "RawCU", "B64CU", "B58CU", "BB64CU", "BB58CU", "B64%", "B58%", "BB64%", "BB58%");
+    println!("{}", "-".repeat(130));
     
     for (test_name, result) in results {
         if result.raw_string_cu > 0 {
-            println!("{:<20} | {:>6} | {:>6} | {:>6} | {:>7} | {:>7} | {:>7} | {:>5.1}% | {:>5.1}%",
+            println!("{:<18} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>3.0}% | {:>3.0}% | {:>3.0}% | {:>3.0}%",
                      test_name,
                      result.raw_string_size,
-                     result.memo_base64_size,
+                     result.base64_size,
+                     result.base58_size,
                      result.borsh_base64_size,
+                     result.borsh_base58_size,
                      result.raw_string_cu,
-                     result.memo_base64_cu,
+                     result.base64_cu,
+                     result.base58_cu,
                      result.borsh_base64_cu,
-                     result.memo_base64_cu_diff_percent,
-                     result.borsh_base64_cu_diff_percent);
+                     result.borsh_base58_cu,
+                     result.base64_cu_diff_percent,
+                     result.base58_cu_diff_percent,
+                     result.borsh_base64_cu_diff_percent,
+                     result.borsh_base58_cu_diff_percent);
         }
     }
     
     // Analyze patterns
-    let base64_improvements = valid_results.iter().filter(|r| r.memo_base64_cu_diff_percent < -1.0).count();
-    let base64_degradations = valid_results.iter().filter(|r| r.memo_base64_cu_diff_percent > 1.0).count();
+    let base64_improvements = valid_results.iter().filter(|r| r.base64_cu_diff_percent < -1.0).count();
+    let base58_improvements = valid_results.iter().filter(|r| r.base58_cu_diff_percent < -1.0).count();
     
     println!("\n🔍 PATTERN ANALYSIS:");
     println!("   • Base64 improves CU: {}/{} cases ({:.1}%)", 
              base64_improvements, valid_results.len(), 
              (base64_improvements as f64 / valid_results.len() as f64) * 100.0);
-    println!("   • Base64 degrades CU: {}/{} cases ({:.1}%)", 
-             base64_degradations, valid_results.len(),
-             (base64_degradations as f64 / valid_results.len() as f64) * 100.0);
+    println!("   • Base58 improves CU: {}/{} cases ({:.1}%)", 
+             base58_improvements, valid_results.len(),
+             (base58_improvements as f64 / valid_results.len() as f64) * 100.0);
     
-    println!("\n💡 KEY INSIGHTS:");
-    if avg_base64_cu_diff < -2.0 {
-        println!("   • 🎯 Base64 encoding generally IMPROVES CU efficiency by {:.1}%", avg_base64_cu_diff.abs());
-        println!("   • 🧠 This suggests UTF-8 multi-byte processing overhead is significant");
-        println!("   • 🔧 Base64 converts multi-byte chars to ASCII, simplifying processing");
-    } else if avg_base64_cu_diff > 2.0 {
-        println!("   • ⚠️  Base64 encoding generally increases CU by {:.1}%", avg_base64_cu_diff);
-        println!("   • 📏 Size overhead outweighs any processing simplification");
-    } else {
-        println!("   • ✅ Base64 encoding has minimal CU impact overall ({:+.1}%)", avg_base64_cu_diff);
+    // Size efficiency comparison
+    let avg_base64_size_increase = valid_results.iter().map(|r| r.base64_increase_percent).sum::<f64>() / valid_results.len() as f64;
+    let avg_base58_size_increase = valid_results.iter().map(|r| r.base58_increase_percent).sum::<f64>() / valid_results.len() as f64;
+    
+    println!("\n📏 SIZE EFFICIENCY:");
+    println!("   • Base64 average size increase: {:.1}%", avg_base64_size_increase);
+    println!("   • Base58 average size increase: {:.1}%", avg_base58_size_increase);
+    if avg_base58_size_increase < avg_base64_size_increase {
+        println!("   • 🎯 Base58 is {:.1}% more space-efficient than Base64", avg_base64_size_increase - avg_base58_size_increase);
     }
     
-    println!("   • 📦 Borsh+Base64 adds {:.1}% CU overhead on average", avg_borsh_cu_diff);
-    println!("   • 🏗️  Structure overhead vs UTF-8 complexity trade-off");
+    println!("\n💡 KEY INSIGHTS:");
+    if avg_base64_cu_diff < -2.0 || avg_base58_cu_diff < -2.0 {
+        println!("   • 🎯 Binary-to-ASCII encoding generally IMPROVES CU efficiency");
+        println!("   • 🧠 Multi-byte UTF-8 processing overhead is significant in Solana runtime");
+        println!("   • 🔧 ASCII normalization simplifies memo processing");
+    }
+    
+    if avg_base58_cu_diff < avg_base64_cu_diff {
+        println!("   • 🏆 Base58 shows better CU efficiency than Base64 ({:.1}% vs {:.1}%)", avg_base58_cu_diff, avg_base64_cu_diff);
+    } else if avg_base64_cu_diff < avg_base58_cu_diff {
+        println!("   • 🏆 Base64 shows better CU efficiency than Base58 ({:.1}% vs {:.1}%)", avg_base64_cu_diff, avg_base58_cu_diff);
+    }
+    
+    println!("   • 📦 Borsh overhead: Base64 {:.1}%, Base58 {:.1}%", avg_borsh_base64_cu_diff, avg_borsh_base58_cu_diff);
     
     println!("\n🎯 RECOMMENDATIONS:");
-    println!("   • For multi-byte characters: Consider Base64 for CU optimization");
-    println!("   • For ASCII content: Raw strings are most efficient");
-    println!("   • For structured data: Borsh provides versioning at ~{}% CU cost", avg_borsh_cu_diff as i32);
-    println!("   • Monitor CU patterns for your specific character sets");
+    println!("   • For multi-byte characters: Consider Base58 or Base64 for CU optimization");
+    println!("   • For ASCII content: Raw strings remain most efficient");
+    println!("   • For structured data: Base58 shows slight advantage over Base64");
+    println!("   • For Solana ecosystem: Base58 aligns with platform conventions");
+    println!("   • Monitor your specific use case for optimal encoding choice");
     
     println!();
 }
 
 fn print_character_analysis(results: &[(String, ComparisonResult)]) {
     println!("\n🔬 CHARACTER SET CU ANALYSIS");
-    println!("{}", "=".repeat(80));
+    println!("{}", "=".repeat(100));
     
     let valid_results: Vec<&(String, ComparisonResult)> = results.iter()
         .filter(|(_, r)| r.raw_string_cu > 0)
@@ -573,61 +765,30 @@ fn print_character_analysis(results: &[(String, ComparisonResult)]) {
     }
     
     println!("\n📊 CU EFFICIENCY BY CHARACTER TYPE:");
-    println!("{:<20} | {:>7} | {:>7} | {:>7} | {:>6} | {:>6}", 
-             "Character Type", "RawCU", "B64CU", "BorCU", "B64%", "Bor%");
-    println!("{}", "-".repeat(70));
+    println!("{:<18} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>4} | {:>4} | {:>4} | {:>4}", 
+             "Character Type", "RawCU", "B64CU", "B58CU", "BB64CU", "BB58CU", "B64%", "B58%", "BB64%", "BB58%");
+    println!("{}", "-".repeat(90));
     
     for (test_name, result) in &valid_results {
-        println!("{:<20} | {:>7} | {:>7} | {:>7} | {:>5.1}% | {:>5.1}%",
+        println!("{:<18} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | {:>3.0}% | {:>3.0}% | {:>3.0}% | {:>3.0}%",
                  test_name,
                  result.raw_string_cu,
-                 result.memo_base64_cu,
+                 result.base64_cu,
+                 result.base58_cu,
                  result.borsh_base64_cu,
-                 result.memo_base64_cu_diff_percent,
-                 result.borsh_base64_cu_diff_percent);
+                 result.borsh_base58_cu,
+                 result.base64_cu_diff_percent,
+                 result.base58_cu_diff_percent,
+                 result.borsh_base64_cu_diff_percent,
+                 result.borsh_base58_cu_diff_percent);
     }
     
-    // Find patterns
-    let multi_byte_cases: Vec<_> = valid_results.iter()
-        .filter(|(name, _)| name.contains("Chinese") || name.contains("Japanese") || 
-                           name.contains("Korean") || name.contains("Arabic") || 
-                           name.contains("Russian") || name.contains("Dense"))
-        .collect();
-    
-    let ascii_cases: Vec<_> = valid_results.iter()
-        .filter(|(name, _)| name.contains("ASCII") || name.contains("Pure"))
-        .collect();
-    
-    if !multi_byte_cases.is_empty() {
-        let avg_multi_byte_improvement: f64 = multi_byte_cases.iter()
-            .map(|(_, r)| r.memo_base64_cu_diff_percent)
-            .sum::<f64>() / multi_byte_cases.len() as f64;
-            
-        println!("\n🌍 MULTI-BYTE CHARACTER ANALYSIS:");
-        println!("   • Average Base64 CU change: {:+.1}%", avg_multi_byte_improvement);
-        if avg_multi_byte_improvement < -2.0 {
-            println!("   • 🎯 Significant CU improvement with Base64 encoding!");
-            println!("   • 💡 Multi-byte UTF-8 processing overhead is substantial");
-        }
-    }
-    
-    if !ascii_cases.is_empty() {
-        let avg_ascii_change: f64 = ascii_cases.iter()
-            .map(|(_, r)| r.memo_base64_cu_diff_percent)
-            .sum::<f64>() / ascii_cases.len() as f64;
-            
-        println!("\n📝 ASCII CHARACTER ANALYSIS:");
-        println!("   • Average Base64 CU change: {:+.1}%", avg_ascii_change);
-        if avg_ascii_change.abs() < 2.0 {
-            println!("   • ✅ Minimal CU impact for ASCII content");
-        }
-    }
-    
-    println!("\n🔍 CHARACTER COMPLEXITY INSIGHTS:");
-    println!("   • UTF-8 multi-byte characters create processing overhead");
-    println!("   • Base64 encoding normalizes to ASCII, reducing complexity");
-    println!("   • Trade-off: Size increase vs processing simplification");
-    println!("   • Pattern suggests Solana runtime optimizes ASCII processing");
+    println!("\n🔍 ENCODING INSIGHTS:");
+    println!("   • Base58 vs Base64: Space efficiency and CU performance comparison");
+    println!("   • Both encodings normalize multi-byte UTF-8 to ASCII");
+    println!("   • Base58 avoids ambiguous characters (0, O, I, l)");
+    println!("   • Base58 is native to Bitcoin/Solana ecosystems");
+    println!("   • Borsh provides structure at cost of additional overhead");
     
     println!();
 }
