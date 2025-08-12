@@ -123,6 +123,23 @@ cargo run --bin test-memo-chat-send-memo -- custom 0 "Hello, world."
 cargo run --bin test-memo-chat-send-memo --
 ```
 
+```bash
+# basic burn test (default message)
+cargo run --bin test-memo-chat-burn-for-group -- valid-basic 0
+
+# empty message
+cargo run --bin test-memo-chat-burn-for-group -- valid-empty-message 0
+
+# long message
+cargo run --bin test-memo-chat-burn-for-group -- valid-long-message 0
+
+# custom token burns and custom message
+cargo run --bin test-memo-chat-burn-for-group -- custom 0 5000 "Supporting group development"
+
+# too long message (should be failed)
+cargo run --bin test-memo-chat-burn-for-group -- too-long-message 0
+```
+
 ## Security
 
 The program uses a PDA as mint authority, which means:
