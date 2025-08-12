@@ -55,6 +55,10 @@ path = "chat/src/check-memo-chat-statistics.rs"
 name = "test-memo-chat-send-memo"
 path = "chat/src/test-memo-chat-send-memo.rs"
 
+[[bin]]
+name = "test-memo-chat-burn-for-group"
+path = "chat/src/test-memo-chat-burn-for-group.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

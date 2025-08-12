@@ -42,6 +42,9 @@ pub const EXPECTED_OPERATION: &str = "create_group";
 // Expected operation for sending messages
 pub const EXPECTED_SEND_MESSAGE_OPERATION: &str = "send_message";
 
+// Expected operation for burning tokens for group
+pub const EXPECTED_BURN_FOR_GROUP_OPERATION: &str = "burn_for_group";
+
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
 
 // Authorized mint address
@@ -313,6 +316,97 @@ impl ChatMessageData {
     }
 }
 
+/// Chat group burn data structure (stored in BurnMemo.payload for burn_tokens_for_group)
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ChatGroupBurnData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "chat" for memo-chat contract)
+    pub category: String,
+    
+    /// Operation type (must be "burn_for_group" for burning tokens)
+    pub operation: String,
+    
+    /// Group ID (must match the target group)
+    pub group_id: u64,
+    
+    /// Burner pubkey as string (must match the transaction signer)
+    pub burner: String,
+    
+    /// Burn message (optional, max 512 characters)
+    pub message: String,
+}
+
+impl ChatGroupBurnData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_group_id: u64, expected_burner: Pubkey) -> Result<()> {
+        // Validate version
+        if self.version != CHAT_GROUP_CREATION_DATA_VERSION {
+            msg!("Unsupported chat group burn data version: {} (expected: {})", 
+                 self.version, CHAT_GROUP_CREATION_DATA_VERSION);
+            return Err(ErrorCode::UnsupportedChatGroupBurnDataVersion.into());
+        }
+        
+        // Validate category (must be exactly "chat")
+        if self.category != EXPECTED_CATEGORY {
+            msg!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategory.into());
+        }
+        
+        // Validate category length
+        if self.category.len() != EXPECTED_CATEGORY.len() {
+            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
+                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategoryLength.into());
+        }
+        
+        // Validate operation (must be exactly "burn_for_group")
+        if self.operation != EXPECTED_BURN_FOR_GROUP_OPERATION {
+            msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_BURN_FOR_GROUP_OPERATION);
+            return Err(ErrorCode::InvalidOperation.into());
+        }
+        
+        // Validate operation length
+        if self.operation.len() != EXPECTED_BURN_FOR_GROUP_OPERATION.len() {
+            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
+                 self.operation.len(), EXPECTED_BURN_FOR_GROUP_OPERATION.len(), EXPECTED_BURN_FOR_GROUP_OPERATION);
+            return Err(ErrorCode::InvalidOperationLength.into());
+        }
+        
+        // Validate group_id
+        if self.group_id != expected_group_id {
+            msg!("Group ID mismatch: data contains {}, expected {}", 
+                 self.group_id, expected_group_id);
+            return Err(ErrorCode::GroupIdMismatch.into());
+        }
+        
+        // Validate burner (convert string to Pubkey and compare)
+        let burner_pubkey = Pubkey::from_str(&self.burner)
+            .map_err(|_| {
+                msg!("Invalid burner format: {}", self.burner);
+                ErrorCode::InvalidBurnerFormat
+            })?;
+            
+        if burner_pubkey != expected_burner {
+            msg!("Burner mismatch: data contains {}, expected {}", 
+                 burner_pubkey, expected_burner);
+            return Err(ErrorCode::BurnerMismatch.into());
+        }
+        
+        // Validate message (optional, max 512 characters)
+        if self.message.len() > 512 {
+            msg!("Burn message too long: {} characters (max: 512)", self.message.len());
+            return Err(ErrorCode::BurnMessageTooLong.into());
+        }
+        
+        msg!("Chat group burn data validation passed: category={}, operation={}, group_id={}, burner={}, message_len={}", 
+             self.category, self.operation, self.group_id, self.burner, self.message.len());
+        
+        Ok(())
+    }
+}
+
 #[program]
 pub mod memo_chat {
     use super::*;
@@ -340,7 +434,7 @@ pub mod memo_chat {
         burn_amount: u64,
     ) -> Result<()> {
         // Validate burn amount - require at least 42069 tokens for group creation
-        if burn_amount < 1_000_000 { //ONLY FOR DEBUGGING 
+        if burn_amount < 42_069_000_000 {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
@@ -542,8 +636,8 @@ pub mod memo_chat {
             return Err(ErrorCode::MemoRequired.into());
         }
 
-        // Validate memo contains correct amount and group_id
-        validate_memo_for_burn(&memo_data, group_id, amount)?;
+        // Parse and validate Borsh memo content for burn operation
+        parse_burn_borsh_memo(&memo_data, group_id, amount, ctx.accounts.burner.key())?;
 
         // Call memo-burn contract to burn tokens
         let cpi_program = ctx.accounts.memo_burn_program.to_account_info();
@@ -649,108 +743,73 @@ fn parse_group_creation_borsh_memo(memo_data: &[u8], expected_group_id: u64, exp
     Ok(group_data)
 }
 
-/// Validate memo for burn operation (enhanced with operation and group_id validation)
-fn validate_memo_for_burn(memo_data: &[u8], expected_group_id: u64, expected_amount: u64) -> Result<()> {
-    // Enhanced UTF-8 validation
-    let memo_str = match std::str::from_utf8(memo_data) {
-        Ok(s) => s,
-        Err(e) => {
-            msg!("Invalid UTF-8 sequence at byte position: {}", e.valid_up_to());
-            return Err(ErrorCode::InvalidMemoFormat.into());
-        }
-    };
+/// Parse and validate Borsh-formatted memo data for burn operation (with Base64 decoding)
+fn parse_burn_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_amount: u64, expected_burner: Pubkey) -> Result<()> {
+    // First, decode the Base64-encoded memo data
+    let base64_str = std::str::from_utf8(memo_data)
+        .map_err(|_| {
+            msg!("Invalid UTF-8 in memo data");
+            ErrorCode::InvalidChatGroupBurnDataFormat
+        })?;
     
-    // Basic security check
-    if memo_str.contains('\0') {
-        msg!("Memo contains null characters");
-        return Err(ErrorCode::InvalidMemoFormat.into());
+    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+        .map_err(|_| {
+            msg!("Invalid Base64 encoding in memo");
+            ErrorCode::InvalidChatGroupBurnDataFormat
+        })?;
+    
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    
+    // Deserialize Borsh data from decoded bytes (following memo-burn pattern)
+    let burn_memo = BurnMemo::try_from_slice(&decoded_data)
+        .map_err(|_| {
+            msg!("Invalid Borsh format after Base64 decoding");
+            ErrorCode::InvalidChatGroupBurnDataFormat
+        })?;
+    
+    // Validate version compatibility
+    if burn_memo.version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", 
+             burn_memo.version, BURN_MEMO_VERSION);
+        return Err(ErrorCode::UnsupportedMemoVersion.into());
     }
     
-    // Clean the string
-    let clean_str = memo_str
-        .trim_matches('"')
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\");
-    
-    // Parse as JSON
-    let json_data: serde_json::Value = serde_json::from_str(&clean_str)
-        .map_err(|_| ErrorCode::InvalidMemoFormat)?;
-
-    // Extract and validate operation field (must match expected operation)
-    let operation = json_data["operation"]
-        .as_str()
-        .ok_or(ErrorCode::MissingOperationField)?;
-    
-    if operation != "like_group" {
-        msg!("Invalid operation: expected 'like_group', got '{}'", operation);
-        return Err(ErrorCode::InvalidOperation.into());
-    }
-
-    // Validate category field (required) - must be "chat"
-    let category = json_data["category"]
-        .as_str()
-        .unwrap_or("");
-    
-    if category != EXPECTED_CATEGORY {
-        msg!("Invalid category: expected '{}', got '{}'", EXPECTED_CATEGORY, category);
-        return Err(ErrorCode::InvalidCategory.into());
-    }
-
-    // Extract and validate group_id field (required for burn operation)
-    let memo_group_id = match &json_data["group_id"] {
-        serde_json::Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        serde_json::Value::String(s) => {
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidGroupIdFormat.into());
-            }
-        },
-        _ => return Err(ErrorCode::MissingGroupIdField.into()),
-    };
-    
-    if memo_group_id != expected_group_id {
-        msg!("Group ID mismatch: memo contains {}, expected {}", memo_group_id, expected_group_id);
-        return Err(ErrorCode::GroupIdMismatch.into());
-    }
-
-    // Extract burn_amount from memo
-    let memo_burn_amount = match &json_data["burn_amount"] {
-        serde_json::Value::Number(n) => {
-            if let Some(int_val) = n.as_u64() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
-            }
-        },
-        serde_json::Value::String(s) => {
-            if let Ok(int_val) = s.parse::<u64>() {
-                int_val
-            } else {
-                return Err(ErrorCode::InvalidBurnAmountFormat.into());
-            }
-        },
-        _ => return Err(ErrorCode::MissingBurnAmountField.into()),
-    };
-
-    // Check if memo burn amount matches expected burn amount
-    if memo_burn_amount != expected_amount {
-        let memo_tokens = memo_burn_amount / 1_000_000;
-        let expected_tokens = expected_amount / 1_000_000;
-        msg!("Burn amount mismatch: memo contains {} tokens ({} units), but burning {} tokens ({} units)", 
-             memo_tokens, memo_burn_amount, expected_tokens, expected_amount);
+    // Validate burn amount matches
+    if burn_memo.burn_amount != expected_amount {
+        msg!("Burn amount mismatch: memo {} vs expected {}", 
+             burn_memo.burn_amount, expected_amount);
         return Err(ErrorCode::BurnAmountMismatch.into());
     }
+    
+    // Validate payload length does not exceed maximum allowed value
+    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
+        msg!("Payload too long: {} bytes (max: {})", 
+             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
+        return Err(ErrorCode::PayloadTooLong.into());
+    }
+    
+    msg!("Borsh+Base64 burn memo validation passed: version {}, {} units, payload: {} bytes", 
+         burn_memo.version, expected_amount, burn_memo.payload.len());
+    
+    // Record payload preview for debugging
+    if !burn_memo.payload.is_empty() {
+        msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
+    }
+    
+    // Deserialize ChatGroupBurnData from payload
+    let burn_data = ChatGroupBurnData::try_from_slice(&burn_memo.payload)
+        .map_err(|_| {
+            msg!("Invalid chat group burn data format in payload");
+            ErrorCode::InvalidChatGroupBurnDataFormat
+        })?;
+    
+    // Validate the burn data
+    burn_data.validate(expected_group_id, expected_burner)?;
+    
+    msg!("Chat group burn data parsed successfully: group_id={}, category={}, operation={}, burner={}, message={}", 
+         burn_data.group_id, burn_data.category, burn_data.operation, burn_data.burner, 
+         burn_data.message.chars().take(50).collect::<String>());
 
-    let token_count = expected_amount / 1_000_000;
-    msg!("Burn memo validation passed: operation=like_group, category=chat, group_id={}, {} tokens ({} units)", 
-         expected_group_id, token_count, expected_amount);
     Ok(())
 }
 
@@ -1144,10 +1203,10 @@ pub enum ErrorCode {
     #[msg("Group ID mismatch: Group ID from memo does not match instruction parameter.")]
     GroupIdMismatch,
 
-    #[msg("Missing group_id field in memo JSON.")]
+    #[msg("Missing group_id field in memo.")]
     MissingGroupIdField,
 
-    #[msg("Missing name field in memo JSON.")]
+    #[msg("Missing name field in memo.")]
     MissingNameField,
 
     #[msg("Invalid tags format: Tags must be an array of strings.")]
@@ -1162,7 +1221,7 @@ pub enum ErrorCode {
     #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
     InvalidBurnAmount,
 
-    #[msg("Missing burn_amount field in memo JSON.")]
+    #[msg("Missing burn_amount field in memo.")]
     MissingBurnAmountField,
 
     #[msg("Invalid burn_amount format in memo. Must be a positive integer in units.")]
@@ -1189,7 +1248,7 @@ pub enum ErrorCode {
     #[msg("Invalid category length. Category must be exactly the expected length.")]
     InvalidCategoryLength,
     
-    #[msg("Missing sender field in memo JSON.")]
+    #[msg("Missing sender field in memo.")]
     MissingSenderField,
     
     #[msg("Invalid sender format in memo. Must be a valid Pubkey string.")]
@@ -1198,7 +1257,7 @@ pub enum ErrorCode {
     #[msg("Sender mismatch: The sender in memo must match the transaction signer.")]
     SenderMismatch,
     
-    #[msg("Missing message field in memo JSON.")]
+    #[msg("Missing message field in memo.")]
     MissingMessageField,
     
     #[msg("Empty message: Message field cannot be empty.")]
@@ -1213,7 +1272,7 @@ pub enum ErrorCode {
     #[msg("Invalid reply signature format in memo. Must be a valid base58-encoded signature string.")]
     InvalidReplySignatureFormat,
     
-    #[msg("Missing operation field in memo JSON.")]
+    #[msg("Missing operation field in memo.")]
     MissingOperationField,
     
     #[msg("Invalid operation: Operation does not match the expected operation for this instruction.")]
@@ -1236,4 +1295,19 @@ pub enum ErrorCode {
     
     #[msg("Invalid chat message data format in payload. Must be valid Borsh-serialized data.")]
     InvalidChatMessageDataFormat,
+
+    #[msg("Unsupported chat group burn data version. Please use the correct structure version.")]
+    UnsupportedChatGroupBurnDataVersion,
+    
+    #[msg("Invalid chat group burn data format in payload. Must be valid Borsh-serialized data.")]
+    InvalidChatGroupBurnDataFormat,
+
+    #[msg("Invalid burner format in memo. Must be a valid Pubkey string.")]
+    InvalidBurnerFormat,
+    
+    #[msg("Burner mismatch: The burner in memo must match the transaction signer.")]
+    BurnerMismatch,
+    
+    #[msg("Burn message too long: Message must be at most 512 characters.")]
+    BurnMessageTooLong,
 }
