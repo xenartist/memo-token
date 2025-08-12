@@ -320,7 +320,7 @@ fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
 }
 
 fn create_rpc_client() -> RpcClient {
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = "https://rpc-testnet.x1.wiki";
     println!("Connect to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }
