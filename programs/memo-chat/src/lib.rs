@@ -5,6 +5,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::Token2022;
 use memo_mint::program::MemoMint;
+use memo_mint::cpi::accounts::ProcessMint;
 use memo_burn::cpi::accounts::ProcessBurn;
 use memo_burn::program::MemoBurn;
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
@@ -559,61 +560,20 @@ pub mod memo_chat {
              group_id, 
              memo_content);
 
-        // Call memo-mint contract through chat group PDA to mint tokens to the sender
-        let group_id_bytes = group_id.to_le_bytes();
-        let bump = chat_group.bump;
-        let group_seeds: &[&[u8]] = &[
-            b"chat_group",
-            group_id_bytes.as_ref(),
-            &[bump]
-        ];
-        let signer_seeds = [group_seeds];
-
-        // Manual instruction construction for process_mint_to (similar to successful test client)
-        // use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
-        // use sha2::{Sha256, Digest};
+        // Call memo-mint contract using CPI to process_mint (user as direct signer)
+        // This allows sender to directly mint tokens without using chat group PDA
+        let cpi_program = ctx.accounts.memo_mint_program.to_account_info();
+        let cpi_accounts = ProcessMint {
+            user: ctx.accounts.sender.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
+            mint_authority: ctx.accounts.mint_authority.to_account_info(),
+            token_account: ctx.accounts.sender_token_account.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+            instructions: ctx.accounts.instructions.to_account_info(),
+        };
         
-        let recipient = ctx.accounts.sender.key();
-        
-        // Build instruction data manually
-        let mut hasher = Sha256::new();
-        hasher.update(b"global:process_mint_to");
-        let result = hasher.finalize();
-        let mut instruction_data = result[..8].to_vec();
-        
-        // Add recipient parameter (required by ProcessMintTo)
-        instruction_data.extend_from_slice(&recipient.to_bytes());
-        
-        let accounts = vec![
-            AccountMeta::new(chat_group.key(), true),  // caller (chat group PDA as signer)
-            AccountMeta::new(ctx.accounts.mint.key(), false),   // mint
-            AccountMeta::new_readonly(ctx.accounts.mint_authority.key(), false), // mint_authority
-            AccountMeta::new(ctx.accounts.sender_token_account.key(), false),    // recipient_token_account
-            AccountMeta::new_readonly(anchor_spl::token_2022::ID, false),  // token_program
-            AccountMeta::new_readonly(
-                Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
-                false
-            ), // instructions
-        ];
-        
-        let mint_ix = Instruction::new_with_bytes(
-            ctx.accounts.memo_mint_program.key(),
-            &instruction_data,
-            accounts,
-        );
-        
-        invoke_signed(
-            &mint_ix,
-            &[
-                chat_group.to_account_info(),
-                ctx.accounts.mint.to_account_info(),
-                ctx.accounts.mint_authority.to_account_info(),
-                ctx.accounts.sender_token_account.to_account_info(),
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.instructions.to_account_info(),
-            ],
-            &signer_seeds,
-        )?;
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        memo_mint::cpi::process_mint(cpi_ctx)?;
 
         // Emit memo event
         emit!(MemoSentEvent {
@@ -1182,7 +1142,6 @@ pub struct SendMemoToGroup<'info> {
     
     /// CHECK: PDA serving as mint authority (from memo-mint program)
     #[account(
-        mut,
         seeds = [b"mint_authority"],
         bump,
         seeds::program = memo_mint_program.key()

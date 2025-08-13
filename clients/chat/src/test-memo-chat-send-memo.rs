@@ -651,17 +651,17 @@ fn send_memo_to_group_instruction(
     instruction_data.extend_from_slice(&group_id.to_le_bytes());
 
     let accounts = vec![
-        AccountMeta::new(*sender, true),
-        AccountMeta::new(*chat_group, false),
-        AccountMeta::new(*mint, false),
-        AccountMeta::new(*mint_authority, false),
-        AccountMeta::new(*sender_token_account, false),
-        AccountMeta::new_readonly(token_2022_id(), false),
-        AccountMeta::new_readonly(*memo_mint_program, false),
+        AccountMeta::new(*sender, true),                        // sender (user as signer)
+        AccountMeta::new(*chat_group, false),                   // chat_group
+        AccountMeta::new(*mint, false),                         // mint
+        AccountMeta::new_readonly(*mint_authority, false),      // mint_authority (memo-mint PDA)
+        AccountMeta::new(*sender_token_account, false),         // sender_token_account
+        AccountMeta::new_readonly(token_2022_id(), false),      // token_program
+        AccountMeta::new_readonly(*memo_mint_program, false),   // memo_mint_program
         AccountMeta::new_readonly(
             Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
             false
-        ),
+        ), // instructions
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
