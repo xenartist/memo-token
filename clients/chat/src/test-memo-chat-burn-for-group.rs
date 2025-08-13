@@ -269,6 +269,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &memo_chat_program_id,
     );
 
+    // Calculate burn leaderboard PDA
+    let (burn_leaderboard_pda, _) = Pubkey::find_program_address(
+        &[b"burn_leaderboard"],
+        &memo_chat_program_id,
+    );
+
     // Get user's token account
     let burner_token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),
@@ -279,6 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Runtime info:");
     println!("  Target group ID: {}", test_params.group_id);
     println!("  Chat group PDA: {}", chat_group_pda);
+    println!("  Burn leaderboard PDA: {}", burn_leaderboard_pda);
     println!("  Burner: {}", payer.pubkey());
     println!("  Burner token account: {}", burner_token_account);
     println!();
@@ -365,6 +372,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &memo_chat_program_id,
         &payer.pubkey(),
         &chat_group_pda,
+        &burn_leaderboard_pda,
         &mint,
         &burner_token_account,
         &memo_burn_program_id,
@@ -553,6 +561,7 @@ fn burn_tokens_for_group_instruction(
     program_id: &Pubkey,
     burner: &Pubkey,
     chat_group: &Pubkey,
+    burn_leaderboard: &Pubkey,
     mint: &Pubkey,
     burner_token_account: &Pubkey,
     memo_burn_program: &Pubkey,
@@ -570,6 +579,7 @@ fn burn_tokens_for_group_instruction(
     let accounts = vec![
         AccountMeta::new(*burner, true),
         AccountMeta::new(*chat_group, false),
+        AccountMeta::new(*burn_leaderboard, false),
         AccountMeta::new(*mint, false),
         AccountMeta::new(*burner_token_account, false),
         AccountMeta::new_readonly(token_2022_id(), false),

@@ -506,6 +506,18 @@ pub mod memo_chat {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
+        // Update burn leaderboard after successful group creation
+        let leaderboard = &mut ctx.accounts.burn_leaderboard;
+        let entered_leaderboard = leaderboard.update_leaderboard(actual_group_id, burn_amount)?;
+
+        if entered_leaderboard {
+            let rank = leaderboard.get_rank(actual_group_id).unwrap_or(0);
+            msg!("Group {} entered burn leaderboard at rank {}", actual_group_id, rank);
+        } else {
+            msg!("Group {} burn amount {} not sufficient for leaderboard", 
+                 actual_group_id, burn_amount / 1_000_000);
+        }
+
         msg!("Chat group {} created successfully by {} with {} tokens burned", 
              actual_group_id, ctx.accounts.creator.key(), burn_amount / 1_000_000);
         Ok(())
@@ -660,6 +672,20 @@ pub mod memo_chat {
         
         msg!("Successfully burned {} tokens for group {}", amount / 1_000_000, group_id);
         
+        // Update burn leaderboard after successful burn
+        let leaderboard = &mut ctx.accounts.burn_leaderboard;
+        let total_burned = chat_group.burned_amount;
+        let entered_leaderboard = leaderboard.update_leaderboard(group_id, total_burned)?;
+
+        if entered_leaderboard {
+            let rank = leaderboard.get_rank(group_id).unwrap_or(0);
+            msg!("Group {} updated in burn leaderboard at rank {} with total {} tokens", 
+                 group_id, rank, total_burned / 1_000_000);
+        } else {
+            msg!("Group {} total burn amount {} not sufficient for leaderboard", 
+                 group_id, total_burned / 1_000_000);
+        }
+
         // Emit burn event
         emit!(TokensBurnedForGroupEvent {
             group_id,
@@ -669,6 +695,20 @@ pub mod memo_chat {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
+        Ok(())
+    }
+
+    /// Initialize the burn leaderboard (one-time setup, admin only)
+    pub fn initialize_burn_leaderboard(ctx: Context<InitializeBurnLeaderboard>) -> Result<()> {
+        // Verify admin authorization
+        if ctx.accounts.admin.key() != AUTHORIZED_ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+
+        let leaderboard = &mut ctx.accounts.burn_leaderboard;
+        leaderboard.initialize(); // Use the new initialize method
+        
+        msg!("Burn leaderboard initialized by admin {}", ctx.accounts.admin.key());
         Ok(())
     }
 }
@@ -916,6 +956,123 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
     Ok((true, memo_data.to_vec()))
 }
 
+/// Burn leaderboard entry
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default)]
+pub struct LeaderboardEntry {
+    pub group_id: u64,
+    pub burned_amount: u64,
+}
+
+/// Burn leaderboard account (stores top 100 groups by burn amount)
+#[account]
+pub struct BurnLeaderboard {
+    /// Current number of entries in the leaderboard (0-100)
+    pub current_size: u8,
+    /// Array of leaderboard entries, sorted by burned_amount in descending order
+    /// 使用 Vec 而不是固定数组，避免栈溢出
+    pub entries: Vec<LeaderboardEntry>,
+}
+
+impl BurnLeaderboard {
+    pub const SPACE: usize = 8 + // discriminator
+        1 + // current_size
+        4 + // Vec length prefix
+        100 * 16 + // max entries (100 * (8 + 8) bytes each)
+        64; // safety buffer
+    
+    /// Initialize with empty entries
+    pub fn initialize(&mut self) {
+        self.current_size = 0;
+        self.entries = Vec::with_capacity(100);
+    }
+    
+    /// Find the position of a group in the leaderboard
+    pub fn find_group_position(&self, group_id: u64) -> Option<usize> {
+        self.entries.iter().position(|entry| entry.group_id == group_id)
+    }
+    
+    /// Binary search to find the insertion position for a new burn amount (descending order)
+    pub fn find_insert_position(&self, burned_amount: u64) -> usize {
+        match self.entries.binary_search_by(|entry| burned_amount.cmp(&entry.burned_amount)) {
+            Ok(pos) => pos,
+            Err(pos) => pos,
+        }
+    }
+    
+    /// Check if a burn amount can enter the leaderboard
+    pub fn can_enter_leaderboard(&self, burned_amount: u64) -> bool {
+        if self.entries.len() < 100 {
+            return true; // Still has space
+        }
+        
+        // Check if better than the last entry
+        burned_amount > self.entries.last().unwrap().burned_amount
+    }
+    
+    /// Update the leaderboard with a new or updated entry
+    pub fn update_leaderboard(&mut self, group_id: u64, new_burned_amount: u64) -> Result<bool> {
+        // 1. Check if group already exists
+        if let Some(existing_pos) = self.find_group_position(group_id) {
+            self.update_existing_entry(existing_pos, new_burned_amount)?;
+            return Ok(true);
+        }
+        
+        // 2. Check if new entry can enter leaderboard
+        if !self.can_enter_leaderboard(new_burned_amount) {
+            return Ok(false); // Cannot enter leaderboard
+        }
+        
+        // 3. Insert new entry
+        self.insert_new_entry(group_id, new_burned_amount)?;
+        Ok(true)
+    }
+    
+    /// Update an existing entry (may need reordering)
+    fn update_existing_entry(&mut self, pos: usize, new_amount: u64) -> Result<()> {
+        // Remove old entry
+        self.entries.remove(pos);
+        self.current_size = self.entries.len() as u8;
+        
+        // Insert with new amount
+        self.insert_new_entry(self.entries[pos].group_id, new_amount)?;
+        
+        Ok(())
+    }
+    
+    /// Insert a new entry at the correct position
+    fn insert_new_entry(&mut self, group_id: u64, burned_amount: u64) -> Result<()> {
+        let new_entry = LeaderboardEntry {
+            group_id,
+            burned_amount,
+        };
+        
+        // Find correct position (sorted by burned_amount descending)
+        let insert_pos = self.entries
+            .binary_search_by(|entry| entry.burned_amount.cmp(&burned_amount).reverse())
+            .unwrap_or_else(|pos| pos);
+        
+        // Insert at correct position
+        self.entries.insert(insert_pos, new_entry);
+        
+        // Keep only top 100
+        if self.entries.len() > 100 {
+            self.entries.truncate(100);
+        }
+        
+        self.current_size = self.entries.len() as u8;
+        
+        msg!("Updated leaderboard: group {} with {} burned tokens at position {}", 
+             group_id, burned_amount / 1_000_000, insert_pos + 1);
+        
+        Ok(())
+    }
+    
+    /// Get the rank (1-100) of a group by group_id
+    pub fn get_rank(&self, group_id: u64) -> Option<u8> {
+        self.find_group_position(group_id).map(|pos| (pos + 1) as u8)
+    }
+}
+
 /// Global group counter account
 #[account]
 pub struct GlobalGroupCounter {
@@ -970,6 +1127,13 @@ pub struct CreateChatGroup<'info> {
         bump
     )]
     pub chat_group: Account<'info, ChatGroup>,
+    
+    #[account(
+        mut,
+        seeds = [b"burn_leaderboard"],
+        bump
+    )]
+    pub burn_leaderboard: Account<'info, BurnLeaderboard>,
     
     #[account(
         mut,
@@ -1058,6 +1222,13 @@ pub struct BurnTokensForGroup<'info> {
     
     #[account(
         mut,
+        seeds = [b"burn_leaderboard"],
+        bump
+    )]
+    pub burn_leaderboard: Account<'info, BurnLeaderboard>,
+    
+    #[account(
+        mut,
         constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
     )]
     pub mint: InterfaceAccount<'info, Mint>,
@@ -1077,6 +1248,27 @@ pub struct BurnTokensForGroup<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+}
+
+/// Account structure for initializing burn leaderboard (admin only)
+#[derive(Accounts)]
+pub struct InitializeBurnLeaderboard<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
+    )]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = BurnLeaderboard::SPACE,
+        seeds = [b"burn_leaderboard"],
+        bump
+    )]
+    pub burn_leaderboard: Account<'info, BurnLeaderboard>,
+    
+    pub system_program: Program<'info, System>,
 }
 
 /// Chat group data structure
@@ -1146,6 +1338,15 @@ pub struct TokensBurnedForGroupEvent {
     pub burner: Pubkey,
     pub amount: u64,
     pub total_burned: u64,
+    pub timestamp: i64,
+}
+
+/// Event emitted when leaderboard is updated
+#[event]
+pub struct LeaderboardUpdatedEvent {
+    pub group_id: u64,
+    pub new_rank: u8,
+    pub burned_amount: u64,
     pub timestamp: i64,
 }
 
@@ -1310,4 +1511,10 @@ pub enum ErrorCode {
     
     #[msg("Burn message too long: Message must be at most 512 characters.")]
     BurnMessageTooLong,
+
+    #[msg("Leaderboard update failed. Unable to process leaderboard entry.")]
+    LeaderboardUpdateFailed,
+
+    #[msg("Leaderboard full. Entry does not qualify for top 100.")]
+    LeaderboardFull,
 }

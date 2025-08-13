@@ -44,12 +44,20 @@ name = "admin-init-global-group-counter"
 path = "chat/src/admin-init-global-group-counter.rs"
 
 [[bin]]
+name = "admin-init-burn-leaderboard"
+path = "chat/src/admin-init-burn-leaderboard.rs"
+
+[[bin]]
 name = "test-memo-chat-create-group"
 path = "chat/src/test-memo-chat-create-group.rs"
 
 [[bin]]
 name = "check-memo-chat-statistics"
 path = "chat/src/check-memo-chat-statistics.rs"
+
+[[bin]]
+name = "check-memo-chat-burn-leaderboard"
+path = "chat/src/check-memo-chat-burn-leaderboard.rs"
 
 [[bin]]
 name = "test-memo-chat-send-memo"
