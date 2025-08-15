@@ -671,6 +671,29 @@ pub mod memo_chat {
         msg!("Burn leaderboard initialized by admin {}", ctx.accounts.admin.key());
         Ok(())
     }
+
+    /// Clear the burn leaderboard (admin only, for cleaning up duplicate data)
+    pub fn clear_burn_leaderboard(ctx: Context<ClearBurnLeaderboard>) -> Result<()> {
+        // Verify admin authorization
+        if ctx.accounts.admin.key() != AUTHORIZED_ADMIN_PUBKEY {
+            return Err(ErrorCode::UnauthorizedAdmin.into());
+        }
+
+        let leaderboard = &mut ctx.accounts.burn_leaderboard;
+        
+        // Record current state for logging
+        let old_size = leaderboard.current_size;
+        let old_entries_count = leaderboard.entries.len();
+        
+        // Clear all entries
+        leaderboard.current_size = 0;
+        leaderboard.entries.clear();
+        
+        msg!("Burn leaderboard cleared by admin {}", ctx.accounts.admin.key());
+        msg!("Removed {} entries (current_size was {})", old_entries_count, old_size);
+        
+        Ok(())
+    }
 }
 
 /// Parse and validate Borsh-formatted memo data for group creation (with Base64 decoding)
@@ -989,12 +1012,15 @@ impl BurnLeaderboard {
     
     /// Update an existing entry (may need reordering)
     fn update_existing_entry(&mut self, pos: usize, new_amount: u64) -> Result<()> {
+        // Save the group_id before removing the entry
+        let group_id = self.entries[pos].group_id;
+        
         // Remove old entry
         self.entries.remove(pos);
         self.current_size = self.entries.len() as u8;
         
-        // Insert with new amount
-        self.insert_new_entry(self.entries[pos].group_id, new_amount)?;
+        // Insert with new amount using the saved group_id
+        self.insert_new_entry(group_id, new_amount)?;
         
         Ok(())
     }
@@ -1228,6 +1254,23 @@ pub struct InitializeBurnLeaderboard<'info> {
     pub burn_leaderboard: Account<'info, BurnLeaderboard>,
     
     pub system_program: Program<'info, System>,
+}
+
+/// Account structure for clearing burn leaderboard (admin only)
+#[derive(Accounts)]
+pub struct ClearBurnLeaderboard<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
+    )]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"burn_leaderboard"],
+        bump
+    )]
+    pub burn_leaderboard: Account<'info, BurnLeaderboard>,
 }
 
 /// Chat group data structure
