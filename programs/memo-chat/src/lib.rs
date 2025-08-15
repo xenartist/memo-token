@@ -952,7 +952,6 @@ pub struct BurnLeaderboard {
     /// Current number of entries in the leaderboard (0-100)
     pub current_size: u8,
     /// Array of leaderboard entries, sorted by burned_amount in descending order
-    /// 使用 Vec 而不是固定数组，避免栈溢出
     pub entries: Vec<LeaderboardEntry>,
 }
 
