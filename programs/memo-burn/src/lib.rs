@@ -27,6 +27,9 @@ const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_L
 // maximum payload length = memo maximum length - borsh fixed overhead
 pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
+// Maximum allowed Borsh data size after Base64 decoding (security limit)
+pub const MAX_BORSH_DATA_SIZE: usize = 1024;
+
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
 
@@ -117,8 +120,14 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
             ErrorCode::InvalidMemoFormat
         })?;
     
-    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    // check decoded borsh data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
     
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+
     // Then deserialize Borsh data from decoded bytes
     let burn_memo = BurnMemo::try_from_slice(&decoded_data)
         .map_err(|_| {
