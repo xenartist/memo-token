@@ -15,6 +15,34 @@ use sha2::{Sha256, Digest};
 use spl_memo::ID as MEMO_PROGRAM_ID;
 use base64::{Engine as _, engine::general_purpose};
 
+// ===== BUSINESS LOGIC CONSTANTS =====
+
+// Token economics
+pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
+pub const MIN_GROUP_CREATION_BURN_TOKENS: u64 = 42_069; // Minimum tokens to burn for group creation
+pub const MIN_GROUP_CREATION_BURN_AMOUNT: u64 = MIN_GROUP_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_BURN_AMOUNT: u64 = 1 * DECIMAL_FACTOR; // Minimum burn amount (1 token)
+
+// Time limits  
+pub const DEFAULT_MEMO_INTERVAL_SECONDS: i64 = 60; // Default memo interval (1 minute)
+pub const MAX_MEMO_INTERVAL_SECONDS: i64 = 86400; // Maximum memo interval (24 hours)
+
+// ===== STRING LENGTH CONSTRAINTS =====
+
+// Group metadata limits
+pub const MAX_GROUP_NAME_LENGTH: usize = 64;
+pub const MAX_GROUP_DESCRIPTION_LENGTH: usize = 128;
+pub const MAX_GROUP_IMAGE_LENGTH: usize = 256;
+pub const MAX_TAGS_COUNT: usize = 4;
+pub const MAX_TAG_LENGTH: usize = 32;
+
+// Message limits
+pub const MAX_MESSAGE_LENGTH: usize = 512;
+pub const MAX_BURN_MESSAGE_LENGTH: usize = 512;
+
+// Signature format
+pub const SIGNATURE_LENGTH_BYTES: usize = 64;
+
 // Memo length constraints (consistent with memo-mint and memo-burn)
 pub const MEMO_MIN_LENGTH: usize = 69;
 pub const MEMO_MAX_LENGTH: usize = 800;
@@ -144,41 +172,41 @@ impl ChatGroupCreationData {
             return Err(ErrorCode::GroupIdMismatch.into());
         }
         
-        // Validate name (required, 1-64 characters)
-        if self.name.is_empty() || self.name.len() > 64 {
-            msg!("Invalid group name: '{}' (must be 1-64 characters)", self.name);
+        // Validate name (required, 1-MAX_GROUP_NAME_LENGTH characters)
+        if self.name.is_empty() || self.name.len() > MAX_GROUP_NAME_LENGTH {
+            msg!("Invalid group name: '{}' (must be 1-{} characters)", self.name, MAX_GROUP_NAME_LENGTH);
             return Err(ErrorCode::InvalidGroupName.into());
         }
         
-        // Validate description (optional, max 128 characters)
-        if self.description.len() > 128 {
-            msg!("Invalid group description: {} characters (max: 128)", self.description.len());
+        // Validate description (optional, max MAX_GROUP_DESCRIPTION_LENGTH characters)
+        if self.description.len() > MAX_GROUP_DESCRIPTION_LENGTH {
+            msg!("Invalid group description: {} characters (max: {})", self.description.len(), MAX_GROUP_DESCRIPTION_LENGTH);
             return Err(ErrorCode::InvalidGroupDescription.into());
         }
         
-        // Validate image (optional, max 256 characters)
-        if self.image.len() > 256 {
-            msg!("Invalid group image: {} characters (max: 256)", self.image.len());
+        // Validate image (optional, max MAX_GROUP_IMAGE_LENGTH characters)
+        if self.image.len() > MAX_GROUP_IMAGE_LENGTH {
+            msg!("Invalid group image: {} characters (max: {})", self.image.len(), MAX_GROUP_IMAGE_LENGTH);
             return Err(ErrorCode::InvalidGroupImage.into());
         }
         
-        // Validate tags (optional, max 4 tags, each max 32 characters)
-        if self.tags.len() > 4 {
-            msg!("Too many tags: {} (max: 4)", self.tags.len());
+        // Validate tags (optional, max MAX_TAGS_COUNT tags, each max MAX_TAG_LENGTH characters)
+        if self.tags.len() > MAX_TAGS_COUNT {
+            msg!("Too many tags: {} (max: {})", self.tags.len(), MAX_TAGS_COUNT);
             return Err(ErrorCode::TooManyTags.into());
         }
         
         for (i, tag) in self.tags.iter().enumerate() {
-            if tag.is_empty() || tag.len() > 32 {
-                msg!("Invalid tag {}: '{}' (must be 1-32 characters)", i, tag);
+            if tag.is_empty() || tag.len() > MAX_TAG_LENGTH {
+                msg!("Invalid tag {}: '{}' (must be 1-{} characters)", i, tag, MAX_TAG_LENGTH);
                 return Err(ErrorCode::InvalidTag.into());
             }
         }
         
         // Validate min_memo_interval (optional, should be reasonable if provided)
         if let Some(interval) = self.min_memo_interval {
-            if interval < 0 || interval > 86400 {  // Max 24 hours
-                msg!("Invalid min_memo_interval: {} (must be 0-86400 seconds)", interval);
+            if interval < 0 || interval > MAX_MEMO_INTERVAL_SECONDS {  // Max 24 hours
+                msg!("Invalid min_memo_interval: {} (must be 0-{} seconds)", interval, MAX_MEMO_INTERVAL_SECONDS);
                 return Err(ErrorCode::InvalidMemoInterval.into());
             }
         }
@@ -279,7 +307,7 @@ impl ChatMessageData {
             return Err(ErrorCode::EmptyMessage.into());
         }
         
-        if self.message.len() > 512 {
+        if self.message.len() > MAX_MESSAGE_LENGTH {
             return Err(ErrorCode::MessageTooLong.into());
         }
         
@@ -300,8 +328,8 @@ impl ChatMessageData {
                 // Validate signature format (base58 encoded, 64 bytes when decoded)
                 match bs58::decode(reply_sig).into_vec() {
                     Ok(decoded) => {
-                        if decoded.len() != 64 {
-                            msg!("Invalid reply signature length: {} bytes (expected 64)", decoded.len());
+                        if decoded.len() != SIGNATURE_LENGTH_BYTES {
+                            msg!("Invalid reply signature length: {} bytes (expected {})", decoded.len(), SIGNATURE_LENGTH_BYTES);
                             return Err(ErrorCode::InvalidReplySignatureFormat.into());
                         }
                     },
@@ -398,9 +426,9 @@ impl ChatGroupBurnData {
             return Err(ErrorCode::BurnerMismatch.into());
         }
         
-        // Validate message (optional, max 512 characters)
-        if self.message.len() > 512 {
-            msg!("Burn message too long: {} characters (max: 512)", self.message.len());
+        // Validate message (optional, max MAX_BURN_MESSAGE_LENGTH characters)
+        if self.message.len() > MAX_BURN_MESSAGE_LENGTH {
+            msg!("Burn message too long: {} characters (max: {})", self.message.len(), MAX_BURN_MESSAGE_LENGTH);
             return Err(ErrorCode::BurnMessageTooLong.into());
         }
         
@@ -438,11 +466,11 @@ pub mod memo_chat {
         burn_amount: u64,
     ) -> Result<()> {
         // Validate burn amount - require at least 42069 tokens for group creation
-        if burn_amount < 42_069_000_000 {
+        if burn_amount < MIN_GROUP_CREATION_BURN_AMOUNT {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
-        if burn_amount % 1_000_000 != 0 {
+        if burn_amount % DECIMAL_FACTOR != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
@@ -490,7 +518,7 @@ pub mod memo_chat {
         chat_group.tags = group_data.tags.clone();
         chat_group.memo_count = 0;
         chat_group.burned_amount = burn_amount;
-        chat_group.min_memo_interval = group_data.min_memo_interval.unwrap_or(60);
+        chat_group.min_memo_interval = group_data.min_memo_interval.unwrap_or(DEFAULT_MEMO_INTERVAL_SECONDS);
         chat_group.last_memo_time = 0;
         chat_group.bump = ctx.bumps.chat_group;
 
@@ -519,11 +547,11 @@ pub mod memo_chat {
             msg!("Group {} entered burn leaderboard at rank {}", actual_group_id, rank);
         } else {
             msg!("Group {} burn amount {} not sufficient for leaderboard", 
-                 actual_group_id, burn_amount / 1_000_000);
+                 actual_group_id, burn_amount / DECIMAL_FACTOR);
         }
 
         msg!("Chat group {} created successfully by {} with {} tokens burned", 
-             actual_group_id, ctx.accounts.creator.key(), burn_amount / 1_000_000);
+             actual_group_id, ctx.accounts.creator.key(), burn_amount / DECIMAL_FACTOR);
         Ok(())
     }
 
@@ -597,11 +625,11 @@ pub mod memo_chat {
         amount: u64,
     ) -> Result<()> {
         // Validate burn amount
-        if amount < 1_000_000 {
+        if amount < MIN_BURN_AMOUNT {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
-        if amount % 1_000_000 != 0 {
+        if amount % DECIMAL_FACTOR != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
@@ -633,7 +661,7 @@ pub mod memo_chat {
         let chat_group = &mut ctx.accounts.chat_group;
         chat_group.burned_amount = chat_group.burned_amount.saturating_add(amount);
         
-        msg!("Successfully burned {} tokens for group {}", amount / 1_000_000, group_id);
+        msg!("Successfully burned {} tokens for group {}", amount / DECIMAL_FACTOR, group_id);
         
         // Update burn leaderboard after successful burn
         let leaderboard = &mut ctx.accounts.burn_leaderboard;
@@ -643,10 +671,10 @@ pub mod memo_chat {
         if entered_leaderboard {
             let rank = leaderboard.get_rank(group_id).unwrap_or(0);
             msg!("Group {} updated in burn leaderboard at rank {} with total {} tokens", 
-                 group_id, rank, total_burned / 1_000_000);
+                 group_id, rank, total_burned / DECIMAL_FACTOR);
         } else {
             msg!("Group {} total burn amount {} not sufficient for leaderboard", 
-                 group_id, total_burned / 1_000_000);
+                 group_id, total_burned / DECIMAL_FACTOR);
         }
 
         // Emit burn event
@@ -1056,7 +1084,7 @@ impl BurnLeaderboard {
         self.current_size = self.entries.len() as u8;
         
         msg!("Updated leaderboard: group {} with {} burned tokens at position {}", 
-             group_id, burned_amount / 1_000_000, insert_pos + 1);
+             group_id, burned_amount / DECIMAL_FACTOR, insert_pos + 1);
         
         Ok(())
     }
