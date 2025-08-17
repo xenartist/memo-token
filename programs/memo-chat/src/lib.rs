@@ -23,6 +23,9 @@ pub const MIN_GROUP_CREATION_BURN_TOKENS: u64 = 42_069; // Minimum tokens to bur
 pub const MIN_GROUP_CREATION_BURN_AMOUNT: u64 = MIN_GROUP_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
 pub const MIN_BURN_AMOUNT: u64 = 1 * DECIMAL_FACTOR; // Minimum burn amount (1 token)
 
+// Maximum burn per transaction (consistent with memo-burn)
+pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
 // Time limits  
 pub const DEFAULT_MEMO_INTERVAL_SECONDS: i64 = 60; // Default memo interval (1 minute)
 pub const MAX_MEMO_INTERVAL_SECONDS: i64 = 86400; // Maximum memo interval (24 hours)
@@ -470,6 +473,11 @@ pub mod memo_chat {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
+        // check burn amount limit
+        if burn_amount > MAX_BURN_PER_TX {
+            return Err(ErrorCode::BurnAmountTooLarge.into());
+        }
+        
         if burn_amount % DECIMAL_FACTOR != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
@@ -628,6 +636,11 @@ pub mod memo_chat {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
+        // check burn amount limit
+        if amount > MAX_BURN_PER_TX {
+            return Err(ErrorCode::BurnAmountTooLarge.into());
+        }
+        
         if amount % DECIMAL_FACTOR != 0 {
             return Err(ErrorCode::InvalidBurnAmount.into());
         }
@@ -658,7 +671,11 @@ pub mod memo_chat {
         
         // Update chat group burned amount tracking
         let chat_group = &mut ctx.accounts.chat_group;
+        let old_amount = chat_group.burned_amount;
         chat_group.burned_amount = chat_group.burned_amount.saturating_add(amount);
+        if chat_group.burned_amount == u64::MAX && old_amount < u64::MAX {
+            msg!("Warning: burned_amount overflow detected for group {}", group_id);
+        }
         
         msg!("Successfully burned {} tokens for group {}", amount / DECIMAL_FACTOR, group_id);
         
@@ -1011,21 +1028,23 @@ impl BurnLeaderboard {
         
         let mut min_pos = None;
         let mut min_amount = u64::MAX;
+        let mut found_group_pos = None;
         
+        // loop all elements
         for (i, entry) in self.entries.iter().enumerate() {
-            // check if find target group
+            // record target group position
             if entry.group_id == group_id {
-                return (Some(i), min_pos); // find group, return current min position
+                found_group_pos = Some(i);
             }
             
-            // record min burned_amount position
+            // always record min position
             if entry.burned_amount < min_amount {
                 min_amount = entry.burned_amount;
                 min_pos = Some(i);
             }
         }
         
-        (None, min_pos) // not find group, return min position
+        (found_group_pos, min_pos)
     }
     
     /// update leaderboard - zero array move version
@@ -1530,4 +1549,7 @@ pub enum ErrorCode {
 
     #[msg("Leaderboard full. Entry does not qualify for top 100.")]
     LeaderboardFull,
+
+    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per transaction.")]
+    BurnAmountTooLarge,
 }
