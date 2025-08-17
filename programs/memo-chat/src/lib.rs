@@ -9,9 +9,7 @@ use memo_mint::cpi::accounts::ProcessMint;
 use memo_burn::cpi::accounts::ProcessBurn;
 use memo_burn::program::MemoBurn;
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
-use anchor_lang::solana_program::{instruction::Instruction, program::invoke_signed};
 use std::str::FromStr;
-use sha2::{Sha256, Digest};
 use spl_memo::ID as MEMO_PROGRAM_ID;
 use base64::{Engine as _, engine::general_purpose};
 
