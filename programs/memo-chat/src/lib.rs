@@ -28,6 +28,9 @@ const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_L
 // maximum payload length = memo maximum length - borsh fixed overhead
 pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
+// Maximum allowed Borsh data size after Base64 decoding (security limit)
+pub const MAX_BORSH_DATA_SIZE: usize = 1024;
+
 // Current version of BurnMemo structure (consistent with memo-burn)
 pub const BURN_MEMO_VERSION: u8 = 1;
 
@@ -710,6 +713,12 @@ fn parse_group_creation_borsh_memo(memo_data: &[u8], expected_group_id: u64, exp
             msg!("Invalid Base64 encoding in memo");
             ErrorCode::InvalidMemoFormat
         })?;
+    
+    // check decoded borsh data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
     
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
