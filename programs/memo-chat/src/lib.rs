@@ -543,8 +543,7 @@ pub mod memo_chat {
         let entered_leaderboard = leaderboard.update_leaderboard(actual_group_id, burn_amount)?;
 
         if entered_leaderboard {
-            let rank = leaderboard.get_rank(actual_group_id).unwrap_or(0);
-            msg!("Group {} entered burn leaderboard at rank {}", actual_group_id, rank);
+            msg!("Group {} entered burn leaderboard", actual_group_id);
         } else {
             msg!("Group {} burn amount {} not sufficient for leaderboard", 
                  actual_group_id, burn_amount / DECIMAL_FACTOR);
@@ -669,9 +668,8 @@ pub mod memo_chat {
         let entered_leaderboard = leaderboard.update_leaderboard(group_id, total_burned)?;
 
         if entered_leaderboard {
-            let rank = leaderboard.get_rank(group_id).unwrap_or(0);
-            msg!("Group {} updated in burn leaderboard at rank {} with total {} tokens", 
-                 group_id, rank, total_burned / DECIMAL_FACTOR);
+            msg!("Group {} updated in burn leaderboard with total {} tokens", 
+                 group_id, total_burned / DECIMAL_FACTOR);
         } else {
             msg!("Group {} total burn amount {} not sufficient for leaderboard", 
                  group_id, total_burned / DECIMAL_FACTOR);
@@ -1005,93 +1003,70 @@ impl BurnLeaderboard {
         self.entries = Vec::with_capacity(100);
     }
     
-    /// Find the position of a group in the leaderboard
-    pub fn find_group_position(&self, group_id: u64) -> Option<usize> {
-        self.entries.iter().position(|entry| entry.group_id == group_id)
-    }
-    
-    /// Binary search to find the insertion position for a new burn amount (descending order)
-    pub fn find_insert_position(&self, burned_amount: u64) -> usize {
-        match self.entries.binary_search_by(|entry| burned_amount.cmp(&entry.burned_amount)) {
-            Ok(pos) => pos,
-            Err(pos) => pos,
-        }
-    }
-    
-    /// Check if a burn amount can enter the leaderboard
-    pub fn can_enter_leaderboard(&self, burned_amount: u64) -> bool {
-        if self.entries.len() < 100 {
-            return true; // Still has space
+    ///  find group position and min burned_amount position (core optimization)
+    pub fn find_group_position_and_min(&self, group_id: u64) -> (Option<usize>, Option<usize>) {
+        if self.entries.is_empty() {
+            return (None, None);
         }
         
-        // Check if better than the last entry
-        burned_amount > self.entries.last().unwrap().burned_amount
+        let mut min_pos = None;
+        let mut min_amount = u64::MAX;
+        
+        for (i, entry) in self.entries.iter().enumerate() {
+            // check if find target group
+            if entry.group_id == group_id {
+                return (Some(i), min_pos); // find group, return current min position
+            }
+            
+            // record min burned_amount position
+            if entry.burned_amount < min_amount {
+                min_amount = entry.burned_amount;
+                min_pos = Some(i);
+            }
+        }
+        
+        (None, min_pos) // not find group, return min position
     }
     
-    /// Update the leaderboard with a new or updated entry
+    /// update leaderboard - zero array move version
     pub fn update_leaderboard(&mut self, group_id: u64, new_burned_amount: u64) -> Result<bool> {
-        // 1. Check if group already exists
-        if let Some(existing_pos) = self.find_group_position(group_id) {
-            self.update_existing_entry(existing_pos, new_burned_amount)?;
+        // 1. one loop to get group position and min position
+        let (existing_pos, min_pos) = self.find_group_position_and_min(group_id);
+        
+        // 2. if group exists, update burned_amount (zero move)
+        if let Some(pos) = existing_pos {
+            self.entries[pos].burned_amount = new_burned_amount;
             return Ok(true);
         }
         
-        // 2. Check if new entry can enter leaderboard
-        if !self.can_enter_leaderboard(new_burned_amount) {
-            return Ok(false); // Cannot enter leaderboard
+        // 3. new group and leaderboard not full, add directly (no sort)
+        if self.entries.len() < 100 {
+            let new_entry = LeaderboardEntry {
+                group_id,
+                burned_amount: new_burned_amount,
+            };
+            self.entries.push(new_entry);
+            self.current_size = self.entries.len() as u8;
+            return Ok(true);
         }
         
-        // 3. Insert new entry
-        self.insert_new_entry(group_id, new_burned_amount)?;
-        Ok(true)
-    }
-    
-    /// Update an existing entry (may need reordering)
-    fn update_existing_entry(&mut self, pos: usize, new_amount: u64) -> Result<()> {
-        // Save the group_id before removing the entry
-        let group_id = self.entries[pos].group_id;
-        
-        // Remove old entry
-        self.entries.remove(pos);
-        self.current_size = self.entries.len() as u8;
-        
-        // Insert with new amount using the saved group_id
-        self.insert_new_entry(group_id, new_amount)?;
-        
-        Ok(())
-    }
-    
-    /// Insert a new entry at the correct position
-    fn insert_new_entry(&mut self, group_id: u64, burned_amount: u64) -> Result<()> {
-        let new_entry = LeaderboardEntry {
-            group_id,
-            burned_amount,
-        };
-        
-        // Find correct position (sorted by burned_amount descending)
-        let insert_pos = self.entries
-            .binary_search_by(|entry| entry.burned_amount.cmp(&burned_amount).reverse())
-            .unwrap_or_else(|pos| pos);
-        
-        // Insert at correct position
-        self.entries.insert(insert_pos, new_entry);
-        
-        // Keep only top 100
-        if self.entries.len() > 100 {
-            self.entries.truncate(100);
+        // 4. new group and leaderboard full, check if can replace min value
+        if let Some(min_position) = min_pos {
+            let min_amount = self.entries[min_position].burned_amount;
+            if new_burned_amount > min_amount {
+                // replace min value entry (zero move)
+                self.entries[min_position] = LeaderboardEntry {
+                    group_id,
+                    burned_amount: new_burned_amount,
+                };
+                return Ok(true);
+            } else {
+                // new value not big enough, cannot enter leaderboard
+                return Ok(false);
+            }
         }
         
-        self.current_size = self.entries.len() as u8;
-        
-        msg!("Updated leaderboard: group {} with {} burned tokens at position {}", 
-             group_id, burned_amount / DECIMAL_FACTOR, insert_pos + 1);
-        
-        Ok(())
-    }
-    
-    /// Get the rank (1-100) of a group by group_id
-    pub fn get_rank(&self, group_id: u64) -> Option<u8> {
-        self.find_group_position(group_id).map(|pos| (pos + 1) as u8)
+        Ok(false)
     }
 }
 
