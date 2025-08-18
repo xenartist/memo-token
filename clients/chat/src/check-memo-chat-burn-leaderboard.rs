@@ -179,10 +179,27 @@ fn display_empty_leaderboard() {
 
 fn display_leaderboard_rankings(leaderboard: &BurnLeaderboard) {
     println!("=== BURN LEADERBOARD RANKINGS ===");
-    println!("🏆 Top {} groups by total burned tokens:", leaderboard.entries.len());
+    println!("🏆 Total entries: {}", leaderboard.entries.len());
     println!();
 
-    // sort by burned_amount in descending order
+    // 🔍  show raw data (contract storage order)
+    println!("📋 RAW DATA (Contract Storage Order):");
+    println!("   ⚠️  Note: This shows the order as stored in contract (unsorted)");
+    for (index, entry) in leaderboard.entries.iter().enumerate() {
+        let tokens = entry.burned_amount / 1_000_000;
+        println!("   Storage[{}]: Group {:5} - {:>10} MEMO ({:>15} units)", 
+                index, entry.group_id, 
+                format_number(tokens), format_number(entry.burned_amount));
+    }
+    
+    println!();
+    println!("{}", "=".repeat(60));  // 🔧 fix: use repeat() method
+    println!();
+
+    // 🏆  show sorted rankings
+    println!("🏆 SORTED RANKINGS (Client-Side Sorted):");
+    println!("   ✅ This shows the correct rankings by burned_amount (descending)");
+    
     let mut sorted_entries = leaderboard.entries.clone();
     sorted_entries.sort_by(|a, b| b.burned_amount.cmp(&a.burned_amount));
 
@@ -196,9 +213,70 @@ fn display_leaderboard_rankings(leaderboard: &BurnLeaderboard) {
             _ => "🔥",
         };
 
-        println!("   {} Rank {:3}: Group {:5} - {:>10} MEMO ({:>15} units)", 
+        // find the position of this entry in the original array
+        let original_index = leaderboard.entries.iter()
+            .position(|e| e.group_id == entry.group_id && e.burned_amount == entry.burned_amount)
+            .unwrap_or(999);
+
+        println!("   {} Rank {:3}: Group {:5} - {:>10} MEMO ({:>15} units) [was Storage[{}]]", 
                 medal, rank_display, entry.group_id, 
-                format_number(tokens), format_number(entry.burned_amount));
+                format_number(tokens), format_number(entry.burned_amount), original_index);
+    }
+    
+    // 🔄  show position change summary
+    println!();
+    println!("🔄 POSITION CHANGES SUMMARY:");
+    
+    let mut position_changes = Vec::new();
+    for (new_rank, entry) in sorted_entries.iter().enumerate() {
+        let original_index = leaderboard.entries.iter()
+            .position(|e| e.group_id == entry.group_id && e.burned_amount == entry.burned_amount)
+            .unwrap_or(999);
+        
+        let change = (original_index as i32) - (new_rank as i32);
+        position_changes.push((entry.group_id, original_index, new_rank + 1, change));
+    }
+    
+    // sort by change magnitude (largest changes first)
+    position_changes.sort_by(|a, b| b.3.abs().cmp(&a.3.abs()));
+    
+    for (group_id, original_pos, new_rank, change) in position_changes.iter().take(5) {
+        let change_text = if *change > 0 {
+            format!("↑ moved up {} positions", change)
+        } else if *change < 0 {
+            format!("↓ moved down {} positions", change.abs())
+        } else {
+            "→ no change".to_string()
+        };
+        
+        println!("   Group {:5}: Storage[{}] → Rank {} ({})", 
+                group_id, original_pos, new_rank, change_text);
+    }
+    
+    if position_changes.len() > 5 {
+        println!("   ... and {} more groups with position changes", position_changes.len() - 5);
+    }
+    
+    // 📊  sorting verification
+    println!();
+    println!("📊 SORTING VERIFICATION:");
+    let is_correctly_sorted = sorted_entries.windows(2)
+        .all(|window| window[0].burned_amount >= window[1].burned_amount);
+    
+    if is_correctly_sorted {
+        println!("   ✅ Sorted data is correctly ordered (descending by burned_amount)");
+    } else {
+        println!("   ❌ Sorted data has ordering issues!");
+    }
+    
+    // check if original data is already sorted
+    let was_already_sorted = leaderboard.entries.windows(2)
+        .all(|window| window[0].burned_amount >= window[1].burned_amount);
+    
+    if was_already_sorted {
+        println!("   ℹ️  Original contract data was already sorted");
+    } else {
+        println!("   ℹ️  Original contract data was unsorted (as expected)");
     }
 }
 
