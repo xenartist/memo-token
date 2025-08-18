@@ -103,12 +103,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 // If there are entries, show some
                 if vec_length > 0 && account.data.len() >= 13 + (vec_length as usize * 16) {
-                    println!("   🏆 Current top entries (will be cleared):");
+                    println!("   🏆 Current leaderboard state (will be cleared):");
                     let mut group_ids_seen = std::collections::HashSet::new();
                     let mut duplicate_count = 0;
                     
-                    for i in 0..std::cmp::min(vec_length as usize, 10) {
-                        let entry_start = 13 + (i * 16); // Start after discriminator(8) + current_size(1) + vec_length(4)
+                    // collect all entries
+                    let mut entries = Vec::new();
+                    for i in 0..vec_length as usize {
+                        let entry_start = 13 + (i * 16);
                         
                         if entry_start + 16 <= account.data.len() {
                             let group_id_bytes = &account.data[entry_start..entry_start + 8];
@@ -117,21 +119,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let group_id = u64::from_le_bytes(group_id_bytes.try_into().unwrap());
                             let burned_amount = u64::from_le_bytes(burned_amount_bytes.try_into().unwrap());
                             
-                            let status = if group_ids_seen.contains(&group_id) {
-                                duplicate_count += 1;
-                                "🔄 DUPLICATE"
-                            } else {
-                                group_ids_seen.insert(group_id);
-                                ""
-                            };
-                            
-                            println!("     Rank {}: Group {} - {} tokens {}", 
-                                    i + 1, group_id, burned_amount / 1_000_000, status);
+                            entries.push((group_id, burned_amount));
                         }
                     }
                     
-                    if vec_length > 10 {
-                        println!("     ... and {} more entries", vec_length - 10);
+                    // sort by burned_amount in descending order to show real rankings
+                    entries.sort_by(|a, b| b.1.cmp(&a.1));
+                    
+                    // show statistics
+                    let total_burned: u64 = entries.iter().map(|(_, amount)| amount).sum();
+                    let total_tokens = total_burned / 1_000_000;
+                    println!("      📊 Total entries: {}", entries.len());
+                    println!("      🔥 Total burned: {} MEMO tokens", format_number(total_tokens));
+                    
+                    if let Some((_, highest)) = entries.first() {
+                        println!("      👑 Highest: {} MEMO", format_number(highest / 1_000_000));
+                    }
+                    if let Some((_, lowest)) = entries.last() {
+                        println!("      🎯 Lowest: {} MEMO", format_number(lowest / 1_000_000));
+                    }
+                    println!();
+                    
+                    // show top 10 (by actual rankings)
+                    println!("      Top 10 rankings:");
+                    for (rank, (group_id, burned_amount)) in entries.iter().take(10).enumerate() {
+                        let status = if group_ids_seen.contains(group_id) {
+                            duplicate_count += 1;
+                            "🔄 DUPLICATE"
+                        } else {
+                            group_ids_seen.insert(*group_id);
+                            ""
+                        };
+                        
+                        let medal = match rank + 1 {
+                            1 => "🥇",
+                            2 => "🥈",
+                            3 => "🥉",
+                            _ => "🔥",
+                        };
+                        
+                        println!("        {} Rank {:2}: Group {:5} - {:>8} MEMO {}", 
+                                medal, rank + 1, group_id, format_number(burned_amount / 1_000_000), status);
+                    }
+                    
+                    if entries.len() > 10 {
+                        println!("        ... and {} more entries", entries.len() - 10);
                     }
                     
                     if duplicate_count > 0 {
@@ -347,4 +379,19 @@ fn create_clear_burn_leaderboard_instruction(
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
+}
+
+// add number formatting helper function
+fn format_number(num: u64) -> String {
+    let num_str = num.to_string();
+    let mut result = String::new();
+    
+    for (i, ch) in num_str.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    
+    result.chars().rev().collect()
 }

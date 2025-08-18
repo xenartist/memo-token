@@ -182,7 +182,11 @@ fn display_leaderboard_rankings(leaderboard: &BurnLeaderboard) {
     println!("🏆 Top {} groups by total burned tokens:", leaderboard.entries.len());
     println!();
 
-    for (rank, entry) in leaderboard.entries.iter().enumerate() {
+    // sort by burned_amount in descending order
+    let mut sorted_entries = leaderboard.entries.clone();
+    sorted_entries.sort_by(|a, b| b.burned_amount.cmp(&a.burned_amount));
+
+    for (rank, entry) in sorted_entries.iter().enumerate() {
         let rank_display = rank + 1;
         let tokens = entry.burned_amount / 1_000_000;
         let medal = match rank_display {
@@ -205,6 +209,10 @@ fn display_leaderboard_summary(leaderboard: &BurnLeaderboard) {
 
     println!("=== SUMMARY STATISTICS ===");
     
+    // sort by burned_amount in descending order
+    let mut sorted_entries = leaderboard.entries.clone();
+    sorted_entries.sort_by(|a, b| b.burned_amount.cmp(&a.burned_amount));
+    
     let total_burned: u64 = leaderboard.entries.iter().map(|e| e.burned_amount).sum();
     let total_tokens = total_burned / 1_000_000;
     let avg_burned = total_burned / leaderboard.entries.len() as u64;
@@ -213,27 +221,28 @@ fn display_leaderboard_summary(leaderboard: &BurnLeaderboard) {
     println!("🔥 Total burned across all ranked groups: {} MEMO", format_number(total_tokens));
     println!("📊 Average burned per ranked group: {} MEMO", format_number(avg_tokens));
     
-    if let Some(top_entry) = leaderboard.entries.first() {
+    // get highest and lowest using sorted data
+    if let Some(top_entry) = sorted_entries.first() {
         println!("👑 Highest burn: Group {} with {} MEMO", 
                 top_entry.group_id, format_number(top_entry.burned_amount / 1_000_000));
     }
     
-    if let Some(last_entry) = leaderboard.entries.last() {
-        let rank = leaderboard.entries.len();
+    if let Some(last_entry) = sorted_entries.last() {
+        let rank = sorted_entries.len();
         println!("🎯 Rank {} threshold: {} MEMO", 
                 rank, format_number(last_entry.burned_amount / 1_000_000));
     }
 
-    // Show distribution
-    if leaderboard.entries.len() >= 10 {
+    // show distribution - using sorted data
+    if sorted_entries.len() >= 10 {
         println!();
         println!("📈 Distribution breakdown:");
-        let top_10_total: u64 = leaderboard.entries.iter().take(10).map(|e| e.burned_amount).sum();
+        let top_10_total: u64 = sorted_entries.iter().take(10).map(|e| e.burned_amount).sum();
         let top_10_percentage = (top_10_total as f64 / total_burned as f64) * 100.0;
         println!("   Top 10 groups: {:.1}% of total burn", top_10_percentage);
         
-        if leaderboard.entries.len() >= 50 {
-            let top_50_total: u64 = leaderboard.entries.iter().take(50).map(|e| e.burned_amount).sum();
+        if sorted_entries.len() >= 50 {
+            let top_50_total: u64 = sorted_entries.iter().take(50).map(|e| e.burned_amount).sum();
             let top_50_percentage = (top_50_total as f64 / total_burned as f64) * 100.0;
             println!("   Top 50 groups: {:.1}% of total burn", top_50_percentage);
         }
@@ -249,7 +258,11 @@ fn display_top_groups_details(
     println!("📋 Fetching details for top 5 groups...");
     println!();
 
-    let top_groups = leaderboard.entries.iter().take(5);
+    // sort by burned_amount in descending order and get top 5
+    let mut sorted_entries = leaderboard.entries.clone();
+    sorted_entries.sort_by(|a, b| b.burned_amount.cmp(&a.burned_amount));
+    
+    let top_groups = sorted_entries.iter().take(5);
     
     for (rank, entry) in top_groups.enumerate() {
         let rank_display = rank + 1;
