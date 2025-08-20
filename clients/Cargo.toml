@@ -71,6 +71,22 @@ path = "chat/src/test-memo-chat-send-memo.rs"
 name = "test-memo-chat-burn-for-group"
 path = "chat/src/test-memo-chat-burn-for-group.rs"
 
+[[bin]]
+name = "test-memo-profile-create"
+path = "profile/src/test-memo-profile-create.rs"
+
+[[bin]]
+name = "test-memo-profile-update"
+path = "profile/src/test-memo-profile-update.rs"
+
+[[bin]]
+name = "test-memo-profile-delete"
+path = "profile/src/test-memo-profile-delete.rs"
+
+[[bin]]
+name = "check-memo-profile"
+path = "profile/src/check-memo-profile.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

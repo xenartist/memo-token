@@ -8,6 +8,7 @@ skip-lint = false
 memo_mint = "A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy"
 memo_burn = "FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP"
 memo_chat = "54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF"
+memo_profile = "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US"
 
 # [programs.mainnet]
 
