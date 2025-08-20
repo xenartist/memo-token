@@ -435,6 +435,12 @@ fn parse_profile_creation_borsh_memo(memo_data: &[u8], expected_user: Pubkey, ex
             msg!("Invalid Base64 encoding in memo");
             ErrorCode::InvalidProfileDataFormat
         })?;
+
+    // check decoded borsh data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidProfileDataFormat.into());
+    }
     
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
