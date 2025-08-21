@@ -10,9 +10,99 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
 };
+use solana_system_interface::program as system_program;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
-use borsh::{BorshSerialize};
+use borsh::{BorshSerialize, BorshDeserialize};
+use base64::{Engine as _, engine::general_purpose};
+
+// Import token-2022 program ID
+use spl_token_2022::id as token_2022_id;
+
+// Define structures matching the contract
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct BurnMemo {
+    /// version of the BurnMemo structure (for future compatibility)
+    pub version: u8,
+    
+    /// burn amount (must match actual burn amount)
+    pub burn_amount: u64,
+    
+    /// application payload (variable length, max 787 bytes)
+    pub payload: Vec<u8>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct ProfileUpdateData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "profile" for memo-profile contract)
+    pub category: String,
+    
+    /// Operation type (must be "update_profile" for profile update)
+    pub operation: String,
+    
+    /// User pubkey as string (must match the transaction signer)
+    pub user_pubkey: String,
+    
+    /// Updated fields (all optional)
+    pub username: Option<String>,
+    pub image: Option<String>,
+    pub about_me: Option<Option<String>>,
+    pub url: Option<Option<String>>,
+}
+
+impl ProfileUpdateData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_user: Pubkey) -> Result<(), Box<dyn std::error::Error>> {
+        // Validate version
+        if self.version != PROFILE_UPDATE_DATA_VERSION {
+            println!("Unsupported profile update data version: {} (expected: {})", 
+                 self.version, PROFILE_UPDATE_DATA_VERSION);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unsupported profile update data version")));
+        }
+        
+        // Validate category (must be exactly "profile")
+        if self.category != EXPECTED_CATEGORY {
+            println!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid category")));
+        }
+        
+        // Validate operation (must be exactly "update_profile")
+        if self.operation != EXPECTED_UPDATE_OPERATION {
+            println!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_UPDATE_OPERATION);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid operation")));
+        }
+        
+        // Validate user_pubkey matches expected user
+        let parsed_pubkey = Pubkey::from_str(&self.user_pubkey)
+            .map_err(|_| {
+                println!("Invalid user_pubkey format: {}", self.user_pubkey);
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid user_pubkey format")
+            })?;
+        
+        if parsed_pubkey != expected_user {
+            println!("User pubkey mismatch: memo {} vs expected {}", parsed_pubkey, expected_user);
+            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "User pubkey mismatch")));
+        }
+        
+        println!("Profile update data validation passed: category={}, operation={}, user={}", 
+             self.category, self.operation, self.user_pubkey);
+        
+        Ok(())
+    }
+}
+
+// Constants matching the contract
+const BURN_MEMO_VERSION: u8 = 1;
+const PROFILE_UPDATE_DATA_VERSION: u8 = 1;
+const EXPECTED_CATEGORY: &str = "profile";
+const EXPECTED_UPDATE_OPERATION: &str = "update_profile";
+const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
+const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
+const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
 
 #[derive(Debug, Clone)]
 struct UpdateParams {
@@ -151,6 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO PROFILE UPDATE TEST ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
+    println!("Burn amount: {} tokens", MIN_PROFILE_UPDATE_BURN_TOKENS);
     println!();
 
     // Constants
@@ -173,10 +264,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("User: {}", payer.pubkey());
 
-    // Program ID
+    // Program IDs
     let memo_profile_program_id = Pubkey::from_str("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US")?;
+    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")?;
+    let mint_pubkey = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")?;
 
     println!("Memo Profile Program: {}", memo_profile_program_id);
+    println!("Memo Burn Program: {}", memo_burn_program_id);
+    println!("Token Mint: {}", mint_pubkey);
 
     // Derive profile PDA
     let (profile_pda, profile_bump) = Pubkey::find_program_address(
@@ -186,6 +281,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Profile PDA: {}", profile_pda);
     println!("Profile Bump: {}", profile_bump);
+
+    // Get user's token account
+    let user_token_account = get_associated_token_address_with_program_id(
+        &payer.pubkey(),
+        &mint_pubkey,
+        &token_2022_id(),
+    );
+
+    println!("User Token Account: {}", user_token_account);
 
     // Check if profile exists
     match client.get_account(&profile_pda) {
@@ -198,16 +302,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Check user's token balance
+    match client.get_token_account_balance(&user_token_account) {
+        Ok(balance) => {
+            let balance_tokens = balance.ui_amount.unwrap_or(0.0);
+            println!("Token Balance: {} MEMO", balance_tokens);
+            
+            if balance_tokens < MIN_PROFILE_UPDATE_BURN_TOKENS as f64 {
+                println!("❌ Insufficient token balance. Need at least {} MEMO tokens.", MIN_PROFILE_UPDATE_BURN_TOKENS);
+                return Ok(());
+            }
+        }
+        Err(e) => {
+            println!("❌ Failed to get token balance: {}", e);
+            return Ok(());
+        }
+    }
+
+    // Generate memo content
+    let memo_content = generate_profile_update_memo(&payer.pubkey(), &test_params)?;
+    println!("Generated memo ({} bytes)", memo_content.len());
+
     // Create the profile update instruction
+    let memo_instruction = create_memo_instruction(&memo_content)?;
     let update_instruction = create_update_profile_instruction(
         &memo_profile_program_id,
+        &memo_burn_program_id,
         &payer.pubkey(),
         &profile_pda,
+        &mint_pubkey,
+        &user_token_account,
         &test_params,
     )?;
 
     // Prepare instructions for simulation
-    let sim_instructions = vec![update_instruction.clone()];
+    let sim_instructions = vec![memo_instruction.clone(), update_instruction.clone()];
 
     // Get recent blockhash
     let recent_blockhash = client.get_latest_blockhash()?;
@@ -279,6 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let final_transaction = Transaction::new_signed_with_payer(
         &[
             optimized_compute_budget_ix,
+            memo_instruction,
             update_instruction,
         ],
         Some(&payer.pubkey()),
@@ -337,10 +467,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams) -> Result<String, Box<dyn std::error::Error>> {
+    println!("=== MEMO GENERATION ===");
+    
+    // Create ProfileUpdateData structure
+    let profile_data = ProfileUpdateData {
+        version: PROFILE_UPDATE_DATA_VERSION,
+        category: EXPECTED_CATEGORY.to_string(),
+        operation: EXPECTED_UPDATE_OPERATION.to_string(),
+        user_pubkey: user.to_string(),
+        username: params.username.clone(),
+        image: params.image.clone(),
+        about_me: params.about_me.clone(),
+        url: params.url.clone(),
+    };
+    
+    // Validate the profile data
+    profile_data.validate(*user)?;
+    
+    // Serialize ProfileUpdateData to bytes
+    let profile_data_bytes = profile_data.try_to_vec()?;
+    println!("ProfileUpdateData serialized: {} bytes", profile_data_bytes.len());
+    
+    // Create BurnMemo structure
+    let burn_memo = BurnMemo {
+        version: BURN_MEMO_VERSION,
+        burn_amount: MIN_PROFILE_UPDATE_BURN_AMOUNT,
+        payload: profile_data_bytes,
+    };
+    
+    // Serialize BurnMemo to bytes
+    let burn_memo_bytes = burn_memo.try_to_vec()?;
+    println!("BurnMemo serialized: {} bytes", burn_memo_bytes.len());
+    
+    // Encode to Base64
+    let base64_memo = general_purpose::STANDARD.encode(&burn_memo_bytes);
+    println!("Base64 encoded: {} bytes -> {} characters", burn_memo_bytes.len(), base64_memo.len());
+    
+    // Validate memo length
+    if base64_memo.len() < 69 {
+        return Err(format!("Memo too short: {} bytes (minimum: 69)", base64_memo.len()).into());
+    }
+    if base64_memo.len() > 800 {
+        return Err(format!("Memo too long: {} bytes (maximum: 800)", base64_memo.len()).into());
+    }
+    
+    println!("✅ Memo validation passed: {} characters (range: 69-800)", base64_memo.len());
+    println!("Memo preview: {}...", &base64_memo[..base64_memo.len().min(50)]);
+    
+    Ok(base64_memo)
+}
+
+fn create_memo_instruction(memo_content: &str) -> Result<Instruction, Box<dyn std::error::Error>> {
+    let memo_program_id = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")?;
+    
+    Ok(Instruction::new_with_bytes(
+        memo_program_id,
+        memo_content.as_bytes(),
+        vec![],
+    ))
+}
+
 fn create_update_profile_instruction(
     program_id: &Pubkey,
+    memo_burn_program_id: &Pubkey,
     user: &Pubkey,
     profile: &Pubkey,
+    mint: &Pubkey,
+    user_token_account: &Pubkey,
     params: &UpdateParams,
 ) -> Result<Instruction, Box<dyn std::error::Error>> {
     // Calculate Anchor instruction sighash for "update_profile"
@@ -349,21 +543,28 @@ fn create_update_profile_instruction(
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
-    // Serialize parameters in order: username, image, about_me, url
+    // Serialize parameters in order: burn_amount, username, image, about_me, url
+    let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
     let username = &params.username;
     let image = &params.image;
     let about_me = &params.about_me;
     let url = &params.url;
     
     // Serialize each parameter using Borsh
+    instruction_data.extend(burn_amount.try_to_vec()?);
     instruction_data.extend(username.try_to_vec()?);
     instruction_data.extend(image.try_to_vec()?);
     instruction_data.extend(about_me.try_to_vec()?);
     instruction_data.extend(url.try_to_vec()?);
     
     let accounts = vec![
-        AccountMeta::new(*user, true),    // user (signer)
-        AccountMeta::new(*profile, false), // profile (PDA)
+        AccountMeta::new(*user, true),                      // user (signer)
+        AccountMeta::new(*mint, false),                     // mint
+        AccountMeta::new(*user_token_account, false),       // user_token_account
+        AccountMeta::new(*profile, false),                  // profile (PDA)
+        AccountMeta::new_readonly(token_2022_id(), false),  // token_program
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
+        AccountMeta::new_readonly(*memo_burn_program_id, false), // memo_burn_program
     ];
     
     Ok(Instruction::new_with_bytes(*program_id, &instruction_data, accounts))
@@ -372,7 +573,7 @@ fn create_update_profile_instruction(
 fn print_update_summary(params: &UpdateParams) {
     println!("Update Summary:");
     match &params.username {
-        Some(username) => println!("  Username: '{}' -> '{}'", "current", username),
+        Some(username) => println!("  Username: -> '{}'", username),
         None => println!("  Username: (no change)"),
     }
     
@@ -408,6 +609,8 @@ fn analyze_expected_error(error_msg: &str, params: &UpdateParams) {
         println!("✅ Correct: About me too long detected");
     } else if error_msg.contains("UrlTooLong") && params.url.as_ref().and_then(|opt| opt.as_ref()).map_or(false, |s| s.len() > 128) {
         println!("✅ Correct: URL too long detected");
+    } else if error_msg.contains("BurnAmountTooSmall") {
+        println!("✅ Correct: Insufficient burn amount detected");
     } else {
         println!("⚠️  Unexpected error type: {}", error_msg);
     }
@@ -419,6 +622,10 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Profile access authorization failed");
     } else if error_msg.contains("Account does not exist") {
         println!("   Profile does not exist - create it first");
+    } else if error_msg.contains("insufficient funds") {
+        println!("   Insufficient token balance for burning");
+    } else if error_msg.contains("MemoRequired") {
+        println!("   Memo instruction missing or invalid");
     } else {
         println!("   Unexpected error type");
     }
@@ -448,5 +655,6 @@ fn print_usage() {
     println!();
     println!("Prerequisites:");
     println!("  A profile must already exist for the user");
+    println!("  User must have at least {} MEMO tokens", MIN_PROFILE_UPDATE_BURN_TOKENS);
     println!("  Use test-memo-profile-create to create a profile first");
 }

@@ -147,7 +147,7 @@ fn check_user_profile(user_pubkey: Pubkey) -> Result<(), Box<dyn std::error::Err
 
 #[derive(Debug)]
 struct Profile {
-    pub pubkey: Pubkey,
+    pub user: Pubkey, 
     pub username: String,
     pub image: String,
     pub burned_amount: u64,
@@ -161,13 +161,13 @@ struct Profile {
 fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>> {
     let mut offset = 0;
     
-    // Parse pubkey (32 bytes)
+    // Parse user (32 bytes)
     if data.len() < offset + 32 {
-        return Err("Not enough data for pubkey".into());
+        return Err("Not enough data for user".into());
     }
-    let pubkey = Pubkey::new_from_array(
+    let user = Pubkey::new_from_array(
         data[offset..offset + 32].try_into()
-            .map_err(|_| "Invalid pubkey data")?
+            .map_err(|_| "Invalid user data")?
     );
     offset += 32;
     
@@ -302,7 +302,7 @@ fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>
     }
     
     Ok(Profile {
-        pubkey,
+        user,
         username,
         image,
         burned_amount,
@@ -315,7 +315,7 @@ fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>
 }
 
 fn display_profile_info(profile: &Profile, expected_user: Pubkey, expected_bump: u8) {
-    println!("  Pubkey: {}", profile.pubkey);
+    println!("  User: {}", profile.user);
     println!("  Username: '{}'", profile.username);
     println!("  Image: '{}'", if profile.image.is_empty() { "(empty)" } else { &profile.image });
     println!("  Burned Amount: {} tokens ({} units)", 
@@ -345,12 +345,12 @@ fn display_profile_info(profile: &Profile, expected_user: Pubkey, expected_bump:
     
     println!("  PDA Bump: {}", profile.bump);
     
-    // Verify the pubkey matches
-    if profile.pubkey == expected_user {
-        println!("✅ Profile pubkey verification passed");
+    // Verify the user matches
+    if profile.user == expected_user {
+        println!("✅ Profile user verification passed");
     } else {
-        println!("❌ Profile pubkey mismatch! Expected: {}, Found: {}", 
-                 expected_user, profile.pubkey);
+        println!("❌ Profile user mismatch! Expected: {}, Found: {}", 
+                 expected_user, profile.user);
     }
     
     // Verify the bump

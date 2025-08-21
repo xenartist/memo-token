@@ -21,6 +21,10 @@ pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKE
 // Maximum burn per transaction (consistent with memo-burn)
 pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 
+// burn amount
+pub const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
+pub const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+
 // ===== STRING LENGTH CONSTRAINTS =====
 
 // Profile metadata limits
@@ -51,11 +55,17 @@ pub const BURN_MEMO_VERSION: u8 = 1;
 // Current version of ProfileCreationData structure
 pub const PROFILE_CREATION_DATA_VERSION: u8 = 1;
 
+// Current version of ProfileUpdateData structure
+pub const PROFILE_UPDATE_DATA_VERSION: u8 = 1;
+
 // Expected category for memo-profile contract
 pub const EXPECTED_CATEGORY: &str = "profile";
 
 // Expected operation for profile creation
 pub const EXPECTED_OPERATION: &str = "create_profile";
+
+// Expected operation for profile update
+pub const EXPECTED_UPDATE_OPERATION: &str = "update_profile";
 
 declare_id!("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US");
 
@@ -195,6 +205,127 @@ impl ProfileCreationData {
     }
 }
 
+/// Profile update data structure (stored in BurnMemo.payload)
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct ProfileUpdateData {
+    /// Version of this structure (for future compatibility)
+    pub version: u8,
+    
+    /// Category of the request (must be "profile" for memo-profile contract)
+    pub category: String,
+    
+    /// Operation type (must be "update_profile" for profile update)
+    pub operation: String,
+    
+    /// User pubkey as string (must match the transaction signer)
+    pub user_pubkey: String,
+    
+    /// Updated fields (all optional)
+    pub username: Option<String>,
+    pub image: Option<String>,
+    pub about_me: Option<Option<String>>,
+    pub url: Option<Option<String>>,
+}
+
+impl ProfileUpdateData {
+    /// Validate the structure fields
+    pub fn validate(&self, expected_user: Pubkey) -> Result<()> {
+        // Validate version
+        if self.version != PROFILE_UPDATE_DATA_VERSION {
+            msg!("Unsupported profile update data version: {} (expected: {})", 
+                 self.version, PROFILE_UPDATE_DATA_VERSION);
+            return Err(ErrorCode::UnsupportedProfileDataVersion.into());
+        }
+        
+        // Validate category (must be exactly "profile")
+        if self.category != EXPECTED_CATEGORY {
+            msg!("Invalid category: '{}' (expected: '{}')", self.category, EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategory.into());
+        }
+        
+        // Validate category length
+        if self.category.len() != EXPECTED_CATEGORY.len() {
+            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
+                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
+            return Err(ErrorCode::InvalidCategoryLength.into());
+        }
+        
+        // Validate operation (must be exactly "update_profile")
+        if self.operation != EXPECTED_UPDATE_OPERATION {
+            msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_UPDATE_OPERATION);
+            return Err(ErrorCode::InvalidOperation.into());
+        }
+        
+        // Validate operation length
+        if self.operation.len() != EXPECTED_UPDATE_OPERATION.len() {
+            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
+                 self.operation.len(), EXPECTED_UPDATE_OPERATION.len(), EXPECTED_UPDATE_OPERATION);
+            return Err(ErrorCode::InvalidOperationLength.into());
+        }
+        
+        // Validate user_pubkey matches transaction signer
+        let parsed_pubkey = Pubkey::from_str(&self.user_pubkey)
+            .map_err(|_| {
+                msg!("Invalid user_pubkey format: {}", self.user_pubkey);
+                ErrorCode::InvalidUserPubkeyFormat
+            })?;
+        
+        if parsed_pubkey != expected_user {
+            msg!("User pubkey mismatch: {} vs expected {}", parsed_pubkey, expected_user);
+            return Err(ErrorCode::UserPubkeyMismatch.into());
+        }
+        
+        // Validate username (optional, max 32 characters)
+        if let Some(ref new_username) = self.username {
+            if new_username.is_empty() {
+                msg!("Username cannot be empty");
+                return Err(ErrorCode::EmptyUsername.into());
+            }
+            if new_username.len() > MAX_USERNAME_LENGTH {
+                msg!("Username too long: {} characters (max: {})", 
+                     new_username.len(), MAX_USERNAME_LENGTH);
+                return Err(ErrorCode::UsernameTooLong.into());
+            }
+        }
+        
+        // Validate image (optional, max 256 characters)
+        if let Some(ref new_image) = self.image {
+            if new_image.len() > MAX_PROFILE_IMAGE_LENGTH {
+                msg!("Profile image too long: {} characters (max: {})", 
+                     new_image.len(), MAX_PROFILE_IMAGE_LENGTH);
+                return Err(ErrorCode::ProfileImageTooLong.into());
+            }
+        }
+        
+        // Validate about_me (optional, max 128 characters)
+        if let Some(ref new_about_me) = self.about_me {
+            if let Some(ref about_me_text) = new_about_me {
+                if about_me_text.len() > MAX_ABOUT_ME_LENGTH {
+                    msg!("About me too long: {} characters (max: {})", 
+                         about_me_text.len(), MAX_ABOUT_ME_LENGTH);
+                    return Err(ErrorCode::AboutMeTooLong.into());
+                }
+            }
+        }
+        
+        // Validate url (optional, max 128 characters)
+        if let Some(ref new_url) = self.url {
+            if let Some(ref url_text) = new_url {
+                if url_text.len() > MAX_URL_LENGTH {
+                    msg!("URL too long: {} characters (max: {})", 
+                         url_text.len(), MAX_URL_LENGTH);
+                    return Err(ErrorCode::UrlTooLong.into());
+                }
+            }
+        }
+        
+        msg!("Profile update data validation passed: category={}, operation={}, user={}", 
+             self.category, self.operation, self.user_pubkey);
+        
+        Ok(())
+    }
+}
+
 #[program]
 pub mod memo_profile {
     use super::*;
@@ -242,7 +373,7 @@ pub mod memo_profile {
         
         // Initialize profile data after successful burn
         let profile = &mut ctx.accounts.profile;
-        profile.pubkey = ctx.accounts.user.key();
+        profile.user = ctx.accounts.user.key();
         profile.username = profile_data.username.clone();
         profile.image = profile_data.image.clone();
         profile.burned_amount = burn_amount;
@@ -272,11 +403,48 @@ pub mod memo_profile {
     /// Update an existing profile
     pub fn update_profile(
         ctx: Context<UpdateProfile>,
+        burn_amount: u64,
         username: Option<String>,
         image: Option<String>,
         about_me: Option<Option<String>>,
         url: Option<Option<String>>,
     ) -> Result<()> {
+        // Validate burn amount for profile update
+        if burn_amount < MIN_PROFILE_UPDATE_BURN_AMOUNT {
+            return Err(ErrorCode::BurnAmountTooSmall.into());
+        }
+        
+        // Check burn amount upper limit
+        if burn_amount > MAX_BURN_PER_TX {
+            return Err(ErrorCode::BurnAmountTooLarge.into());
+        }
+        
+        if burn_amount % DECIMAL_FACTOR != 0 {
+            return Err(ErrorCode::InvalidBurnAmount.into());
+        }
+
+        // Check memo instruction
+        let (memo_found, memo_data) = check_memo_instruction(&ctx.accounts.instructions)?;
+        if !memo_found {
+            return Err(ErrorCode::MemoRequired.into());
+        }
+
+        // Parse and validate Borsh memo data for profile update
+        let _profile_data = parse_profile_update_borsh_memo(&memo_data, ctx.accounts.user.key(), burn_amount)?;
+        
+        // Call memo-burn contract to burn tokens
+        let cpi_program = ctx.accounts.memo_burn_program.to_account_info();
+        let cpi_accounts = ProcessBurn {
+            user: ctx.accounts.user.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
+            token_account: ctx.accounts.user_token_account.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+            instructions: ctx.accounts.instructions.to_account_info(),
+        };
+        
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        memo_burn::cpi::process_burn(cpi_ctx, burn_amount)?;
+
         let profile = &mut ctx.accounts.profile;
         
         // Validate username if provided
@@ -318,6 +486,9 @@ pub mod memo_profile {
             profile.url = new_url;
         }
         
+        // Update total burned amount for profile
+        profile.burned_amount = profile.burned_amount.saturating_add(burn_amount);
+        
         // Update timestamp
         profile.last_updated = Clock::get()?.unix_timestamp;
 
@@ -328,10 +499,12 @@ pub mod memo_profile {
             image: profile.image.clone(),
             about_me: profile.about_me.clone(),
             url: profile.url.clone(),
+            burn_amount,
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Profile updated successfully for user {}", ctx.accounts.user.key());
+        msg!("Profile updated successfully for user {} with {} tokens burned", 
+             ctx.accounts.user.key(), burn_amount / DECIMAL_FACTOR);
 
         Ok(())
     }
@@ -341,7 +514,7 @@ pub mod memo_profile {
         let profile = &ctx.accounts.profile;
         
         // Store profile info for event before deletion
-        let user_pubkey = profile.pubkey;
+        let user_pubkey = profile.user;
         let username = profile.username.clone();
 
         // Emit profile deletion event
@@ -488,6 +661,92 @@ fn parse_profile_creation_borsh_memo(memo_data: &[u8], expected_user: Pubkey, ex
     Ok(profile_data)
 }
 
+/// Parse and validate Borsh-formatted memo data for profile update (with Base64 decoding)
+fn parse_profile_update_borsh_memo(memo_data: &[u8], expected_user: Pubkey, expected_amount: u64) -> Result<ProfileUpdateData> {
+    // First, decode the Base64-encoded memo data
+    let base64_str = std::str::from_utf8(memo_data)
+        .map_err(|_| {
+            msg!("Invalid UTF-8 in memo data");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+        .map_err(|_| {
+            msg!("Invalid Base64 encoding in memo");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    // Check decoded data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
+    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+
+    // Then deserialize Borsh data from decoded bytes
+    let burn_memo = BurnMemo::try_from_slice(&decoded_data)
+        .map_err(|_| {
+            msg!("Invalid Borsh format after Base64 decoding");
+            ErrorCode::InvalidMemoFormat
+        })?;
+    
+    // Validate version compatibility
+    if burn_memo.version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", 
+             burn_memo.version, BURN_MEMO_VERSION);
+        return Err(ErrorCode::UnsupportedMemoVersion.into());
+    }
+    
+    // Validate burn amount matches
+    if burn_memo.burn_amount != expected_amount {
+        msg!("Burn amount mismatch: memo {} vs expected {}", 
+             burn_memo.burn_amount, expected_amount);
+        return Err(ErrorCode::BurnAmountMismatch.into());
+    }
+    
+    // Deserialize the profile update data from the payload
+    let profile_data = ProfileUpdateData::try_from_slice(&burn_memo.payload)
+        .map_err(|_| {
+            msg!("Invalid profile update data format in payload");
+            ErrorCode::InvalidProfileDataFormat
+        })?;
+    
+    // Validate version
+    if profile_data.version != PROFILE_UPDATE_DATA_VERSION {
+        msg!("Unsupported profile update data version: {} (expected: {})", 
+             profile_data.version, PROFILE_UPDATE_DATA_VERSION);
+        return Err(ErrorCode::UnsupportedProfileDataVersion.into());
+    }
+    
+    // Validate category
+    if profile_data.category != EXPECTED_CATEGORY {
+        msg!("Invalid category: {} (expected: {})", profile_data.category, EXPECTED_CATEGORY);
+        return Err(ErrorCode::InvalidCategory.into());
+    }
+    
+    // Validate operation
+    if profile_data.operation != EXPECTED_UPDATE_OPERATION {
+        msg!("Invalid operation: {} (expected: {})", profile_data.operation, EXPECTED_UPDATE_OPERATION);
+        return Err(ErrorCode::InvalidOperation.into());
+    }
+    
+    // Validate user pubkey matches
+    let parsed_user = Pubkey::from_str(&profile_data.user_pubkey)
+        .map_err(|_| {
+            msg!("Invalid user pubkey format: {}", profile_data.user_pubkey);
+            ErrorCode::InvalidUserPubkeyFormat
+        })?;
+    
+    if parsed_user != expected_user {
+        msg!("User pubkey mismatch: {} vs expected {}", parsed_user, expected_user);
+        return Err(ErrorCode::UserPubkeyMismatch.into());
+    }
+    
+    msg!("Profile update memo validation passed");
+    Ok(profile_data)
+}
+
 /// Account structure for creating a profile
 #[derive(Accounts)]
 pub struct CreateProfile<'info> {
@@ -536,11 +795,33 @@ pub struct UpdateProfile<'info> {
     
     #[account(
         mut,
+        constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
+    )]
+    pub mint: InterfaceAccount<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = user_token_account.mint == mint.key() @ ErrorCode::InvalidTokenAccount,
+        constraint = user_token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
+    )]
+    pub user_token_account: InterfaceAccount<'info, TokenAccount>,
+    
+    #[account(
+        mut,
         seeds = [b"profile", user.key().as_ref()],
         bump = profile.bump,
-        constraint = profile.pubkey == user.key() @ ErrorCode::UnauthorizedProfileAccess
+        constraint = profile.user == user.key() @ ErrorCode::UnauthorizedProfileAccess
     )]
     pub profile: Account<'info, Profile>,
+
+    pub token_program: Program<'info, Token2022>,
+    
+    /// CHECK: Instructions sysvar
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>,
+
+    /// memo-burn program for CPI
+    pub memo_burn_program: Program<'info, MemoBurn>,
 }
 
 /// Account structure for deleting a profile
@@ -551,10 +832,10 @@ pub struct DeleteProfile<'info> {
     
     #[account(
         mut,
+        close = user,
         seeds = [b"profile", user.key().as_ref()],
         bump = profile.bump,
-        constraint = profile.pubkey == user.key() @ ErrorCode::UnauthorizedProfileAccess,
-        close = user // Close account and send rent back to user
+        constraint = profile.user == user.key() @ ErrorCode::UnauthorizedProfileAccess,
     )]
     pub profile: Account<'info, Profile>,
 }
@@ -562,7 +843,7 @@ pub struct DeleteProfile<'info> {
 /// Profile data structure
 #[account]
 pub struct Profile {
-    pub pubkey: Pubkey,           // 32 bytes - user pubkey (natural ID)
+    pub user: Pubkey,             // 32 bytes - user pubkey (natural ID)
     pub username: String,         // 4 + 32 bytes - username, max 32 characters
     pub image: String,            // 4 + 256 bytes - profile image, hex string
     pub burned_amount: u64,       // 8 bytes - amount burned to create profile
@@ -577,7 +858,7 @@ impl Profile {
     /// Calculate maximum space for the account (conservative estimate)
     pub fn calculate_space_max() -> usize {
         8 + // discriminator
-        32 + // pubkey
+        32 + // user
         8 + // burned_amount
         8 + // created_at
         8 + // last_updated
@@ -610,6 +891,7 @@ pub struct ProfileUpdatedEvent {
     pub image: String,
     pub about_me: Option<String>,
     pub url: Option<String>,
+    pub burn_amount: u64,
     pub timestamp: i64,
 }
 
