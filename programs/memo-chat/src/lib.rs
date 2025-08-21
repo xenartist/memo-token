@@ -585,17 +585,6 @@ pub mod memo_chat {
             }
         }
 
-        // Update chat group statistics
-        chat_group.memo_count = chat_group.memo_count.saturating_add(1);
-        chat_group.last_memo_time = current_time;
-        let memo_count = chat_group.memo_count;
-
-        // Log the memo
-        msg!("Memo from {} to group {}: {}", 
-             ctx.accounts.sender.key(), 
-             group_id, 
-             memo_content);
-
         // Call memo-mint contract using CPI to process_mint (user as direct signer)
         // This allows sender to directly mint tokens without using chat group PDA
         let cpi_program = ctx.accounts.memo_mint_program.to_account_info();
@@ -610,6 +599,17 @@ pub mod memo_chat {
         
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         memo_mint::cpi::process_mint(cpi_ctx)?;
+
+        // Update chat group statistics AFTER successful CPI
+        chat_group.memo_count = chat_group.memo_count.saturating_add(1);
+        chat_group.last_memo_time = current_time;
+        let memo_count = chat_group.memo_count;
+
+        // Log the memo
+        msg!("Memo from {} to group {}: {}", 
+             ctx.accounts.sender.key(), 
+             group_id, 
+             memo_content);
 
         // Emit memo event
         emit!(MemoSentEvent {
@@ -671,6 +671,10 @@ pub mod memo_chat {
         let chat_group = &mut ctx.accounts.chat_group;
         let old_amount = chat_group.burned_amount;
         chat_group.burned_amount = chat_group.burned_amount.saturating_add(amount);
+        
+        // Update memo count since burning tokens is also a form of messaging
+        chat_group.memo_count = chat_group.memo_count.saturating_add(1);
+        
         if chat_group.burned_amount == u64::MAX && old_amount < u64::MAX {
             msg!("Warning: burned_amount overflow detected for group {}", group_id);
         }
