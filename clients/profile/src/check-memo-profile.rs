@@ -147,14 +147,12 @@ fn check_user_profile(user_pubkey: Pubkey) -> Result<(), Box<dyn std::error::Err
 
 #[derive(Debug)]
 struct Profile {
-    pub user: Pubkey, 
+    pub user: Pubkey,
     pub username: String,
     pub image: String,
-    pub burned_amount: u64,
     pub created_at: i64,
     pub last_updated: i64,
     pub about_me: Option<String>,
-    pub url: Option<String>,
     pub bump: u8,
 }
 
@@ -203,15 +201,6 @@ fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>
         .map_err(|_| "Invalid UTF-8 in image")?;
     offset += image_len;
     
-    // Parse burned_amount (8 bytes)
-    if data.len() < offset + 8 {
-        return Err("Not enough data for burned_amount".into());
-    }
-    let burned_amount = u64::from_le_bytes(
-        data[offset..offset + 8].try_into().unwrap()
-    );
-    offset += 8;
-    
     // Parse created_at (8 bytes)
     if data.len() < offset + 8 {
         return Err("Not enough data for created_at".into());
@@ -259,35 +248,6 @@ fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>
         None
     };
     
-    // Parse url (1 byte variant + optional string)
-    if data.len() < offset + 1 {
-        return Err("Not enough data for url variant".into());
-    }
-    let url_variant = data[offset];
-    offset += 1;
-    
-    let url = if url_variant == 1 {
-        // Some(String)
-        if data.len() < offset + 4 {
-            return Err("Not enough data for url length".into());
-        }
-        let url_len = u32::from_le_bytes(
-            data[offset..offset + 4].try_into().unwrap()
-        ) as usize;
-        offset += 4;
-        
-        if data.len() < offset + url_len {
-            return Err(format!("Not enough data for url (need {} bytes)", url_len).into());
-        }
-        let url_str = String::from_utf8(data[offset..offset + url_len].to_vec())
-            .map_err(|_| "Invalid UTF-8 in url")?;
-        offset += url_len;
-        Some(url_str)
-    } else {
-        // None
-        None
-    };
-    
     // Parse bump (1 byte)
     if data.len() < offset + 1 {
         return Err("Not enough data for bump".into());
@@ -305,11 +265,9 @@ fn parse_profile_data(data: &[u8]) -> Result<Profile, Box<dyn std::error::Error>
         user,
         username,
         image,
-        burned_amount,
         created_at,
         last_updated,
         about_me,
-        url,
         bump,
     })
 }
@@ -318,8 +276,6 @@ fn display_profile_info(profile: &Profile, expected_user: Pubkey, expected_bump:
     println!("  User: {}", profile.user);
     println!("  Username: '{}'", profile.username);
     println!("  Image: '{}'", if profile.image.is_empty() { "(empty)" } else { &profile.image });
-    println!("  Burned Amount: {} tokens ({} units)", 
-             profile.burned_amount / 1_000_000, profile.burned_amount);
     
     // Format timestamps
     let created_time = chrono::DateTime::from_timestamp(profile.created_at, 0)
@@ -336,11 +292,6 @@ fn display_profile_info(profile: &Profile, expected_user: Pubkey, expected_bump:
     match &profile.about_me {
         Some(about) => println!("  About Me: '{}'", about),
         None => println!("  About Me: (not set)"),
-    }
-    
-    match &profile.url {
-        Some(url) => println!("  URL: '{}'", url),
-        None => println!("  URL: (not set)"),
     }
     
     println!("  PDA Bump: {}", profile.bump);

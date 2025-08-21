@@ -51,7 +51,6 @@ pub struct ProfileUpdateData {
     pub username: Option<String>,
     pub image: Option<String>,
     pub about_me: Option<Option<String>>,
-    pub url: Option<Option<String>>,
 }
 
 impl ProfileUpdateData {
@@ -109,7 +108,6 @@ struct UpdateParams {
     pub username: Option<String>,         // New username (None = don't update)
     pub image: Option<String>,            // New image (None = don't update)
     pub about_me: Option<Option<String>>, // None = don't update, Some(None) = clear, Some(Some(text)) = set
-    pub url: Option<Option<String>>,      // None = don't update, Some(None) = clear, Some(Some(url)) = set
     pub should_succeed: bool,             // Whether the test should succeed
     pub test_description: String,         // Description of what this test validates
 }
@@ -131,7 +129,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: Some("alice_updated".to_string()),
             image: None,
             about_me: None,
-            url: None,
             should_succeed: true,
             test_description: "Update only username".to_string(),
         },
@@ -139,7 +136,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: None,
             image: Some("c:64x64:NEW_IMAGE_DATA_HERE".to_string()),
             about_me: None,
-            url: None,
             should_succeed: true,
             test_description: "Update only image".to_string(),
         },
@@ -147,7 +143,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: None,
             image: None,
             about_me: Some(Some("Updated about me text!".to_string())),
-            url: None,
             should_succeed: true,
             test_description: "Update only about me".to_string(),
         },
@@ -155,31 +150,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: None,
             image: None,
             about_me: Some(None), // Clear the about_me field
-            url: None,
             should_succeed: true,
             test_description: "Clear about me field".to_string(),
-        },
-        "update-url" => UpdateParams {
-            username: None,
-            image: None,
-            about_me: None,
-            url: Some(Some("https://updated.example.com".to_string())),
-            should_succeed: true,
-            test_description: "Update only URL".to_string(),
-        },
-        "clear-url" => UpdateParams {
-            username: None,
-            image: None,
-            about_me: None,
-            url: Some(None), // Clear the URL field
-            should_succeed: true,
-            test_description: "Clear URL field".to_string(),
         },
         "update-all" => UpdateParams {
             username: Some("alice_complete".to_string()),
             image: Some("c:128x128:UPDATED_COMPLETE_IMAGE".to_string()),
             about_me: Some(Some("Completely updated profile!".to_string())),
-            url: Some(Some("https://complete.example.com".to_string())),
             should_succeed: true,
             test_description: "Update all fields".to_string(),
         },
@@ -187,7 +164,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: Some("".to_string()), // Empty username should fail
             image: None,
             about_me: None,
-            url: None,
             should_succeed: false,
             test_description: "Invalid update with empty username".to_string(),
         },
@@ -195,7 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: Some("a".repeat(33)), // Too long username should fail
             image: None,
             about_me: None,
-            url: None,
             should_succeed: false,
             test_description: "Invalid update with long username".to_string(),
         },
@@ -203,7 +178,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: None,
             image: Some("a".repeat(257)), // Too long image should fail
             about_me: None,
-            url: None,
             should_succeed: false,
             test_description: "Invalid update with long image".to_string(),
         },
@@ -211,23 +185,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: None,
             image: None,
             about_me: Some(Some("a".repeat(129))), // Too long about_me should fail
-            url: None,
             should_succeed: false,
             test_description: "Invalid update with long about me".to_string(),
-        },
-        "long-url" => UpdateParams {
-            username: None,
-            image: None,
-            about_me: None,
-            url: Some(Some("a".repeat(129))), // Too long URL should fail
-            should_succeed: false,
-            test_description: "Invalid update with long URL".to_string(),
         },
         "no-changes" => UpdateParams {
             username: None,
             image: None,
             about_me: None,
-            url: None,
             should_succeed: true,
             test_description: "Update with no changes (should succeed)".to_string(),
         },
@@ -479,7 +443,6 @@ fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams) -> Result<
         username: params.username.clone(),
         image: params.image.clone(),
         about_me: params.about_me.clone(),
-        url: params.url.clone(),
     };
     
     // Validate the profile data
@@ -543,19 +506,17 @@ fn create_update_profile_instruction(
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
-    // Serialize parameters in order: burn_amount, username, image, about_me, url
+    // Serialize parameters in order: burn_amount, username, image, about_me
     let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
     let username = &params.username;
     let image = &params.image;
     let about_me = &params.about_me;
-    let url = &params.url;
     
     // Serialize each parameter using Borsh
     instruction_data.extend(burn_amount.try_to_vec()?);
     instruction_data.extend(username.try_to_vec()?);
     instruction_data.extend(image.try_to_vec()?);
     instruction_data.extend(about_me.try_to_vec()?);
-    instruction_data.extend(url.try_to_vec()?);
     
     let accounts = vec![
         AccountMeta::new(*user, true),                      // user (signer)
@@ -590,12 +551,6 @@ fn print_update_summary(params: &UpdateParams) {
         Some(None) => println!("  About Me: -> (cleared)"),
         None => println!("  About Me: (no change)"),
     }
-    
-    match &params.url {
-        Some(Some(url)) => println!("  URL: -> '{}'", url),
-        Some(None) => println!("  URL: -> (cleared)"),
-        None => println!("  URL: (no change)"),
-    }
 }
 
 fn analyze_expected_error(error_msg: &str, params: &UpdateParams) {
@@ -607,8 +562,6 @@ fn analyze_expected_error(error_msg: &str, params: &UpdateParams) {
         println!("✅ Correct: Profile image too long detected");
     } else if error_msg.contains("AboutMeTooLong") && params.about_me.as_ref().and_then(|opt| opt.as_ref()).map_or(false, |s| s.len() > 128) {
         println!("✅ Correct: About me too long detected");
-    } else if error_msg.contains("UrlTooLong") && params.url.as_ref().and_then(|opt| opt.as_ref()).map_or(false, |s| s.len() > 128) {
-        println!("✅ Correct: URL too long detected");
     } else if error_msg.contains("BurnAmountTooSmall") {
         println!("✅ Correct: Insufficient burn amount detected");
     } else {
@@ -639,15 +592,12 @@ fn print_usage() {
     println!("  update-image        - Update only image");
     println!("  update-about-me     - Update only about me");
     println!("  clear-about-me      - Clear about me field");
-    println!("  update-url          - Update only URL");
-    println!("  clear-url           - Clear URL field");
     println!("  update-all          - Update all fields");
     println!("  no-changes          - Update with no changes");
     println!("  empty-username      - Invalid: Empty username");
     println!("  long-username       - Invalid: Username too long (>32 chars)");
     println!("  long-image          - Invalid: Image too long (>256 chars)");
     println!("  long-about-me       - Invalid: About me too long (>128 chars)");
-    println!("  long-url            - Invalid: URL too long (>128 chars)");
     println!();
     println!("Environment Variables:");
     println!("  RPC_URL      - Solana RPC endpoint (default: testnet)");

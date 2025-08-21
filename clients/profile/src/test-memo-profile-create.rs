@@ -56,8 +56,6 @@ pub struct ProfileCreationData {
     /// About me description (optional, max 128 characters)
     pub about_me: Option<String>,
     
-    /// URL (optional, max 128 characters)
-    pub url: Option<String>,
 }
 
 impl ProfileCreationData {
@@ -128,14 +126,6 @@ impl ProfileCreationData {
             }
         }
         
-        // Validate url (optional, max 128 characters)
-        if let Some(ref url) = self.url {
-            if url.len() > 128 {
-                println!("Invalid URL: {} characters (max: 128)", url.len());
-                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid URL")));
-            }
-        }
-        
         println!("Profile creation data validation passed: category={}, operation={}, user={}, username={}", 
              self.category, self.operation, self.user_pubkey, self.username);
         
@@ -155,7 +145,6 @@ struct TestParams {
     pub username: String,           // Username
     pub image: String,              // Profile image
     pub about_me: Option<String>,   // About me text
-    pub url: Option<String>,        // URL
     pub should_succeed: bool,       // Whether the test should succeed
     pub test_description: String,   // Description of what this test validates
 }
@@ -178,7 +167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Hello, I'm Alice!".to_string()),
-            url: Some("https://alice.example.com".to_string()),
             should_succeed: true,
             test_description: "Valid profile creation with all fields".to_string(),
         },
@@ -187,7 +175,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "bob".to_string(),
             image: "".to_string(),
             about_me: None,
-            url: None,
             should_succeed: true,
             test_description: "Valid profile creation with minimal fields".to_string(),
         },
@@ -196,7 +183,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "".to_string(),  // Empty username
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
-            url: None,
             should_succeed: false,
             test_description: "Invalid profile creation with empty username".to_string(),
         },
@@ -205,7 +191,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "a".repeat(33),  // Too long username
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
-            url: None,
             should_succeed: false,
             test_description: "Invalid profile creation with long username".to_string(),
         },
@@ -214,7 +199,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "alice".to_string(),
             image: "a".repeat(257),  // Too long image
             about_me: Some("Test".to_string()),
-            url: None,
             should_succeed: false,
             test_description: "Invalid profile creation with long image".to_string(),
         },
@@ -223,25 +207,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("a".repeat(129)),  // Too long about_me
-            url: None,
             should_succeed: false,
             test_description: "Invalid profile creation with long about_me".to_string(),
-        },
-        "long-url" => TestParams {
-            burn_amount: 420,
-            username: "alice".to_string(),
-            image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
-            about_me: Some("Test".to_string()),
-            url: Some("a".repeat(129)),  // Too long URL
-            should_succeed: false,
-            test_description: "Invalid profile creation with long URL".to_string(),
         },
         "low-burn" => TestParams {
             burn_amount: 419,  // Below minimum
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
-            url: None,
             should_succeed: false,
             test_description: "Invalid profile creation with insufficient burn amount".to_string(),
         },
@@ -428,7 +401,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Username: {}", test_params.username);
     println!("Image: {}", if test_params.image.is_empty() { "(empty)" } else { &test_params.image });
     println!("About Me: {:?}", test_params.about_me);
-    println!("URL: {:?}", test_params.url);
     println!("Compute Units: {}", optimal_cu);
 
     // Create final transaction with optimized CU
@@ -509,7 +481,6 @@ fn generate_borsh_memo_from_params(params: &TestParams, user_pubkey: Pubkey) -> 
         username: params.username.clone(),
         image: params.image.clone(),
         about_me: params.about_me.clone(),
-        url: params.url.clone(),
     };
     
     // Validate profile creation data
@@ -581,8 +552,6 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Profile image too long detected");
     } else if error_msg.contains("AboutMeTooLong") && params.about_me.as_ref().map_or(false, |s| s.len() > 128) {
         println!("✅ Correct: About me too long detected");
-    } else if error_msg.contains("UrlTooLong") && params.url.as_ref().map_or(false, |s| s.len() > 128) {
-        println!("✅ Correct: URL too long detected");
     } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 420 {
         println!("✅ Correct: Burn amount too small detected");
     } else {
@@ -621,7 +590,6 @@ fn print_usage() {
     println!("  long-username   - Invalid: Username too long (>32 chars)");
     println!("  long-image      - Invalid: Image too long (>256 chars)");
     println!("  long-about-me   - Invalid: About me too long (>128 chars)");
-    println!("  long-url        - Invalid: URL too long (>128 chars)");
     println!("  low-burn        - Invalid: Burn amount too low (<420 tokens)");
     println!();
     println!("Environment Variables:");

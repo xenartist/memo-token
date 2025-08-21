@@ -108,9 +108,6 @@ pub struct ProfileCreationData {
     
     /// About me description (optional, max 128 characters)
     pub about_me: Option<String>,
-    
-    /// URL (optional, max 128 characters)
-    pub url: Option<String>,
 }
 
 impl ProfileCreationData {
@@ -189,15 +186,6 @@ impl ProfileCreationData {
             }
         }
         
-        // Validate url length (optional, max 128 characters)
-        if let Some(ref url) = self.url {
-            if url.len() > MAX_URL_LENGTH {
-                msg!("URL too long: {} characters (max: {})", 
-                     url.len(), MAX_URL_LENGTH);
-                return Err(ErrorCode::UrlTooLong.into());
-            }
-        }
-        
         msg!("Profile creation data validation passed: category={}, operation={}, user={}, username={}", 
              self.category, self.operation, self.user_pubkey, self.username);
         
@@ -224,7 +212,6 @@ pub struct ProfileUpdateData {
     pub username: Option<String>,
     pub image: Option<String>,
     pub about_me: Option<Option<String>>,
-    pub url: Option<Option<String>>,
 }
 
 impl ProfileUpdateData {
@@ -308,17 +295,6 @@ impl ProfileUpdateData {
             }
         }
         
-        // Validate url (optional, max 128 characters)
-        if let Some(ref new_url) = self.url {
-            if let Some(ref url_text) = new_url {
-                if url_text.len() > MAX_URL_LENGTH {
-                    msg!("URL too long: {} characters (max: {})", 
-                         url_text.len(), MAX_URL_LENGTH);
-                    return Err(ErrorCode::UrlTooLong.into());
-                }
-            }
-        }
-        
         msg!("Profile update data validation passed: category={}, operation={}, user={}", 
              self.category, self.operation, self.user_pubkey);
         
@@ -376,11 +352,9 @@ pub mod memo_profile {
         profile.user = ctx.accounts.user.key();
         profile.username = profile_data.username.clone();
         profile.image = profile_data.image.clone();
-        profile.burned_amount = burn_amount;
         profile.created_at = Clock::get()?.unix_timestamp;
         profile.last_updated = Clock::get()?.unix_timestamp;
         profile.about_me = profile_data.about_me.clone();
-        profile.url = profile_data.url.clone();
         profile.bump = ctx.bumps.profile;
 
         // Emit profile creation event
@@ -389,7 +363,6 @@ pub mod memo_profile {
             username: profile_data.username,
             image: profile_data.image,
             about_me: profile_data.about_me,
-            url: profile_data.url,
             burn_amount,
             timestamp: Clock::get()?.unix_timestamp,
         });
@@ -407,7 +380,6 @@ pub mod memo_profile {
         username: Option<String>,
         image: Option<String>,
         about_me: Option<Option<String>>,
-        url: Option<Option<String>>,
     ) -> Result<()> {
         // Validate burn amount for profile update
         if burn_amount < MIN_PROFILE_UPDATE_BURN_AMOUNT {
@@ -476,19 +448,6 @@ pub mod memo_profile {
             profile.about_me = new_about_me;
         }
         
-        // Update url if provided
-        if let Some(new_url) = url {
-            if let Some(ref url_text) = new_url {
-                if url_text.len() > MAX_URL_LENGTH {
-                    return Err(ErrorCode::UrlTooLong.into());
-                }
-            }
-            profile.url = new_url;
-        }
-        
-        // Update total burned amount for profile
-        profile.burned_amount = profile.burned_amount.saturating_add(burn_amount);
-        
         // Update timestamp
         profile.last_updated = Clock::get()?.unix_timestamp;
 
@@ -498,7 +457,6 @@ pub mod memo_profile {
             username: profile.username.clone(),
             image: profile.image.clone(),
             about_me: profile.about_me.clone(),
-            url: profile.url.clone(),
             burn_amount,
             timestamp: Clock::get()?.unix_timestamp,
         });
@@ -846,11 +804,9 @@ pub struct Profile {
     pub user: Pubkey,             // 32 bytes - user pubkey (natural ID)
     pub username: String,         // 4 + 32 bytes - username, max 32 characters
     pub image: String,            // 4 + 256 bytes - profile image, hex string
-    pub burned_amount: u64,       // 8 bytes - amount burned to create profile
     pub created_at: i64,          // 8 bytes - created timestamp
     pub last_updated: i64,        // 8 bytes - last updated timestamp
     pub about_me: Option<String>, // 1 + 4 + 128 bytes - about me, max 128 characters, optional
-    pub url: Option<String>,      // 1 + 4 + 128 bytes - url, max 128 characters, optional
     pub bump: u8,                 // 1 byte - PDA bump
 }
 
@@ -859,14 +815,12 @@ impl Profile {
     pub fn calculate_space_max() -> usize {
         8 + // discriminator
         32 + // user
-        8 + // burned_amount
         8 + // created_at
         8 + // last_updated
         1 + // bump
         4 + 32 + // username
         4 + 256 + // image
         1 + 4 + 128 + // about_me (Option<String>)
-        1 + 4 + 128 + // url (Option<String>)
         128 // safety buffer
     }
 }
@@ -878,7 +832,6 @@ pub struct ProfileCreatedEvent {
     pub username: String,
     pub image: String,
     pub about_me: Option<String>,
-    pub url: Option<String>,
     pub burn_amount: u64,
     pub timestamp: i64,
 }
@@ -890,7 +843,6 @@ pub struct ProfileUpdatedEvent {
     pub username: String,
     pub image: String,
     pub about_me: Option<String>,
-    pub url: Option<String>,
     pub burn_amount: u64,
     pub timestamp: i64,
 }
@@ -969,9 +921,6 @@ pub enum ErrorCode {
     #[msg("About me too long: About me must be at most 128 characters.")]
     AboutMeTooLong,
     
-    #[msg("URL too long: URL must be at most 128 characters.")]
-    UrlTooLong,
-
     #[msg("Burn amount too small. Must burn at least 420 tokens (420,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
 
