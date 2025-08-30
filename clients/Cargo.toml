@@ -87,6 +87,26 @@ path = "profile/src/test-memo-profile-delete.rs"
 name = "check-memo-profile"
 path = "profile/src/check-memo-profile.rs"
 
+[[bin]]
+name = "admin-memo-project-init-global-project-counter"
+path = "project/src/admin-memo-project-init-global-project-counter.rs"
+
+[[bin]]
+name = "admin-memo-project-init-burn-leaderboard"
+path = "project/src/admin-memo-project-init-burn-leaderboard.rs"
+
+[[bin]]
+name = "check-memo-project-burn-leaderboard"
+path = "project/src/check-memo-project-burn-leaderboard.rs"
+
+[[bin]]
+name = "test-memo-project-create-project"
+path = "project/src/test-memo-project-create-project.rs"
+
+[[bin]]
+name = "test-memo-project-burn-for-project"
+path = "project/src/test-memo-project-burn-for-project.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

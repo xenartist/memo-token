@@ -2260,6 +2260,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "memo-project"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "base64 0.22.1",
+ "bs58",
+ "memo-burn",
+ "spl-memo",
+]
+
+[[package]]
 name = "memo-token-test-client"
 version = "0.1.0"
 dependencies = [
