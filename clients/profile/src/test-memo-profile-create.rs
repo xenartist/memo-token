@@ -306,6 +306,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cd clients/burn && cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     // Generate Borsh memo
     let memo_data = generate_borsh_memo_from_params(&test_params, payer.pubkey())?;
 
@@ -326,6 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint_pubkey,
         &user_token_account,
         &memo_burn_program_id,
+        &user_global_burn_stats_pda,
         burn_amount_units,
     );
 
@@ -518,6 +538,7 @@ fn create_profile_instruction(
     mint: &Pubkey,
     user_token_account: &Pubkey,
     memo_burn_program: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     burn_amount: u64,
 ) -> Instruction {
     // Calculate Anchor instruction sighash for "create_profile"
@@ -534,12 +555,13 @@ fn create_profile_instruction(
         AccountMeta::new(*profile, false),                                       // profile
         AccountMeta::new(*mint, false),                                          // mint
         AccountMeta::new(*user_token_account, false),                            // user_token_account
+        AccountMeta::new(*user_global_burn_stats, false),                        // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false),                       // token_program
         AccountMeta::new_readonly(*memo_burn_program, false),                    // memo_burn_program
         AccountMeta::new_readonly(system_program::id(), false),                  // system_program
         AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
     ];
-    
+
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
 }
 

@@ -266,6 +266,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", user.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
     // Calculate PDAs
     let (project_pda, _) = Pubkey::find_program_address(
         &[b"project", next_project_id.to_le_bytes().as_ref()],
@@ -281,6 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Global counter: {}", global_counter_pda);
     println!("  Project: {}", project_pda);
     println!("  Burn leaderboard: {}", burn_leaderboard_pda);
+    println!("  User global burn stats: {}", user_global_burn_stats_pda);
     println!();
 
     // Get latest blockhash
@@ -305,6 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &burn_leaderboard_pda,
         &mint_address,
         &user_token_account,
+        &user_global_burn_stats_pda,
         next_project_id,
         burn_amount,
     );
@@ -424,6 +432,7 @@ fn create_create_project_instruction(
     burn_leaderboard: &Pubkey,
     mint: &Pubkey,
     creator_token_account: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     expected_project_id: u64,
     burn_amount: u64,
 ) -> Instruction {
@@ -438,16 +447,20 @@ fn create_create_project_instruction(
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
 
     let accounts = vec![
-        AccountMeta::new(*creator, true),                                    // creator
-        AccountMeta::new(*global_counter, false),                           // global_counter
-        AccountMeta::new(*project, false),                                  // project
-        AccountMeta::new(*burn_leaderboard, false),                         // burn_leaderboard
-        AccountMeta::new(*mint, false),                                     // mint
-        AccountMeta::new(*creator_token_account, false),                    // creator_token_account
-        AccountMeta::new_readonly(token_2022_id(), false),                  // token_program
-        AccountMeta::new_readonly(*memo_burn_program_id, false),            // memo_burn_program
-        AccountMeta::new_readonly(system_program::id(), false),             // system_program
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
+        AccountMeta::new(*creator, true),
+        AccountMeta::new(*global_counter, false),
+        AccountMeta::new(*project, false),
+        AccountMeta::new(*burn_leaderboard, false),
+        AccountMeta::new(*mint, false),
+        AccountMeta::new(*creator_token_account, false),
+        AccountMeta::new(*user_global_burn_stats, false),
+        AccountMeta::new_readonly(token_2022_id(), false),
+        AccountMeta::new_readonly(*memo_burn_program_id, false),
+        AccountMeta::new_readonly(system_program::id(), false),
+        AccountMeta::new_readonly(
+            solana_sdk::sysvar::instructions::id(),
+            false
+        ),
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

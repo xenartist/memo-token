@@ -659,7 +659,7 @@ fn send_memo_to_group_instruction(
         AccountMeta::new_readonly(token_2022_id(), false),      // token_program
         AccountMeta::new_readonly(*memo_mint_program, false),   // memo_mint_program
         AccountMeta::new_readonly(
-            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
+            solana_sdk::sysvar::instructions::id(),
             false
         ), // instructions
     ];

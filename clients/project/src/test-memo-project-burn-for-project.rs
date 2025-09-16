@@ -282,6 +282,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &token_2022_id(),
     );
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cd clients/burn && cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     println!("Runtime info:");
     println!("  Target project ID: {}", test_params.project_id);
     println!("  Project PDA: {}", project_pda);
@@ -392,6 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint,
         &burner_token_account,
         &memo_burn_program_id,
+        &user_global_burn_stats_pda,
         test_params.project_id,
         test_params.burn_amount * 1_000_000, // Convert to units
     );
@@ -595,6 +615,7 @@ fn burn_for_project_instruction(
     mint: &Pubkey,
     burner_token_account: &Pubkey,
     memo_burn_program: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     project_id: u64,
     amount: u64,
 ) -> Instruction {
@@ -612,10 +633,11 @@ fn burn_for_project_instruction(
         AccountMeta::new(*burn_leaderboard, false),
         AccountMeta::new(*mint, false),
         AccountMeta::new(*burner_token_account, false),
+        AccountMeta::new(*user_global_burn_stats, false),
         AccountMeta::new_readonly(token_2022_id(), false),
         AccountMeta::new_readonly(*memo_burn_program, false),
         AccountMeta::new_readonly(
-            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
+            solana_sdk::sysvar::instructions::id(),
             false
         ),
     ];

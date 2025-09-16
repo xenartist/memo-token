@@ -283,6 +283,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cd clients/burn && cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     // Generate memo content
     let memo_content = generate_profile_update_memo(&payer.pubkey(), &test_params)?;
     println!("Generated memo ({} bytes)", memo_content.len());
@@ -296,6 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &profile_pda,
         &mint_pubkey,
         &user_token_account,
+        &user_global_burn_stats_pda,
         &test_params,
     )?;
 
@@ -498,6 +518,7 @@ fn create_update_profile_instruction(
     profile: &Pubkey,
     mint: &Pubkey,
     user_token_account: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     params: &UpdateParams,
 ) -> Result<Instruction, Box<dyn std::error::Error>> {
     // Calculate Anchor instruction sighash for "update_profile"
@@ -523,6 +544,7 @@ fn create_update_profile_instruction(
         AccountMeta::new(*mint, false),                     // mint
         AccountMeta::new(*user_token_account, false),       // user_token_account
         AccountMeta::new(*profile, false),                  // profile (PDA)
+        AccountMeta::new(*user_global_burn_stats, false),   // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false),  // token_program
         AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
         AccountMeta::new_readonly(*memo_burn_program_id, false), // memo_burn_program

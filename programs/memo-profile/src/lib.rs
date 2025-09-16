@@ -340,6 +340,7 @@ pub mod memo_profile {
             user: ctx.accounts.user.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.user_token_account.to_account_info(),
+            user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -410,6 +411,7 @@ pub mod memo_profile {
             user: ctx.accounts.user.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.user_token_account.to_account_info(),
+            user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -732,6 +734,15 @@ pub struct CreateProfile<'info> {
         constraint = user_token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub user_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// User global burn statistics tracking account (now required)
+    #[account(
+        mut,
+        seeds = [b"user_global_burn_stats", user.key().as_ref()],
+        bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub user_global_burn_stats: Account<'info, memo_burn::UserGlobalBurnStats>,
     
     pub token_program: Program<'info, Token2022>,
     
@@ -771,6 +782,15 @@ pub struct UpdateProfile<'info> {
         constraint = profile.user == user.key() @ ErrorCode::UnauthorizedProfileAccess
     )]
     pub profile: Account<'info, Profile>,
+
+    /// User global burn statistics tracking account (now required)
+    #[account(
+        mut,
+        seeds = [b"user_global_burn_stats", user.key().as_ref()],
+        bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub user_global_burn_stats: Account<'info, memo_burn::UserGlobalBurnStats>,
 
     pub token_program: Program<'info, Token2022>,
     

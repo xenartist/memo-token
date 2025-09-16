@@ -506,6 +506,7 @@ pub mod memo_chat {
             user: ctx.accounts.creator.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.creator_token_account.to_account_info(),
+            user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -658,6 +659,7 @@ pub mod memo_chat {
             user: ctx.accounts.burner.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.burner_token_account.to_account_info(),
+            user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -1165,6 +1167,15 @@ pub struct CreateChatGroup<'info> {
         constraint = creator_token_account.owner == creator.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub creator_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// User global burn statistics tracking account (now required)
+    #[account(
+        mut,
+        seeds = [b"user_global_burn_stats", creator.key().as_ref()],
+        bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub user_global_burn_stats: Account<'info, memo_burn::UserGlobalBurnStats>,
     
     pub token_program: Program<'info, Token2022>,
     
@@ -1256,6 +1267,15 @@ pub struct BurnTokensForGroup<'info> {
         constraint = burner_token_account.owner == burner.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub burner_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// User global burn statistics tracking account (now required)
+    #[account(
+        mut,
+        seeds = [b"user_global_burn_stats", burner.key().as_ref()],
+        bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub user_global_burn_stats: Account<'info, memo_burn::UserGlobalBurnStats>,
     
     pub token_program: Program<'info, Token2022>,
     

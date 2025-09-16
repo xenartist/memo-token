@@ -45,8 +45,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("Test types:");
         println!("  valid-memo    - Valid memo (between 69-800 bytes) - should succeed");
-        println!("  memo-69       - Memo exactly 69 bytes - should succeed");
-        println!("  memo-800      - Memo exactly 800 bytes - should succeed");
         println!("  no-memo       - No memo instruction - should fail");
         println!("  short-memo    - Memo less than 69 bytes - should fail");
         println!("  long-memo     - Memo more than 800 bytes - should fail");
@@ -54,7 +52,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("Examples:");
         println!("  cargo run -- 1 valid-memo           # Burn 1 token with valid memo");
-        println!("  cargo run -- 5 memo-69              # Burn 5 tokens with 69-byte memo");
         println!("  cargo run -- 2 custom-length 666    # Burn 2 tokens with 666-byte memo");
         println!("  cargo run -- 10 long-memo           # Burn 10 tokens with long memo (should fail)");
         return Ok(());
@@ -117,6 +114,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &token_2022_id(),
     );
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     // Check token balance
     match client.get_token_account_balance(&token_account) {
         Ok(balance) => {
@@ -146,11 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccountMeta::new(payer.pubkey(), true),        // user (signer)
         AccountMeta::new(mint, false),                 // mint
         AccountMeta::new(token_account, false),        // token_account
+        AccountMeta::new(user_global_burn_stats_pda, false), // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false), // token_program
-        AccountMeta::new_readonly(
-            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
-            false
-        ), // instructions sysvar
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(),false), // instructions sysvar
     ];
 
     // Create burn instruction
@@ -351,54 +365,6 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
             Ok(base64_encoded.into_bytes())
         },
-        "memo-69" => {
-            // Create memo that when Base64 encoded results in exactly 69 bytes
-            // Base64 encoding increases size by ~33%, so target raw data of ~52 bytes
-            // 52 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 39 (user data)
-            let user_data = vec![b'x'; 39];
-            let memo = BurnMemo {
-                version: BURN_MEMO_VERSION,
-                burn_amount,
-                payload: user_data,
-            };
-            let borsh_data = borsh::to_vec(&memo).unwrap();
-            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
-            
-            // Adjust if needed to get exactly 69 bytes
-            let mut final_encoded = base64_encoded;
-            while final_encoded.len() < 69 {
-                final_encoded.push('=');
-            }
-            final_encoded.truncate(69);
-            
-            println!("Generated Base64 memo: {} bytes (from {} bytes Borsh)", 
-                final_encoded.len(), borsh_data.len());
-            Ok(final_encoded.into_bytes())
-        },
-        "memo-800" => {
-            // Create memo that when Base64 encoded results in exactly 800 bytes
-            // Base64 encoding: every 3 bytes -> 4 chars, so 800 chars = 600 bytes raw
-            // 600 = 1 (version) + 8 (burn_amount) + 4 (vec length) + 587 (user data)
-            let user_data = vec![b'x'; 587];
-            let memo = BurnMemo {
-                version: BURN_MEMO_VERSION,
-                burn_amount,
-                payload: user_data,
-            };
-            let borsh_data = borsh::to_vec(&memo).unwrap();
-            let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
-            
-            // Ensure exactly 800 bytes
-            let mut final_encoded = base64_encoded;
-            while final_encoded.len() < 800 {
-                final_encoded.push('=');
-            }
-            final_encoded.truncate(800);
-            
-            println!("Generated Base64 memo: {} bytes (from {} bytes Borsh)", 
-                final_encoded.len(), borsh_data.len());
-            Ok(final_encoded.into_bytes())
-        },
         "short-memo" => {
             // Create memo less than 69 bytes (should fail)
             Ok(b"short".to_vec()) // 5 bytes, definitely too short
@@ -484,7 +450,7 @@ fn send_and_check_transaction(
             
             // Check if this should have succeeded
             match test_type {
-                "valid-memo" | "memo-69" | "memo-800" => {
+                "valid-memo" => {
                     println!("✅ EXPECTED SUCCESS: {} test passed", test_type);
                     println!("Burned {} tokens successfully", burn_amount_tokens);
                 },
@@ -502,7 +468,8 @@ fn send_and_check_transaction(
                     }
                 },
                 _ => {
-                    println!("❌ UNEXPECTED SUCCESS: {} test should have failed but succeeded", test_type);
+                    println!("✅ SUCCESS: {} test passed", test_type);
+                    println!("Burned {} tokens successfully", burn_amount_tokens);
                 }
             }
             

@@ -42,6 +42,28 @@ pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 // Current version of BurnMemo structure
 pub const BURN_MEMO_VERSION: u8 = 1;
 
+// Maximum user global burn amount (prevent overflow, set to reasonable limit)
+pub const MAX_USER_GLOBAL_BURN_AMOUNT: u64 = 18_000_000_000_000 * DECIMAL_FACTOR; // Reserve space for safety
+
+/// User global burn statistics tracking account
+#[account]
+pub struct UserGlobalBurnStats {
+    pub user: Pubkey,           // User's public key
+    pub total_burned: u64,      // Total amount burned by this user (in units)
+    pub burn_count: u64,        // Number of burn transactions
+    pub last_burn_time: i64,    // Timestamp of last burn
+    pub bump: u8,               // PDA bump
+}
+
+impl UserGlobalBurnStats {
+    pub const SPACE: usize = 8 + // discriminator
+        32 + // user (Pubkey)
+        8 +  // total_burned (u64)
+        8 +  // burn_count (u64)
+        8 +  // last_burn_time (i64)
+        1;   // bump (u8)
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct BurnMemo {
     /// version of the BurnMemo structure (for future compatibility)
@@ -57,6 +79,19 @@ pub struct BurnMemo {
 #[program]
 pub mod memo_burn {
     use super::*;
+
+    /// Initialize user global burn statistics tracking
+    pub fn initialize_user_global_burn_stats(ctx: Context<InitializeUserGlobalBurnStats>) -> Result<()> {
+        let user_burn_stats = &mut ctx.accounts.user_global_burn_stats;
+        user_burn_stats.user = ctx.accounts.user.key();
+        user_burn_stats.total_burned = 0;
+        user_burn_stats.burn_count = 0;
+        user_burn_stats.last_burn_time = 0;
+        user_burn_stats.bump = ctx.bumps.user_global_burn_stats;
+        
+        msg!("Initialized global burn statistics tracking for user: {}", ctx.accounts.user.key());
+        Ok(())
+    }
 
     /// Process burn operation with Borsh memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
@@ -97,6 +132,31 @@ pub mod memo_burn {
             ),
             amount,
         )?;
+
+        // Update user global burn statistics tracking (now required)
+        let user_burn_stats = &mut ctx.accounts.user_global_burn_stats;
+        
+        // Check for overflow before adding
+        let new_total = user_burn_stats.total_burned.saturating_add(amount);
+        
+        // Apply maximum limit
+        if new_total > MAX_USER_GLOBAL_BURN_AMOUNT {
+            user_burn_stats.total_burned = MAX_USER_GLOBAL_BURN_AMOUNT;
+            msg!("User global burn amount reached maximum limit: {}", MAX_USER_GLOBAL_BURN_AMOUNT);
+        } else {
+            user_burn_stats.total_burned = new_total;
+        }
+        
+        // Update burn count with overflow protection
+        user_burn_stats.burn_count = user_burn_stats.burn_count.saturating_add(1);
+        
+        // Update last burn time
+        user_burn_stats.last_burn_time = Clock::get()?.unix_timestamp;
+        
+        msg!("Updated user global burn stats: total_burned={} units ({} tokens), burn_count={}", 
+             user_burn_stats.total_burned, 
+             user_burn_stats.total_burned / DECIMAL_FACTOR,
+             user_burn_stats.burn_count);
 
         msg!("Successfully burned {} tokens ({} units) with Borsh+Base64 memo validation", 
              token_count, amount);
@@ -234,6 +294,24 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
     }
 }
 
+/// Account structure for initializing user global burn statistics
+#[derive(Accounts)]
+pub struct InitializeUserGlobalBurnStats<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = UserGlobalBurnStats::SPACE,
+        seeds = [b"user_global_burn_stats", user.key().as_ref()],
+        bump
+    )]
+    pub user_global_burn_stats: Account<'info, UserGlobalBurnStats>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[derive(Accounts)]
 pub struct ProcessBurn<'info> {
     #[account(mut)]
@@ -251,6 +329,15 @@ pub struct ProcessBurn<'info> {
         constraint = token_account.owner == user.key() @ ErrorCode::UnauthorizedTokenAccount
     )]
     pub token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// User global burn statistics tracking account (now required)
+    #[account(
+        mut,
+        seeds = [b"user_global_burn_stats", user.key().as_ref()],
+        bump,
+        constraint = user_global_burn_stats.user == user.key() @ ErrorCode::UnauthorizedUser
+    )]
+    pub user_global_burn_stats: Account<'info, UserGlobalBurnStats>,
     
     pub token_program: Program<'info, Token2022>,
     
@@ -299,4 +386,7 @@ pub enum ErrorCode {
     
     #[msg("Payload too long. (maximum 787 bytes).")]
     PayloadTooLong,
+
+    #[msg("Unauthorized user. User mismatch in global burn statistics account.")]
+    UnauthorizedUser,
 }

@@ -282,6 +282,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &token_2022_id(),
     );
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cd clients/burn && cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     println!("Runtime info:");
     println!("  Target group ID: {}", test_params.group_id);
     println!("  Chat group PDA: {}", chat_group_pda);
@@ -376,6 +395,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mint,
         &burner_token_account,
         &memo_burn_program_id,
+        &user_global_burn_stats_pda,
         test_params.group_id,
         test_params.burn_amount * 1_000_000, // Convert to units
     );
@@ -565,6 +585,7 @@ fn burn_tokens_for_group_instruction(
     mint: &Pubkey,
     burner_token_account: &Pubkey,
     memo_burn_program: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     group_id: u64,
     amount: u64,
 ) -> Instruction {
@@ -577,20 +598,25 @@ fn burn_tokens_for_group_instruction(
     instruction_data.extend_from_slice(&amount.to_le_bytes());
 
     let accounts = vec![
-        AccountMeta::new(*burner, true),
-        AccountMeta::new(*chat_group, false),
-        AccountMeta::new(*burn_leaderboard, false),
-        AccountMeta::new(*mint, false),
-        AccountMeta::new(*burner_token_account, false),
-        AccountMeta::new_readonly(token_2022_id(), false),
-        AccountMeta::new_readonly(*memo_burn_program, false),
+        AccountMeta::new(*burner, true),                    // burner
+        AccountMeta::new(*chat_group, false),               // chat_group
+        AccountMeta::new(*burn_leaderboard, false),         // burn_leaderboard
+        AccountMeta::new(*mint, false),                     // mint
+        AccountMeta::new(*burner_token_account, false),     // burner_token_account
+        AccountMeta::new(*user_global_burn_stats, false),   // user_global_burn_stats
+        AccountMeta::new_readonly(token_2022_id(), false),  // token_program
+        AccountMeta::new_readonly(*memo_burn_program, false), // memo_burn_program
         AccountMeta::new_readonly(
-            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
+            solana_sdk::sysvar::instructions::id(),
             false
-        ),
+        ), // instructions
     ];
 
-    Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
+    Instruction {
+        program_id: *program_id,
+        accounts,
+        data: instruction_data,
+    }
 }
 
 fn print_usage() {

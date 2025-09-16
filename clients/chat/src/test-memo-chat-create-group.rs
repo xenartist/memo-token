@@ -434,6 +434,25 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         &token_2022_id(),
     );
 
+    // Calculate user global burn statistics PDA
+    let (user_global_burn_stats_pda, _) = Pubkey::find_program_address(
+        &[b"user_global_burn_stats", payer.pubkey().as_ref()],
+        &memo_burn_program_id,
+    );
+
+    // Check if user global burn statistics account exists
+    match client.get_account(&user_global_burn_stats_pda) {
+        Ok(_) => {
+            println!("✅ User global burn statistics account found: {}", user_global_burn_stats_pda);
+        },
+        Err(_) => {
+            println!("❌ User global burn statistics account not found: {}", user_global_burn_stats_pda);
+            println!("💡 Please run init-user-global-burn-stats first:");
+            println!("   cd clients/burn && cargo run --bin init-user-global-burn-stats");
+            return Ok(());
+        }
+    }
+
     println!("Runtime info:");
     println!("  Next group ID: {}", next_group_id);
     println!("  Chat group PDA: {}", chat_group_pda);
@@ -516,6 +535,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         &mint,
         &creator_token_account,
         &memo_burn_program_id,
+        &user_global_burn_stats_pda,
         next_group_id,
         params.burn_amount * 1_000_000, // Convert to units
     );
@@ -724,6 +744,7 @@ fn create_chat_group_instruction(
     mint: &Pubkey,
     creator_token_account: &Pubkey,
     memo_burn_program: &Pubkey,
+    user_global_burn_stats: &Pubkey,
     expected_group_id: u64,
     burn_amount: u64,
 ) -> Instruction {
@@ -742,11 +763,12 @@ fn create_chat_group_instruction(
         AccountMeta::new(*burn_leaderboard, false),
         AccountMeta::new(*mint, false),
         AccountMeta::new(*creator_token_account, false),
+        AccountMeta::new(*user_global_burn_stats, false),
         AccountMeta::new_readonly(token_2022_id(), false),
         AccountMeta::new_readonly(*memo_burn_program, false),
         AccountMeta::new_readonly(system_program::id(), false),
         AccountMeta::new_readonly(
-            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap(),
+            solana_sdk::sysvar::instructions::id(),
             false
         ),
     ];

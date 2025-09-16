@@ -32,6 +32,14 @@ name = "pen-test-memo-mint"
 path = "mint/src/pen-test-memo-mint.rs"
 
 [[bin]]
+name = "init-user-global-burn-stats"
+path = "burn/src/init-user-global-burn-stats.rs"
+
+[[bin]]
+name = "check-memo-burn-user-global-burn-stats"
+path = "burn/src/check-memo-burn-user-global-burn-stats.rs"
+
+[[bin]]
 name = "test-memo-burn"
 path = "burn/src/test-memo-burn.rs"
 
