@@ -53,7 +53,7 @@ const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_L
 pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
 // Maximum allowed Borsh data size after Base64 decoding (security limit)
-pub const MAX_BORSH_DATA_SIZE: usize = 1024;
+pub const MAX_BORSH_DATA_SIZE: usize = MEMO_MAX_LENGTH;
 
 // Current version of BurnMemo structure (consistent with memo-burn)
 pub const BURN_MEMO_VERSION: u8 = 1;

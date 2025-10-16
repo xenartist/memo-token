@@ -28,7 +28,7 @@ const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_L
 pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
 
 // Maximum allowed Borsh data size after Base64 decoding (security limit)
-pub const MAX_BORSH_DATA_SIZE: usize = 1024;
+pub const MAX_BORSH_DATA_SIZE: usize = MEMO_MAX_LENGTH;
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
@@ -43,6 +43,11 @@ pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 pub const BURN_MEMO_VERSION: u8 = 1;
 
 // Maximum user global burn amount (prevent overflow, set to reasonable limit)
+// Note: This is set to 18 trillion tokens (1.8x of max supply) because:
+// 1. It tracks CUMULATIVE burns across the token's lifetime
+// 2. In a dynamic economy with mint+burn cycles, cumulative burns can exceed max supply
+// 3. Example: User burns 5T, ecosystem remints 5T, user burns 5T again = 10T cumulative
+// 4. This higher limit ensures active users' contributions are fully tracked
 pub const MAX_USER_GLOBAL_BURN_AMOUNT: u64 = 18_000_000_000_000 * DECIMAL_FACTOR; // Reserve space for safety
 
 /// User global burn statistics tracking account
