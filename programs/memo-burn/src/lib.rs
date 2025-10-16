@@ -261,7 +261,7 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
 /// Check for memo instruction at REQUIRED index 1
 /// 
 /// IMPORTANT: This contract enforces a strict instruction ordering:
-/// - Index 0: Compute budget instruction (optional)
+/// - Index 0: Compute budget instruction (REQUIRED)
 /// - Index 1: SPL Memo instruction (REQUIRED)
 /// - Index 2+: memo-burn::process_burn (other instructions)
 ///

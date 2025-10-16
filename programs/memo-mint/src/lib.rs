@@ -153,45 +153,36 @@ fn execute_mint_operation<'info>(
 /// Check for memo instruction at REQUIRED index 1
 /// 
 /// IMPORTANT: This contract enforces a strict instruction ordering:
-/// - Index 0: Compute budget instruction (optional)
+/// - Index 0: Compute budget instruction (REQUIRED)
 /// - Index 1: SPL Memo instruction (REQUIRED)
 /// - Index 2+: memo-mint::process_mint or memo-mint::process_mint_to (other instructions)
 ///
 /// This function searches both positions to accommodate different transaction structures.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
-    // Try index 0 first (no compute budget case)
-    match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(0, instructions) {
-        Ok(ix) => {
-            if ix.program_id == MEMO_PROGRAM_ID {
-                msg!("Found memo instruction at index 0");
-                return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-            }
-        },
-        Err(_) => {
-            // Index 0 doesn't exist or failed to load, continue to check index 1
-        }
+    // Get current instruction index
+    let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
+    
+    if current_index <= 1 {
+        msg!("Memo instruction must be at index 1, but current instruction is at index {}", current_index);
+        return Ok((false, vec![]));
     }
     
-    // Try index 1 (with compute budget case)
     match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(1, instructions) {
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
-                msg!("Found memo instruction at index 1");
-                return validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+                msg!("Found memo instruction at required index 1");
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
             } else {
                 msg!("Instruction at index 1 is not a memo (program_id: {})", ix.program_id);
+                Ok((false, vec![]))
             }
         },
         Err(e) => {
-            msg!("Failed to load instruction at index 1: {:?}", e);
+            msg!("Failed to load instruction at required index 1: {:?}", e);
+            Ok((false, vec![]))
         }
     }
-    
-    // If we reach here, no memo instruction was found at either position
-    msg!("No memo instruction found at index 0 or 1");
-    Ok((false, vec![]))
 }
-
 /// Validate memo data length and return result
 fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
     let memo_length = memo_data.len();
