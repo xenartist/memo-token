@@ -3,16 +3,8 @@
 /clients/img
 /clients/target
 .DS_Store
-# Environment-specific keypairs (never commit!)
-target/deploy/*-keypair.json
-target/deploy/testnet/*.json
-target/deploy/mainnet/*.json
-target/deploy/*-keypair.json
-
-# Authority keypairs (never commit!)
-authority-keys/testnet/*.json
-authority-keys/mainnet/*.json
 
 # Backup files
 *.bak
 Anchor.toml.bak
+programs/**/*.bak

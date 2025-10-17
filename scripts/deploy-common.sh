@@ -8,6 +8,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Keypair storage location (outside project directory for security)
+KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token"
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -87,29 +90,41 @@ update_program_ids() {
     local ENV=$1
     shift
     local PROGRAMS=("$@")
-    local KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy/${ENV}"
     
-    print_info "Updating ${ENV} program IDs and authority pubkeys from keypairs..."
+    # New keypair locations
+    local PROGRAM_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/program-keypairs"
+    local AUTHORITY_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/authority-keypairs"
     
-    if [ ! -d "${KEYPAIR_DIR}" ]; then
-        print_error "${ENV} keypairs not found in ${KEYPAIR_DIR}!"
+    print_info "Updating ${ENV} program IDs and authority pubkeys..."
+    print_info "Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
+    print_info "Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
+    echo ""
+    
+    # Verify directories exist
+    if [ ! -d "${PROGRAM_KEYPAIR_DIR}" ]; then
+        print_error "Program keypair directory not found: ${PROGRAM_KEYPAIR_DIR}"
+        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
+        exit 1
+    fi
+    
+    if [ ! -d "${AUTHORITY_KEYPAIR_DIR}" ]; then
+        print_error "Authority keypair directory not found: ${AUTHORITY_KEYPAIR_DIR}"
+        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
         exit 1
     fi
     
     # Read authority keypairs
-    local MINT_AUTHORITY_KEYPAIR="${PROJECT_ROOT}/authority-keys/${ENV}/memo_token-mint_keypair.json"
-    local ADMIN_AUTHORITY_KEYPAIR="${PROJECT_ROOT}/authority-keys/${ENV}/admin_keypair.json"
+    local MINT_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/memo_token-mint_keypair.json"
+    local ADMIN_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/admin_keypair.json"
     
     # Verify authority keypairs exist
     if [ ! -f "${MINT_AUTHORITY_KEYPAIR}" ]; then
         print_error "Mint authority keypair not found: ${MINT_AUTHORITY_KEYPAIR}"
-        print_info "Please create it first"
         exit 1
     fi
     
     if [ ! -f "${ADMIN_AUTHORITY_KEYPAIR}" ]; then
         print_error "Admin authority keypair not found: ${ADMIN_AUTHORITY_KEYPAIR}"
-        print_info "Please create it first"
         exit 1
     fi
     
@@ -125,7 +140,12 @@ update_program_ids() {
     # Display program IDs from keypairs
     print_info "Program IDs for ${ENV}:"
     for program in "${PROGRAMS[@]}"; do
-        local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
+        local keypair_file="${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
+        if [ ! -f "${keypair_file}" ]; then
+            print_error "Program keypair not found: ${keypair_file}"
+            exit 1
+        fi
+        local program_id=$(solana-keygen pubkey "${keypair_file}")
         echo "  ${program}: ${program_id}"
     done
     echo ""
@@ -137,14 +157,14 @@ update_program_ids() {
         # Replace PLACEHOLDER_MAINNET_* in Anchor.toml
         print_info "Updating Anchor.toml..."
         for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
+            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
             sed -i.bak "s|${program} = \"PLACEHOLDER_MAINNET\"|${program} = \"${program_id}\"|g" Anchor.toml
         done
         
         # Replace placeholders in source files
         print_info "Updating program source files..."
         for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
+            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
             local program_dash=$(get_program_name_dash "${program}")
             
             # Replace program ID
@@ -165,7 +185,7 @@ update_program_ids() {
         # Check program IDs
         local all_match=true
         for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
+            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
             local expected_id=$(get_expected_testnet_id "${program}")
             
             if [ "${program_id}" != "${expected_id}" ]; then
@@ -205,7 +225,7 @@ update_program_ids() {
             # Update code to match keypairs
             print_info "Updating code to match keypair IDs..."
             for program in "${PROGRAMS[@]}"; do
-                local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
+                local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
                 local expected_id=$(get_expected_testnet_id "${program}")
                 local program_dash=$(get_program_name_dash "${program}")
                 
@@ -236,6 +256,9 @@ deploy_to_env() {
     local FEATURE_FLAG=$4
     shift 4
     local SELECTED_PROGRAMS=("$@")
+    
+    # New keypair locations
+    local PROGRAM_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/program-keypairs"
     
     # If no programs specified, deploy all
     if [ ${#SELECTED_PROGRAMS[@]} -eq 0 ]; then
@@ -270,15 +293,10 @@ deploy_to_env() {
     trap cleanup EXIT
     
     # Check keypairs
-    if [ ! -d "${PROJECT_ROOT}/target/deploy/${ENV}" ]; then
-        print_error "${ENV} keypairs not found!"
-        print_info "Expected location: ${PROJECT_ROOT}/target/deploy/${ENV}/"
-        
-        if [ "${ENV}" = "testnet" ]; then
-            print_info "Run: ./scripts/migrate-testnet-keypairs.sh"
-        else
-            print_info "Run: ./scripts/generate-keypairs.sh mainnet"
-        fi
+    if [ ! -d "${PROGRAM_KEYPAIR_DIR}" ]; then
+        print_error "${ENV} program keypairs not found!"
+        print_info "Expected location: ${PROGRAM_KEYPAIR_DIR}"
+        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
         exit 1
     fi
     
@@ -308,14 +326,12 @@ deploy_to_env() {
     print_info "Step 2: Building programs..."
     if [ -n "${FEATURE_FLAG}" ]; then
         print_info "Building with feature: ${FEATURE_FLAG}"
-        # Build specific programs if specified
         for program in "${SELECTED_PROGRAMS[@]}"; do
             local program_dash=$(get_program_name_dash "${program}")
             print_info "Building ${program_dash}..."
             anchor build --features "${FEATURE_FLAG}" -p "${program_dash}"
         done
     else
-        # Build specific programs if specified
         for program in "${SELECTED_PROGRAMS[@]}"; do
             local program_dash=$(get_program_name_dash "${program}")
             print_info "Building ${program_dash}..."
@@ -334,12 +350,12 @@ deploy_to_env() {
         echo ""
         print_info "Deploying ${program}..."
         
-        local program_id=$(solana-keygen pubkey "${PROJECT_ROOT}/target/deploy/${ENV}/${program}-keypair.json")
+        local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
         
         anchor deploy \
             --provider.cluster "${CLUSTER}" \
             --program-name "${program}" \
-            --program-keypair "${PROJECT_ROOT}/target/deploy/${ENV}/${program}-keypair.json"
+            --program-keypair "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
         
         print_success "${program} deployed: ${program_id}"
         
@@ -358,7 +374,7 @@ deploy_to_env() {
     echo ""
     print_info "Deployed Program IDs ($(to_upper "${ENV}")):"
     for program in "${SELECTED_PROGRAMS[@]}"; do
-        local program_id=$(solana-keygen pubkey "${PROJECT_ROOT}/target/deploy/${ENV}/${program}-keypair.json")
+        local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
         echo "  ${program} = \"${program_id}\""
     done
     
