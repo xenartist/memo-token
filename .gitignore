@@ -3,3 +3,6 @@
 /clients/img
 /clients/target
 .DS_Store
+target/deploy/mainnet/*.json
+target/deploy/testnet/*.json
+target/deploy/*-keypair.json
