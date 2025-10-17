@@ -9,9 +9,18 @@ use anchor_lang::solana_program::pubkey;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 use base64::{Engine as _, engine::general_purpose};
 
+// Program ID - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+declare_id!("PLACEHOLDER_MAINNET");
+
+#[cfg(not(feature = "mainnet"))]
 declare_id!("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
 
-// Authorized mint pubkey
+// Authorized mint pubkey - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+
+#[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // Memo length constraints

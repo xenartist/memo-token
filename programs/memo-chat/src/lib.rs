@@ -13,6 +13,27 @@ use std::str::FromStr;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 use base64::{Engine as _, engine::general_purpose};
 
+// Program ID - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+declare_id!("PLACEHOLDER_MAINNET");
+
+#[cfg(not(feature = "mainnet"))]
+declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
+
+// Authorized mint address - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+
+// Authorized admin key - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_ADMIN_AUTHORITY");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
+
 // ===== BUSINESS LOGIC CONSTANTS =====
 
 // Token economics
@@ -77,14 +98,6 @@ pub const EXPECTED_SEND_MESSAGE_OPERATION: &str = "send_message";
 
 // Expected operation for burning tokens for group
 pub const EXPECTED_BURN_FOR_GROUP_OPERATION: &str = "burn_for_group";
-
-declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");
-
-// Authorized mint address
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
-
-// Authorized admin key (only this address can initialize the global counter)
-pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 
 /// BurnMemo structure (compatible with memo-burn contract)
 #[derive(AnchorSerialize, AnchorDeserialize)]

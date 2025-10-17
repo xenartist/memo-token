@@ -82,19 +82,45 @@ cleanup() {
     print_success "Cleanup complete"
 }
 
-# Function to update program IDs
+# Function to update program IDs and authority pubkeys
 update_program_ids() {
     local ENV=$1
     shift
     local PROGRAMS=("$@")
     local KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy/${ENV}"
     
-    print_info "Updating ${ENV} program IDs from keypairs..."
+    print_info "Updating ${ENV} program IDs and authority pubkeys from keypairs..."
     
     if [ ! -d "${KEYPAIR_DIR}" ]; then
         print_error "${ENV} keypairs not found in ${KEYPAIR_DIR}!"
         exit 1
     fi
+    
+    # Read authority keypairs
+    local MINT_AUTHORITY_KEYPAIR="${PROJECT_ROOT}/authority-keys/${ENV}/memo_token-mint_keypair.json"
+    local ADMIN_AUTHORITY_KEYPAIR="${PROJECT_ROOT}/authority-keys/${ENV}/admin_keypair.json"
+    
+    # Verify authority keypairs exist
+    if [ ! -f "${MINT_AUTHORITY_KEYPAIR}" ]; then
+        print_error "Mint authority keypair not found: ${MINT_AUTHORITY_KEYPAIR}"
+        print_info "Please create it first"
+        exit 1
+    fi
+    
+    if [ ! -f "${ADMIN_AUTHORITY_KEYPAIR}" ]; then
+        print_error "Admin authority keypair not found: ${ADMIN_AUTHORITY_KEYPAIR}"
+        print_info "Please create it first"
+        exit 1
+    fi
+    
+    # Get authority pubkeys
+    local MINT_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${MINT_AUTHORITY_KEYPAIR}")
+    local ADMIN_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${ADMIN_AUTHORITY_KEYPAIR}")
+    
+    print_info "Authority Pubkeys for ${ENV}:"
+    echo "  Mint Authority: ${MINT_AUTHORITY_PUBKEY}"
+    echo "  Admin Authority: ${ADMIN_AUTHORITY_PUBKEY}"
+    echo ""
     
     # Display program IDs from keypairs
     print_info "Program IDs for ${ENV}:"
@@ -107,29 +133,36 @@ update_program_ids() {
     # Change to project root for file operations
     cd "${PROJECT_ROOT}"
     
-    # For mainnet: replace PLACEHOLDER_MAINNET with actual IDs
-    # For testnet: verify IDs match and optionally update
-    
     if [ "${ENV}" = "mainnet" ]; then
-        # Replace PLACEHOLDER_MAINNET in Anchor.toml
+        # Replace PLACEHOLDER_MAINNET_* in Anchor.toml
         print_info "Updating Anchor.toml..."
         for program in "${PROGRAMS[@]}"; do
             local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
             sed -i.bak "s|${program} = \"PLACEHOLDER_MAINNET\"|${program} = \"${program_id}\"|g" Anchor.toml
         done
         
-        # Replace PLACEHOLDER_MAINNET in source files
+        # Replace placeholders in source files
         print_info "Updating program source files..."
         for program in "${PROGRAMS[@]}"; do
             local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
             local program_dash=$(get_program_name_dash "${program}")
+            
+            # Replace program ID
             sed -i.bak "s|declare_id!(\"PLACEHOLDER_MAINNET\")|declare_id!(\"${program_id}\")|" "programs/${program_dash}/src/lib.rs"
+            
+            # Replace AUTHORIZED_MINT_PUBKEY
+            sed -i.bak "s|pubkey!(\"PLACEHOLDER_MAINNET_MINT_AUTHORITY\")|pubkey!(\"${MINT_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
+            
+            # Replace AUTHORIZED_ADMIN_PUBKEY (only for chat and project)
+            if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
+                sed -i.bak "s|pubkey!(\"PLACEHOLDER_MAINNET_ADMIN_AUTHORITY\")|pubkey!(\"${ADMIN_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
+            fi
         done
     else
-        # For testnet: verify IDs match and optionally update
-        print_info "Verifying testnet program IDs..."
+        # For testnet: verify IDs match
+        print_info "Verifying testnet program IDs and authority pubkeys..."
         
-        # Check if keypair IDs match expected IDs
+        # Check program IDs
         local all_match=true
         for program in "${PROGRAMS[@]}"; do
             local program_id=$(solana-keygen pubkey "${KEYPAIR_DIR}/${program}-keypair.json")
@@ -143,14 +176,28 @@ update_program_ids() {
             fi
         done
         
+        # Check authority pubkeys
+        local EXPECTED_MINT_AUTHORITY="HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"
+        local EXPECTED_ADMIN_AUTHORITY="Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"
+        
+        if [ "${MINT_AUTHORITY_PUBKEY}" != "${EXPECTED_MINT_AUTHORITY}" ]; then
+            print_warning "Mint authority doesn't match!"
+            echo "  Expected: ${EXPECTED_MINT_AUTHORITY}"
+            echo "  Actual: ${MINT_AUTHORITY_PUBKEY}"
+            all_match=false
+        fi
+        
+        if [ "${ADMIN_AUTHORITY_PUBKEY}" != "${EXPECTED_ADMIN_AUTHORITY}" ]; then
+            print_warning "Admin authority doesn't match!"
+            echo "  Expected: ${EXPECTED_ADMIN_AUTHORITY}"
+            echo "  Actual: ${ADMIN_AUTHORITY_PUBKEY}"
+            all_match=false
+        fi
+        
         if [ "$all_match" = "false" ]; then
             echo ""
-            print_error "Program ID mismatch detected!"
-            print_warning "This could happen if:"
-            echo "  1. Keypairs were regenerated but code wasn't updated"
-            echo "  2. Wrong keypairs are in target/deploy/testnet/"
-            echo ""
-            read -p "Continue anyway? (yes/no): " continue_mismatch
+            print_error "Mismatch detected!"
+            read -p "Continue and update code? (yes/no): " continue_mismatch
             if [ "$continue_mismatch" != "yes" ]; then
                 exit 1
             fi
@@ -162,14 +209,23 @@ update_program_ids() {
                 local expected_id=$(get_expected_testnet_id "${program}")
                 local program_dash=$(get_program_name_dash "${program}")
                 
+                # Update program ID
                 sed -i.bak "s|declare_id!(\"${expected_id}\")|declare_id!(\"${program_id}\")|" "programs/${program_dash}/src/lib.rs"
+                
+                # Update AUTHORIZED_MINT_PUBKEY
+                sed -i.bak "s|pubkey!(\"${EXPECTED_MINT_AUTHORITY}\")|pubkey!(\"${MINT_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
+                
+                # Update AUTHORIZED_ADMIN_PUBKEY (only for chat and project)
+                if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
+                    sed -i.bak "s|pubkey!(\"${EXPECTED_ADMIN_AUTHORITY}\")|pubkey!(\"${ADMIN_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
+                fi
             done
         else
-            print_success "All program IDs match! No code changes needed."
+            print_success "All IDs and authority pubkeys match! No code changes needed."
         fi
     fi
     
-    print_success "Program IDs updated!"
+    print_success "Program IDs and authority pubkeys updated!"
 }
 
 # Main deployment function

@@ -8,7 +8,19 @@ use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
 use anchor_lang::solana_program::pubkey;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
+// Program ID - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+declare_id!("PLACEHOLDER_MAINNET");
+
+#[cfg(not(feature = "mainnet"))]
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
+
+// Authorized mint pubkey - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // compile-time constant safety validation
 const _: () = {
@@ -26,9 +38,6 @@ const _: () = {
     assert!(TIER_1_MINT_AMOUNT > 0, "Mint amounts must be positive");
     assert!(TIER_6_MINT_AMOUNT > 0, "Minimum mint amount must be positive");
 };
-
-// Authorized mint pubkey
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // Memo length constraints
 pub const MEMO_MIN_LENGTH: usize = 69;

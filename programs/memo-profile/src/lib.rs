@@ -11,6 +11,21 @@ use std::str::FromStr;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 use base64::{Engine as _, engine::general_purpose};
 
+// Program ID - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+declare_id!("PLACEHOLDER_MAINNET");
+
+#[cfg(not(feature = "mainnet"))]
+declare_id!("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US");
+
+// Authorized mint address - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+
+
 // ===== BUSINESS LOGIC CONSTANTS =====
 
 // Token economics
@@ -66,11 +81,6 @@ pub const EXPECTED_OPERATION: &str = "create_profile";
 
 // Expected operation for profile update
 pub const EXPECTED_UPDATE_OPERATION: &str = "update_profile";
-
-declare_id!("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US");
-
-// Authorized mint address
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 /// BurnMemo structure (compatible with memo-burn contract)
 #[derive(AnchorSerialize, AnchorDeserialize)]
