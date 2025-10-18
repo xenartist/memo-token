@@ -6,7 +6,7 @@ TOKEN_NAME="MEMO Engraves Memories Onchain"
 TOKEN_SYMBOL="MEMO"
 TOKEN_URI="https://raw.githubusercontent.com/xenartist/memo-token/refs/heads/dev/metadata/memo_token-metadata.json"
 DECIMALS=6
-MINT_KEYPAIR_PATH="$HOME/.config/solana/memo_token-mint_keypair.json"
+MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/memo_token_mint-keypair.json"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

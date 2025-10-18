@@ -1,6 +1,8 @@
 #!/bin/bash
 # Common deployment logic - works for both testnet and mainnet
 # Compatible with bash 3.x (macOS default)
+#
+# SECURITY: This script only VERIFIES configurations, never modifies source code
 
 set -e
 
@@ -9,9 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Keypair locations
-# Program keypairs: in target/deploy/ (Anchor default)
-# Authority keypairs: in secure location outside project
-AUTHORITY_KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token"
+AUTHORITY_KEYPAIR_DIR="${HOME}/.config/solana/memo-token/authority"
+PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
 
 # Color codes
 RED='\033[0;31m'
@@ -67,39 +68,78 @@ is_valid_program() {
     return 1
 }
 
-# Helper function to get expected testnet ID
-get_expected_testnet_id() {
-    case "$1" in
-        memo_mint) echo "A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy" ;;
-        memo_burn) echo "FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP" ;;
-        memo_chat) echo "54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF" ;;
-        memo_profile) echo "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US" ;;
-        memo_project) echo "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx" ;;
-        *) echo "" ;;
-    esac
+# Helper function to extract program ID from source code
+extract_program_id_from_code() {
+    local program=$1
+    local env=$2
+    local program_dash=$(get_program_name_dash "${program}")
+    local source_file="${PROJECT_ROOT}/programs/${program_dash}/src/lib.rs"
+    
+    if [ ! -f "${source_file}" ]; then
+        echo ""
+        return
+    fi
+    
+    local result=""
+    if [ "${env}" = "mainnet" ]; then
+        # Look for pattern: #[cfg(feature = "mainnet")] followed by declare_id!
+        result=$(grep -A 1 '#\[cfg(feature = "mainnet")\]' "${source_file}" | \
+                 grep 'declare_id!' | \
+                 sed -E 's/.*declare_id!\("([^"]+)"\).*/\1/' | \
+                 head -n 1)
+    else
+        # Look for pattern: #[cfg(not(feature = "mainnet"))] followed by declare_id!
+        result=$(grep -A 1 '#\[cfg(not(feature = "mainnet"))\]' "${source_file}" | \
+                 grep 'declare_id!' | \
+                 sed -E 's/.*declare_id!\("([^"]+)"\).*/\1/' | \
+                 head -n 1)
+    fi
+    
+    echo "${result}"
 }
 
-cleanup() {
-    print_info "Cleaning up temporary changes..."
-    cd "${PROJECT_ROOT}"
-    git checkout -- Anchor.toml programs/*/src/lib.rs 2>/dev/null || true
-    rm -f Anchor.toml.bak programs/*/src/lib.rs.bak
-    print_success "Cleanup complete"
+# Helper function to extract authority pubkey from source code
+extract_authority_from_code() {
+    local program=$1
+    local authority_type=$2  # "MINT" or "ADMIN"
+    local env=$3
+    local program_dash=$(get_program_name_dash "${program}")
+    local source_file="${PROJECT_ROOT}/programs/${program_dash}/src/lib.rs"
+    
+    if [ ! -f "${source_file}" ]; then
+        echo ""
+        return
+    fi
+    
+    local const_name="AUTHORIZED_${authority_type}_PUBKEY"
+    local result=""
+    
+    if [ "${env}" = "mainnet" ]; then
+        # Look for pattern: #[cfg(feature = "mainnet")] followed by const AUTHORIZED_*_PUBKEY
+        result=$(grep -A 1 '#\[cfg(feature = "mainnet")\]' "${source_file}" | \
+                 grep "${const_name}" | \
+                 grep 'pubkey!' | \
+                 sed -E 's/.*pubkey!\("([^"]+)"\).*/\1/' | \
+                 head -n 1)
+    else
+        # Look for pattern: #[cfg(not(feature = "mainnet"))] followed by const AUTHORIZED_*_PUBKEY
+        result=$(grep -A 1 '#\[cfg(not(feature = "mainnet"))\]' "${source_file}" | \
+                 grep "${const_name}" | \
+                 grep 'pubkey!' | \
+                 sed -E 's/.*pubkey!\("([^"]+)"\).*/\1/' | \
+                 head -n 1)
+    fi
+    
+    echo "${result}"
 }
 
-# Function to update program IDs and authority pubkeys
-update_program_ids() {
+# Function to verify program IDs and authority pubkeys
+verify_configuration() {
     local ENV=$1
     shift
     local PROGRAMS=("$@")
     
-    # Program keypairs are in target/deploy/ (Anchor default)
-    local PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
-    
-    # Authority keypairs are in secure location
-    local AUTHORITY_KEYPAIR_DIR="${AUTHORITY_KEYPAIR_BASE_DIR}/${ENV}/authority"
-    
-    print_info "Updating ${ENV} program IDs and authority pubkeys..."
+    print_info "Verifying ${ENV} configuration..."
     print_info "Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
     print_info "Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
     echo ""
@@ -118,141 +158,150 @@ update_program_ids() {
     fi
     
     # Read authority keypairs
-    local MINT_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/memo_token-mint_keypair.json"
-    local ADMIN_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/admin_keypair.json"
+    local DEPLOY_ADMIN_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/deploy_admin-keypair.json"
+    local MINT_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/memo_token_mint-keypair.json"
     
     # Verify authority keypairs exist
+    if [ ! -f "${DEPLOY_ADMIN_KEYPAIR}" ]; then
+        print_error "Deploy/Admin keypair not found: ${DEPLOY_ADMIN_KEYPAIR}"
+        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
+        exit 1
+    fi
+    
     if [ ! -f "${MINT_AUTHORITY_KEYPAIR}" ]; then
         print_error "Mint authority keypair not found: ${MINT_AUTHORITY_KEYPAIR}"
+        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
         exit 1
     fi
     
-    if [ ! -f "${ADMIN_AUTHORITY_KEYPAIR}" ]; then
-        print_error "Admin authority keypair not found: ${ADMIN_AUTHORITY_KEYPAIR}"
-        exit 1
-    fi
-    
-    # Get authority pubkeys
+    # Get authority pubkeys from keypair files
     local MINT_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${MINT_AUTHORITY_KEYPAIR}")
-    local ADMIN_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${ADMIN_AUTHORITY_KEYPAIR}")
+    local ADMIN_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${DEPLOY_ADMIN_KEYPAIR}")
     
-    print_info "Authority Pubkeys for ${ENV}:"
+    print_info "Authority Pubkeys (from keypair files):"
+    echo "  Deploy/Admin Authority: ${ADMIN_AUTHORITY_PUBKEY}"
     echo "  Mint Authority: ${MINT_AUTHORITY_PUBKEY}"
-    echo "  Admin Authority: ${ADMIN_AUTHORITY_PUBKEY}"
     echo ""
     
-    # Display program IDs from keypairs
-    print_info "Program IDs for ${ENV}:"
+    # Verify each program
+    print_info "Verifying Program Configurations:"
+    echo ""
+    local all_match=true
+    local mismatch_details=""
+    
     for program in "${PROGRAMS[@]}"; do
+        local program_dash=$(get_program_name_dash "${program}")
+        echo "Checking ${program}..."
+        
+        # 1. Verify program keypair exists
         local keypair_file="${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
         if [ ! -f "${keypair_file}" ]; then
-            print_error "Program keypair not found: ${keypair_file}"
+            print_error "  ✗ Program keypair not found: ${keypair_file}"
+            print_info "  Run: ./scripts/setup-keypairs.sh ${ENV}"
             exit 1
         fi
+        
+        # 2. Get program ID from keypair
         local program_id=$(solana-keygen pubkey "${keypair_file}")
-        echo "  ${program}: ${program_id}"
-    done
-    echo ""
-    
-    # Change to project root for file operations
-    cd "${PROJECT_ROOT}"
-    
-    if [ "${ENV}" = "mainnet" ]; then
-        # Replace PLACEHOLDER_MAINNET_* in Anchor.toml
-        print_info "Updating Anchor.toml..."
-        for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
-            sed -i.bak "s|${program} = \"PLACEHOLDER_MAINNET\"|${program} = \"${program_id}\"|g" Anchor.toml
-        done
         
-        # Replace placeholders in source files
-        print_info "Updating program source files..."
-        for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
-            local program_dash=$(get_program_name_dash "${program}")
-            
-            # Replace program ID
-            sed -i.bak "s|declare_id!(\"PLACEHOLDER_MAINNET\")|declare_id!(\"${program_id}\")|" "programs/${program_dash}/src/lib.rs"
-            
-            # Replace AUTHORIZED_MINT_PUBKEY
-            sed -i.bak "s|pubkey!(\"PLACEHOLDER_MAINNET_MINT_AUTHORITY\")|pubkey!(\"${MINT_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
-            
-            # Replace AUTHORIZED_ADMIN_PUBKEY (only for chat and project)
-            if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
-                sed -i.bak "s|pubkey!(\"PLACEHOLDER_MAINNET_ADMIN_AUTHORITY\")|pubkey!(\"${ADMIN_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
-            fi
-        done
-    else
-        # For testnet: verify IDs match
-        print_info "Verifying testnet program IDs and authority pubkeys..."
+        # 3. Get program ID from source code
+        local code_program_id=$(extract_program_id_from_code "${program}" "${ENV}")
         
-        # Check program IDs
-        local all_match=true
-        for program in "${PROGRAMS[@]}"; do
-            local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
-            local expected_id=$(get_expected_testnet_id "${program}")
-            
-            if [ "${program_id}" != "${expected_id}" ]; then
-                print_warning "${program}: Keypair ID doesn't match code!"
-                echo "  Expected (in code): ${expected_id}"
-                echo "  Actual (in keypair): ${program_id}"
-                all_match=false
-            fi
-        done
-        
-        # Check authority pubkeys
-        local EXPECTED_MINT_AUTHORITY="HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"
-        local EXPECTED_ADMIN_AUTHORITY="Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn"
-        
-        if [ "${MINT_AUTHORITY_PUBKEY}" != "${EXPECTED_MINT_AUTHORITY}" ]; then
-            print_warning "Mint authority doesn't match!"
-            echo "  Expected: ${EXPECTED_MINT_AUTHORITY}"
-            echo "  Actual: ${MINT_AUTHORITY_PUBKEY}"
+        # 4. Compare program IDs
+        echo -n "  Program ID: "
+        if [ -z "${code_program_id}" ]; then
+            print_warning "Could not extract from code"
+            echo "    Keypair: ${program_id}"
+            echo "    Code: Unable to parse"
+            mismatch_details="${mismatch_details}\n${program}: Could not verify program ID in code"
             all_match=false
-        fi
-        
-        if [ "${ADMIN_AUTHORITY_PUBKEY}" != "${EXPECTED_ADMIN_AUTHORITY}" ]; then
-            print_warning "Admin authority doesn't match!"
-            echo "  Expected: ${EXPECTED_ADMIN_AUTHORITY}"
-            echo "  Actual: ${ADMIN_AUTHORITY_PUBKEY}"
+        elif [ "${program_id}" != "${code_program_id}" ]; then
+            print_error "MISMATCH"
+            echo "    Keypair:  ${program_id}"
+            echo "    Code:     ${code_program_id}"
+            mismatch_details="${mismatch_details}\n${program} Program ID:"
+            mismatch_details="${mismatch_details}\n  Expected: ${program_id}"
+            mismatch_details="${mismatch_details}\n  In Code:  ${code_program_id}"
             all_match=false
-        fi
-        
-        if [ "$all_match" = "false" ]; then
-            echo ""
-            print_error "Mismatch detected!"
-            read -p "Continue and update code? (yes/no): " continue_mismatch
-            if [ "$continue_mismatch" != "yes" ]; then
-                exit 1
-            fi
-            
-            # Update code to match keypairs
-            print_info "Updating code to match keypair IDs..."
-            for program in "${PROGRAMS[@]}"; do
-                local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
-                local expected_id=$(get_expected_testnet_id "${program}")
-                local program_dash=$(get_program_name_dash "${program}")
-                
-                # Update program ID
-                sed -i.bak "s|declare_id!(\"${expected_id}\")|declare_id!(\"${program_id}\")|" "programs/${program_dash}/src/lib.rs"
-                
-                # Update Anchor.toml
-                sed -i.bak "s|${program} = \"${expected_id}\"|${program} = \"${program_id}\"|" Anchor.toml
-                
-                # Update AUTHORIZED_MINT_PUBKEY
-                sed -i.bak "s|pubkey!(\"${EXPECTED_MINT_AUTHORITY}\")|pubkey!(\"${MINT_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
-                
-                # Update AUTHORIZED_ADMIN_PUBKEY (only for chat and project)
-                if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
-                    sed -i.bak "s|pubkey!(\"${EXPECTED_ADMIN_AUTHORITY}\")|pubkey!(\"${ADMIN_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
-                fi
-            done
         else
-            print_success "All IDs and authority pubkeys match! No code changes needed."
+            print_success "${program_id}"
         fi
-    fi
+        
+        # 5. Verify mint authority (all programs have this)
+        local code_mint_authority=$(extract_authority_from_code "${program}" "MINT" "${ENV}")
+        echo -n "  Mint Authority: "
+        if [ -z "${code_mint_authority}" ]; then
+            print_warning "Could not extract from code"
+            echo "    Keypair: ${MINT_AUTHORITY_PUBKEY}"
+            echo "    Code: Unable to parse"
+            mismatch_details="${mismatch_details}\n${program}: Could not verify AUTHORIZED_MINT_PUBKEY in code"
+            all_match=false
+        elif [ "${MINT_AUTHORITY_PUBKEY}" != "${code_mint_authority}" ]; then
+            print_error "MISMATCH"
+            echo "    Keypair:  ${MINT_AUTHORITY_PUBKEY}"
+            echo "    Code:     ${code_mint_authority}"
+            mismatch_details="${mismatch_details}\n${program} AUTHORIZED_MINT_PUBKEY:"
+            mismatch_details="${mismatch_details}\n  Expected: ${MINT_AUTHORITY_PUBKEY}"
+            mismatch_details="${mismatch_details}\n  In Code:  ${code_mint_authority}"
+            all_match=false
+        else
+            print_success "${MINT_AUTHORITY_PUBKEY}"
+        fi
+        
+        # 6. Verify admin authority (only for memo_chat and memo_project)
+        if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
+            local code_admin_authority=$(extract_authority_from_code "${program}" "ADMIN" "${ENV}")
+            echo -n "  Admin Authority: "
+            if [ -z "${code_admin_authority}" ]; then
+                print_warning "Could not extract from code"
+                echo "    Keypair: ${ADMIN_AUTHORITY_PUBKEY}"
+                echo "    Code: Unable to parse"
+                mismatch_details="${mismatch_details}\n${program}: Could not verify AUTHORIZED_ADMIN_PUBKEY in code"
+                all_match=false
+            elif [ "${ADMIN_AUTHORITY_PUBKEY}" != "${code_admin_authority}" ]; then
+                print_error "MISMATCH"
+                echo "    Keypair:  ${ADMIN_AUTHORITY_PUBKEY}"
+                echo "    Code:     ${code_admin_authority}"
+                mismatch_details="${mismatch_details}\n${program} AUTHORIZED_ADMIN_PUBKEY:"
+                mismatch_details="${mismatch_details}\n  Expected: ${ADMIN_AUTHORITY_PUBKEY}"
+                mismatch_details="${mismatch_details}\n  In Code:  ${code_admin_authority}"
+                all_match=false
+            else
+                print_success "${ADMIN_AUTHORITY_PUBKEY}"
+            fi
+        fi
+        
+        echo ""
+    done
     
-    print_success "Program IDs and authority pubkeys updated!"
+    # Final verdict
+    if [ "$all_match" = "false" ]; then
+        echo "=========================================="
+        print_error "VERIFICATION FAILED"
+        echo "=========================================="
+        echo ""
+        echo "Mismatches found:"
+        echo -e "${mismatch_details}"
+        echo ""
+        print_error "Deployment aborted: Configuration does not match keypairs"
+        echo ""
+        echo "To fix:"
+        echo "  1. Review the mismatches above"
+        echo "  2. Update your source code to match the keypair pubkeys:"
+        echo "     - programs/*/src/lib.rs (declare_id! and AUTHORIZED_*_PUBKEY)"
+        echo "     - Anchor.toml (programs.${ENV} section)"
+        echo "  3. Commit the changes to git"
+        echo "  4. Re-run this deployment script"
+        echo ""
+        exit 1
+    else
+        echo "=========================================="
+        print_success "VERIFICATION PASSED"
+        echo "=========================================="
+        echo ""
+        print_success "All program IDs and authority pubkeys match!"
+        echo ""
+    fi
 }
 
 # Main deployment function
@@ -263,9 +312,6 @@ deploy_to_env() {
     local FEATURE_FLAG=$4
     shift 4
     local SELECTED_PROGRAMS=("$@")
-    
-    # Program keypairs are in target/deploy/ (Anchor default)
-    local PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
     
     # If no programs specified, deploy all
     if [ ${#SELECTED_PROGRAMS[@]} -eq 0 ]; then
@@ -297,36 +343,33 @@ deploy_to_env() {
     # Change to project root
     cd "${PROJECT_ROOT}"
     
-    trap cleanup EXIT
-    
-    # Check keypairs
-    if [ ! -d "${PROGRAM_KEYPAIR_DIR}" ]; then
-        print_error "${ENV} program keypairs not found!"
-        print_info "Expected location: ${PROGRAM_KEYPAIR_DIR}"
-        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
-        exit 1
-    fi
-    
     # Check git status
     if [ -n "$(git status --porcelain)" ]; then
         print_warning "You have uncommitted changes."
         read -p "Continue anyway? (yes/no): " continue_dirty
         if [ "$continue_dirty" != "yes" ]; then
+            print_info "Deployment cancelled."
             exit 0
         fi
     fi
     
     # Confirm deployment
-    read -p "Deploy to $(to_upper "${ENV}")? (yes/no): " confirm
+    echo ""
+    print_warning "Ready to deploy to $(to_upper "${ENV}")"
+    echo "  Cluster: ${CLUSTER}"
+    echo "  Wallet: ${WALLET}"
+    echo "  Programs: ${SELECTED_PROGRAMS[*]}"
+    echo ""
+    read -p "Proceed with deployment? (yes/no): " confirm
     if [ "$confirm" != "yes" ]; then
-        print_info "Cancelled."
+        print_info "Deployment cancelled."
         exit 0
     fi
     
-    # Step 1: Update IDs
+    # Step 1: Verify configuration
     echo ""
-    print_info "Step 1: Updating program IDs..."
-    update_program_ids "${ENV}" "${SELECTED_PROGRAMS[@]}"
+    print_info "Step 1: Verifying configuration..."
+    verify_configuration "${ENV}" "${SELECTED_PROGRAMS[@]}"
     
     # Step 2: Build
     echo ""
@@ -345,6 +388,8 @@ deploy_to_env() {
             anchor build -p "${program_dash}"
         done
     fi
+    
+    print_success "Build complete"
     
     # Step 3: Deploy
     echo ""
@@ -367,9 +412,9 @@ deploy_to_env() {
         print_success "${program} deployed: ${program_id}"
         
         if [ "${ENV}" = "mainnet" ]; then
-            echo "   Explorer: https://explorer.x1.xyz/address/${program_id}"
+            echo "   Explorer: https://explorer.solana.com/address/${program_id}"
         else
-            echo "   Explorer: https://explorer.x1.xyz/address/${program_id}?cluster=custom&customUrl=${CLUSTER}"
+            echo "   Explorer: https://explorer.solana.com/address/${program_id}?cluster=custom&customUrl=${CLUSTER}"
         fi
     done
     
@@ -384,7 +429,16 @@ deploy_to_env() {
         local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
         echo "  ${program} = \"${program_id}\""
     done
-    
     echo ""
-    print_warning "Temporary changes will be cleaned up automatically."
+    
+    if [ "${ENV}" = "mainnet" ]; then
+        echo ""
+        print_warning "POST-DEPLOYMENT SECURITY CHECKLIST:"
+        echo "  ☐ Verify contracts on blockchain explorer"
+        echo "  ☐ Test all critical functions"
+        echo "  ☐ Consider transferring upgrade authority to multisig"
+        echo "  ☐ Backup all keypairs to cold storage"
+        echo "  ☐ Document this deployment"
+        echo ""
+    fi
 }

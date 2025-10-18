@@ -9,15 +9,17 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="mainnet"
 CLUSTER="https://rpc.mainnet.x1.xyz"
-WALLET="${ANCHOR_WALLET:-~/.config/solana/memo-token/mainnet/authority/admin_keypair.json}"
+WALLET="${ANCHOR_WALLET:-${HOME}/.config/solana/memo-token/authority/deploy_admin-keypair.json}"
 FEATURE_FLAG="mainnet"  # Use mainnet feature
 
 # Additional security check
 echo ""
 print_warning "MAINNET DEPLOYMENT SECURITY CHECK"
-echo "  ✓ In secure isolated environment?"
-echo "  ✓ Mainnet keypairs backed up?"
-echo "  ✓ Tested on testnet first?"
+echo "  ✓ Running on secure, isolated PRODUCTION server?"
+echo "  ✓ This is NOT the same machine as testnet?"
+echo "  ✓ Mainnet keypairs backed up to cold storage?"
+echo "  ✓ Tested thoroughly on testnet first?"
+echo "  ✓ Team notified about deployment?"
 echo ""
 read -p "All checks passed? (yes/no): " security
 if [ "$security" != "yes" ]; then

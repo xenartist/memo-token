@@ -75,7 +75,7 @@ fn main() {
 
     // Load payer keypair (wallet that will pay for transaction)
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde("~/.config/solana/memo-token/authority/deploy_admin-keypair.json").to_string()
     ).expect("Failed to read payer keypair file");
     
     println!("Using payer: {}", payer.pubkey());
