@@ -13,14 +13,14 @@ use base64::{Engine as _, engine::general_purpose};
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("PLACEHOLDER_MAINNET");
+declare_id!("8eHwuUazmE5Nd3VAWQu91z5qimPyS2xJsbiJvRhm6Diu");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US");
 
 // Authorized mint address - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");

@@ -13,21 +13,21 @@ use std::str::FromStr;
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("PLACEHOLDER_MAINNET");
+declare_id!("FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx");
 
 // Authorized mint address - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
 // Authorized admin key - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_ADMIN_AUTHORITY");
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");

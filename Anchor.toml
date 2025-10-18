@@ -12,7 +12,11 @@ memo_profile = "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US"
 memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 
 # [programs.mainnet]
-
+memo_mint = "3rncCFCJ6sGULiUKXXziLL4AExejR1UmNSvvTj8czLgB"
+memo_burn = "811qP5g565ttsizvc1qTrW65YcBpJ7ce98xoMvu6wQHu"
+memo_chat = "7pfQ8w5hETwoejmUV18Fm4xkfSjp23K6LCwHSUdnP43e"
+memo_profile = "8eHwuUazmE5Nd3VAWQu91z5qimPyS2xJsbiJvRhm6Diu"
+memo_project = "FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa"
 
 [registry]
 url = "https://api.apr.dev"

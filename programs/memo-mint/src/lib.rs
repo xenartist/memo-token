@@ -10,14 +10,14 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("PLACEHOLDER_MAINNET");
+declare_id!("3rncCFCJ6sGULiUKXXziLL4AExejR1UmNSvvTj8czLgB");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
 // Authorized mint pubkey - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("PLACEHOLDER_MAINNET_MINT_AUTHORITY");
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
