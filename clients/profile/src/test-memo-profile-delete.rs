@@ -19,6 +19,12 @@ struct DeleteParams {
     pub test_description: String,         // Description of what this test validates
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
@@ -53,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Constants
-    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string());
+    let rpc_url = get_rpc_url();
     let wallet_path = std::env::var("WALLET_PATH").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME environment variable not set");
         format!("{}/.config/solana/id.json", home)

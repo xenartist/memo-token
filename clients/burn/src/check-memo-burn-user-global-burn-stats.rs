@@ -8,13 +8,19 @@ use solana_sdk::{
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BURN USER GLOBAL BURN STATISTICS CHECKER ===");
     println!("Checking user's global burn statistics and account information...");
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     // Load wallet
@@ -22,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shellexpand::tilde("~/.config/solana/id.json").to_string()
     ).expect("Failed to read keypair file");
 
-    println!("🔍 Connecting to: {}", rpc_url);
+    println!("🔍 Connecting to: {}", get_rpc_url());
     println!("👤 User: {}", user.pubkey());
     println!();
 

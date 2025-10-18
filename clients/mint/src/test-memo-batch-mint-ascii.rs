@@ -94,6 +94,12 @@ fn create_exact_length_ascii_memo(target_length: usize) -> Result<Vec<u8>, Box<d
 const EXPECTED_CATEGORY: &str = "mint";
 const EXPECTED_OPERATION: &str = "batch_mint";
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Token batch mint test client (PURE ASCII STRING FORMAT) ===\n");
     
@@ -320,7 +326,7 @@ fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
 }
 
 fn create_rpc_client() -> RpcClient {
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     println!("Connect to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }

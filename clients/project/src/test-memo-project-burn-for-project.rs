@@ -138,6 +138,12 @@ struct TestParams {
     pub test_description: String,  // Description of what this test validates
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
     let args: Vec<String> = std::env::args().collect();
@@ -239,7 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")?;
 
     // Setup client and keypair
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     let client = RpcClient::new(rpc_url.to_string());
     
     let payer_path = std::env::var("SOLANA_KEYPAIR_PATH")

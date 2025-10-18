@@ -22,6 +22,12 @@ fn get_admin_authority_keypair_path() -> PathBuf {
         .join(".config/solana/memo-token/authority/deploy_admin-keypair.json")
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-CHAT INITIALIZE BURN LEADERBOARD (ADMIN ONLY) ===");
     println!("This is a one-time setup operation to initialize the burn leaderboard.");
@@ -29,7 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
+    println!("🔍 Connecting to: {}", rpc_url);
     let client = RpcClient::new(rpc_url);
 
     // Load admin wallet from unified authority keypair location

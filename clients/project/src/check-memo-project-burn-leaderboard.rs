@@ -6,20 +6,26 @@ use solana_sdk::{
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT BURN LEADERBOARD CHECKER ===");
     println!("Checking burn leaderboard rankings and statistics...");
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     // Program address
     let memo_project_program_id = Pubkey::from_str("ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx")
         .expect("Invalid memo-project program ID");
 
-    println!("🔍 Connecting to: {}", rpc_url);
+    println!("🔍 Connecting to: {}", get_rpc_url());
     println!("📋 Memo-project program: {}", memo_project_program_id);
     println!();
 

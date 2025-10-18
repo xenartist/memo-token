@@ -30,6 +30,12 @@ pub struct ComparisonMemoData {
     pub content: String,
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Format CU Simulation Analysis ===");
     println!("Comparing: Raw String vs Base64 vs Base58 vs Borsh+Base64 vs Borsh+Base58");
@@ -263,7 +269,9 @@ fn analyze_memo_formats(test_name: &str, content: &str) -> Result<(), Box<dyn st
 }
 
 fn analyze_memo_formats_internal(content: &str) -> Result<ComparisonResult, Box<dyn std::error::Error>> {
-    let client = create_rpc_client();
+    let rpc_url = get_rpc_url();
+    println!("Connecting to: {}", rpc_url);
+    let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
     let payer = load_payer_keypair();
     let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     

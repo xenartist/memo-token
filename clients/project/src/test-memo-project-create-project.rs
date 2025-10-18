@@ -145,13 +145,19 @@ impl ProjectCreationData {
     }
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT CREATE PROJECT TEST ===");
     println!("This program creates a new project by burning tokens.");
     println!();
 
     // Connect to network
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     let client = RpcClient::new(rpc_url);
 
     // Load user wallet
@@ -167,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 
-    println!("Network: {}", rpc_url);
+    println!("Network: {}", get_rpc_url());
     println!("User: {}", user.pubkey());
     println!("Memo-project program: {}", memo_project_program_id);
     println!("Memo-burn program: {}", memo_burn_program_id);

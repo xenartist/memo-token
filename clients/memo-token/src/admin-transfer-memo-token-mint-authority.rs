@@ -15,6 +15,12 @@ use std::{str::FromStr, env, process};
 // Token-2022 program ID constant
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() {
     // Read command line arguments
     let args: Vec<String> = env::args().collect();
@@ -31,11 +37,7 @@ fn main() {
     let program_id_str = &args[2];
     
     // Use network URL from args or default to testnet X1
-    let rpc_url = if args.len() > 3 {
-        &args[3]
-    } else {
-        "https://rpc.testnet.x1.xyz"
-    };
+    let rpc_url = get_rpc_url();
     
     println!("Connecting to network at: {}", rpc_url);
     let client = RpcClient::new_with_commitment(

@@ -30,6 +30,12 @@ pub struct ComparisonMemoData {
     pub content: String,
 }
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Format CU Simulation Analysis with ZSTD Compression ===");
     println!("Comparing: Raw String vs Base64 vs Base58 vs Borsh+Base64 vs Borsh+Base58 vs ZSTD variants");
@@ -843,7 +849,7 @@ fn create_and_simulate_borsh_zstd_base64(
 
 // Helper functions
 fn create_rpc_client() -> RpcClient {
-    let rpc_url = "https://rpc.testnet.x1.xyz";
+    let rpc_url = get_rpc_url();
     println!("Connecting to: {}", rpc_url);
     RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed())
 }

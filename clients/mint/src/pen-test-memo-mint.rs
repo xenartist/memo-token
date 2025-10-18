@@ -19,6 +19,12 @@ use std::collections::HashMap;
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
+// Get RPC URL from environment or use default testnet
+fn get_rpc_url() -> String {
+    std::env::var("X1_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parse command line arguments
     let args: Vec<String> = std::env::args().collect();
@@ -69,7 +75,7 @@ fn print_usage() {
 
 // base configuration function
 fn get_test_config() -> (RpcClient, Keypair, Pubkey, Pubkey, Pubkey) {
-    let rpc_url = "https://api.devnet.solana.com";
+    let rpc_url = get_rpc_url();
     let client = RpcClient::new(rpc_url.to_string());
     
     // use default test address
