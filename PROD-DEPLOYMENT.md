@@ -63,7 +63,7 @@ curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/solana-d
 
 ### 1.1 Set Environment Variables
 
-Add to `~/.bashrc` or `~/.zshrc` on production server:
+Add to `~/.bashrc`, `~/.profile` or `~/.zshrc` on production machine:
 
 ```bash
 # X1 Network RPC (Mainnet)
