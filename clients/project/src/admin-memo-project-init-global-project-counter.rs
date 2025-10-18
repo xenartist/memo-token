@@ -11,11 +11,16 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
 };
 use std::str::FromStr;
+use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use solana_system_interface::program as system_program;
 
-// This should match the AUTHORIZED_ADMIN in the contract
-const AUTHORIZED_ADMIN: &str = "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn";
+// Get admin authority keypair path (unified for all environments)
+fn get_admin_authority_keypair_path() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME environment variable not set");
+    PathBuf::from(home)
+        .join(".config/solana/memo-token/authority/deploy_admin-keypair.json")
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT INITIALIZE GLOBAL COUNTER (ADMIN ONLY) ===");
@@ -27,26 +32,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rpc_url = "https://rpc.testnet.x1.xyz";
     let client = RpcClient::new(rpc_url);
 
-    // Load wallet (must be the authorized admin)
-    let admin = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
-    ).expect("Failed to read keypair file");
-
-    // Verify that the loaded keypair is the authorized admin
-    let expected_admin = Pubkey::from_str(AUTHORIZED_ADMIN)
-        .expect("Invalid AUTHORIZED_ADMIN address");
+    // Load admin wallet from unified authority keypair location
+    let admin_keypair_path = get_admin_authority_keypair_path();
+    println!("Loading admin keypair from: {}", admin_keypair_path.display());
     
-    if admin.pubkey() != expected_admin {
-        println!("❌ AUTHORIZATION ERROR!");
-        println!("   Current wallet: {}", admin.pubkey());
-        println!("   Required admin:  {}", expected_admin);
-        println!();
-        println!("This operation requires the authorized admin wallet.");
-        println!("Please ensure you're using the correct admin keypair file.");
-        return Ok(());
-    }
+    let admin = read_keypair_file(&admin_keypair_path)
+        .expect(&format!("Failed to read admin keypair file from {:?}. Run setup-keypairs.sh first.", admin_keypair_path));
 
-    println!("✅ Admin authorization verified!");
+    println!("✅ Admin keypair loaded successfully!");
     println!("   Admin address: {}", admin.pubkey());
     println!();
 
@@ -216,8 +209,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let error_msg = err.to_string();
             if error_msg.contains("UnauthorizedAdmin") {
                 println!("💡 Authorization Error: Only the authorized admin can initialize the global counter.");
-                println!("   Expected admin: {}", expected_admin);
                 println!("   Current wallet: {}", admin.pubkey());
+                println!("   Make sure this matches the AUTHORIZED_ADMIN_PUBKEY in the contract code.");
             } else if error_msg.contains("already in use") {
                 println!("💡 The global counter account already exists. This is normal if initialization was run before.");
             } else if error_msg.contains("insufficient funds") {
