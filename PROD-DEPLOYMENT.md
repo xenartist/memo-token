@@ -87,7 +87,7 @@ git checkout main  # or your production branch
 
 ---
 
-## Step 2: Generate Mainnet Keypairs
+## Step 2: Generate Mainnet Keypairs (ONLY FOR NEW KEYPAIRS)
 
 ### 2.1 Run Setup Script
 
@@ -105,7 +105,7 @@ This will guide you through:
 
 ---
 
-## Step 3: Update Source Code with Mainnet IDs
+## Step 3: Update Source Code with Mainnet IDs (ONLY FOR NEW KEYPAIRS)
 
 ### 3.1 Update Program IDs
 
