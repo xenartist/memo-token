@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="mainnet"
 CLUSTER="https://rpc.mainnet.x1.xyz"
-WALLET="${ANCHOR_WALLET:-~/.config/solana/mainnet-admin.json}"
+WALLET="${ANCHOR_WALLET:-~/.config/solana/memo-token/mainnet/authority/admin_keypair.json}"
 FEATURE_FLAG="mainnet"  # Use mainnet feature
 
 # Additional security check

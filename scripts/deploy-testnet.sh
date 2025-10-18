@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="testnet"
 CLUSTER="https://rpc.testnet.x1.xyz"
-WALLET="${ANCHOR_WALLET:-~/.config/solana/id.json}"
+WALLET="${ANCHOR_WALLET:-~/.config/solana/memo-token/testnet/authority/admin_keypair.json}"
 FEATURE_FLAG=""  # No feature flag for testnet (default)
 
 # Pass all arguments as programs to deploy

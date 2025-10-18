@@ -3,8 +3,3 @@
 /clients/img
 /clients/target
 .DS_Store
-
-# Backup files
-*.bak
-Anchor.toml.bak
-programs/**/*.bak

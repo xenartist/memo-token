@@ -8,8 +8,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Keypair storage location (outside project directory for security)
-KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token"
+# Keypair locations
+# Program keypairs: in target/deploy/ (Anchor default)
+# Authority keypairs: in secure location outside project
+AUTHORITY_KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token"
 
 # Color codes
 RED='\033[0;31m'
@@ -91,9 +93,11 @@ update_program_ids() {
     shift
     local PROGRAMS=("$@")
     
-    # New keypair locations
-    local PROGRAM_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/program-keypairs"
-    local AUTHORITY_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/authority-keypairs"
+    # Program keypairs are in target/deploy/ (Anchor default)
+    local PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
+    
+    # Authority keypairs are in secure location
+    local AUTHORITY_KEYPAIR_DIR="${AUTHORITY_KEYPAIR_BASE_DIR}/${ENV}/authority"
     
     print_info "Updating ${ENV} program IDs and authority pubkeys..."
     print_info "Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
@@ -232,6 +236,9 @@ update_program_ids() {
                 # Update program ID
                 sed -i.bak "s|declare_id!(\"${expected_id}\")|declare_id!(\"${program_id}\")|" "programs/${program_dash}/src/lib.rs"
                 
+                # Update Anchor.toml
+                sed -i.bak "s|${program} = \"${expected_id}\"|${program} = \"${program_id}\"|" Anchor.toml
+                
                 # Update AUTHORIZED_MINT_PUBKEY
                 sed -i.bak "s|pubkey!(\"${EXPECTED_MINT_AUTHORITY}\")|pubkey!(\"${MINT_AUTHORITY_PUBKEY}\")|g" "programs/${program_dash}/src/lib.rs"
                 
@@ -257,8 +264,8 @@ deploy_to_env() {
     shift 4
     local SELECTED_PROGRAMS=("$@")
     
-    # New keypair locations
-    local PROGRAM_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/program-keypairs"
+    # Program keypairs are in target/deploy/ (Anchor default)
+    local PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
     
     # If no programs specified, deploy all
     if [ ${#SELECTED_PROGRAMS[@]} -eq 0 ]; then
@@ -360,9 +367,9 @@ deploy_to_env() {
         print_success "${program} deployed: ${program_id}"
         
         if [ "${ENV}" = "mainnet" ]; then
-            echo "   Explorer: https://explorer.solana.com/address/${program_id}"
+            echo "   Explorer: https://explorer.x1.xyz/address/${program_id}"
         else
-            echo "   Explorer: https://explorer.solana.com/address/${program_id}?cluster=custom&customUrl=${CLUSTER}"
+            echo "   Explorer: https://explorer.x1.xyz/address/${program_id}?cluster=custom&customUrl=${CLUSTER}"
         fi
     done
     

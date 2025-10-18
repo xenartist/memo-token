@@ -1,14 +1,18 @@
 #!/bin/bash
-# Setup keypairs for testnet or mainnet in secure location
-# Stores keypairs in ~/.config/solana/memo-token/{env}/
+# Setup keypairs for testnet or mainnet
+# Program keypairs: target/deploy/ (Anchor default)
+# Authority keypairs: ~/.config/solana/memo-token/{env}/authority/ (secure location)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Keypair storage location
+# Authority keypair storage location (secure, outside project)
 KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token"
+
+# Program keypair location (project directory, Anchor default)
+PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
@@ -26,7 +30,9 @@ ENV=$1
 if [ -z "${ENV}" ]; then
     echo "Usage: $0 <testnet|mainnet>"
     echo ""
-    echo "This script sets up keypairs in: ${KEYPAIR_BASE_DIR}/{env}/"
+    echo "This script sets up keypairs:"
+    echo "  - Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
+    echo "  - Authority keypairs: ${KEYPAIR_BASE_DIR}/{env}/authority/"
     exit 1
 fi
 
@@ -35,21 +41,18 @@ if [ "${ENV}" != "testnet" ] && [ "${ENV}" != "mainnet" ]; then
     exit 1
 fi
 
-print_info "Setting up ${ENV} keypairs in secure location..."
-print_info "Base directory: ${KEYPAIR_BASE_DIR}/${ENV}"
+print_info "Setting up ${ENV} keypairs..."
 echo ""
 
 # Create directories
-PROGRAM_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/program-keypairs"
-AUTHORITY_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/authority-keypairs"
+AUTHORITY_KEYPAIR_DIR="${KEYPAIR_BASE_DIR}/${ENV}/authority"
 
 mkdir -p "${PROGRAM_KEYPAIR_DIR}"
 mkdir -p "${AUTHORITY_KEYPAIR_DIR}"
 
-# Set restrictive permissions
+# Set restrictive permissions for authority keypairs
 chmod 700 "${KEYPAIR_BASE_DIR}"
 chmod 700 "${KEYPAIR_BASE_DIR}/${ENV}"
-chmod 700 "${PROGRAM_KEYPAIR_DIR}"
 chmod 700 "${AUTHORITY_KEYPAIR_DIR}"
 
 PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project")
@@ -57,8 +60,8 @@ PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project")
 # Array to store newly generated program IDs for testnet
 declare -a NEW_PROGRAM_IDS
 
-# Setup program keypairs
-print_info "Setting up program keypairs..."
+# Setup program keypairs in target/deploy/
+print_info "Setting up program keypairs in: ${PROGRAM_KEYPAIR_DIR}"
 for program in "${PROGRAMS[@]}"; do
     KEYPAIR_FILE="${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
     
@@ -125,7 +128,7 @@ done
 echo ""
 
 # Setup authority keypairs
-print_info "Setting up authority keypairs..."
+print_info "Setting up authority keypairs in: ${AUTHORITY_KEYPAIR_DIR}"
 
 # Mint authority
 MINT_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/memo_token-mint_keypair.json"
@@ -279,26 +282,31 @@ if [ "${ENV}" = "testnet" ] && [ ${#NEW_PROGRAM_IDS[@]} -gt 0 ]; then
             program_dash="${name//_/-}"
             echo "In programs/${program_dash}/src/lib.rs:"
             echo "  declare_id!(\"${pubkey}\");"
+            echo ""
+            echo "In Anchor.toml [programs.testnet]:"
+            echo "  ${name} = \"${pubkey}\""
         fi
     done
     
     echo ""
     echo "After updating, commit the changes:"
-    echo "  git add programs/*/src/lib.rs"
+    echo "  git add programs/*/src/lib.rs Anchor.toml"
     echo "  git commit -m \"Update testnet program IDs\""
     echo ""
 fi
 
 print_warning "SECURITY REMINDERS:"
-echo "  ✓ Keypairs are stored outside the project directory"
-echo "  ✓ Directory permissions set to 700 (owner only)"
+echo "  Program keypairs: in target/deploy/ (convenient for Anchor)"
+echo "  Authority keypairs: in ${AUTHORITY_KEYPAIR_DIR} (secure location)"
+echo "  ✓ Authority directory permissions set to 700 (owner only)"
 echo "  ✓ File permissions set to 600 (owner read/write only)"
-echo "  ✓ These directories are NOT tracked by git"
-echo "  ✓ Backup these keypairs to secure encrypted storage"
+echo "  ✓ Authority keypairs are NOT tracked by git"
+echo "  ✓ Backup all keypairs to secure encrypted storage"
 if [ "${ENV}" = "mainnet" ]; then
     echo ""
     echo "  🔐 MAINNET SECURITY:"
-    echo "  ✓ Consider using hardware wallet for maximum security"
+    echo "  ✓ Program keypairs should be backed up after first deployment"
+    echo "  ✓ Authority keypairs are more sensitive - use hardware wallet if possible"
     echo "  ✓ Store backup in encrypted cold storage"
     echo "  ✓ Never share these keypairs"
 fi
