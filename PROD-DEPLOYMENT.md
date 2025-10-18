@@ -7,7 +7,7 @@ This document describes how to deploy the MEMO Token project to the production e
 
 **Project Architecture (Based on Physical Environment Isolation):**
 
-Test Server Production Server
+Production Machine
 ├── target/deploy/
 │ ├── memo_mint-keypair.json
 │ ├── memo_burn-keypair.json
