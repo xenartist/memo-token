@@ -196,6 +196,53 @@ solana balance $(solana-keygen pubkey ~/.config/solana/memo-token/authority/depl
 
 ---
 
+## Step 5: Prod Staging Deploy to Testnet
+
+### 5.1 Pre-Deployment Checklist
+
+Before running deployment:
+
+- [ ] All mainnet program IDs updated in code
+- [ ] All authority public keys updated in code
+- [ ] Changes committed to git
+- [ ] Admin wallet funded with sufficient XNT
+- [ ] All keypairs backed up to offline storage
+- [ ] Running on secure, isolated production machine
+- [ ] Contracts tested thoroughly on testnet
+
+### 5.2 Run Deployment
+
+```bash
+cd ~/memo-token
+
+# Deploy all programs
+./scripts/deploy-prod-staging-testnet.sh
+
+# Or deploy specific programs
+./scripts/deploy-prod-staging-testnet.sh memo_burn memo_chat
+```
+
+The script will:
+1. Verify all keypairs exist
+2. Verify program IDs and authorities match code
+3. Build with `mainnet` feature flag
+4. Deploy to X1 Testnet
+5. Display deployment summary
+
+### 5.3 Verify Deployment
+
+After successful deployment, verify on block explorer:
+
+```bash
+# Check each program
+for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
+  PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
+  echo "✅ $program: https://rpc.testnet.x1.xyz/address/$PROGRAM_ID"
+done
+```
+
+---
+
 ## Step 5: Deploy to Mainnet
 
 ### 5.1 Pre-Deployment Checklist
@@ -237,7 +284,7 @@ After successful deployment, verify on block explorer:
 # Check each program
 for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
   PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
-  echo "✅ $program: https://explorer.mainnet.x1.xyz/address/$PROGRAM_ID"
+  echo "✅ $program: https://rpc.mainnet.x1.xyz/address/$PROGRAM_ID"
 done
 ```
 
@@ -371,7 +418,7 @@ chmod 600 ~/.config/solana/memo-token/authority/*
 
 ## Environment Variables Reference
 
-### Production Server
+### Production Machine
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
@@ -379,7 +426,7 @@ export X1_RPC_URL="https://rpc.mainnet.x1.xyz"
 export ANCHOR_PROVIDER_URL="$X1_RPC_URL"
 ```
 
-### Test Server
+### Test Machine
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
