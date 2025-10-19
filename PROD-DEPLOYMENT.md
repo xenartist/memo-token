@@ -358,6 +358,24 @@ Save the output mint address - you'll need it for:
 - User documentation
 - Future operations
 
+### 7.4 Transfer Mint Authority to Program
+
+After creating the token, transfer the mint authority to the memo-mint program's PDA for decentralized control:
+
+```bash
+cd ~/memo-token
+
+# Build and run the authority transfer tool
+cargo run --bin admin-transfer-memo-token-mint-authority
+```
+
+**What this does:**
+- Calculates the PDA (Program Derived Address) for mint authority
+- The PDA is derived from seeds: `["mint_authority"]` and the `memo_mint` program ID
+- Transfers mint authority from `memo_token_mint-keypair.json` to this PDA
+- Uses Token-2022 program for the authority transfer
+- After this, only the memo-mint program can mint new tokens
+
 ---
 
 ## Step 8: Post-Deployment Security
