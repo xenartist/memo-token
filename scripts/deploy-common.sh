@@ -411,10 +411,11 @@ deploy_to_env() {
         
         print_success "${program} deployed: ${program_id}"
         
-        if [ "${ENV}" = "mainnet" ]; then
-            echo "   Explorer: https://explorer.solana.com/address/${program_id}"
+        # Determine explorer URL based on actual deployment cluster (not ENV)
+        if [[ "${CLUSTER}" =~ "mainnet" ]]; then
+            echo "   Explorer: https://explorer.mainnet.x1.xyz/address/${program_id}"
         else
-            echo "   Explorer: https://explorer.solana.com/address/${program_id}?cluster=custom&customUrl=${CLUSTER}"
+            echo "   Explorer: https://explorer.testnet.x1.xyz/address/${program_id}"
         fi
     done
     
