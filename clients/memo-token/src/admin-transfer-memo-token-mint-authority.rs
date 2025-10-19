@@ -22,77 +22,120 @@ fn get_rpc_url() -> String {
 }
 
 fn main() {
-    // Read command line arguments
+    // Default paths
+    let mint_keypair_path = shellexpand::tilde("~/.config/solana/memo-token/authority/memo_token_mint-keypair.json").to_string();
+    let program_keypair_path = "target/deploy/memo_mint-keypair.json";
+    
+    // Read command line arguments for optional overrides
     let args: Vec<String> = env::args().collect();
     
-    if args.len() < 3 {
-        println!("Usage: {} <mint_address_or_keypair> <program_id> [network_url]", args[0]);
-        println!("  mint_address_or_keypair: Either a mint address or path to mint keypair file");
-        println!("  program_id: The memo-token program ID");
-        println!("  network_url: Optional network URL, defaults to testnet X1");
+    // Check if user wants to see usage
+    if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
+        println!("Usage: {} [OPTIONS]", args[0]);
+        println!("\nThis tool transfers mint authority to the memo-mint program's PDA.");
+        println!("\nDefault paths:");
+        println!("  Mint keypair: ~/.config/solana/memo-token/authority/memo_token_mint-keypair.json");
+        println!("  Program keypair: target/deploy/memo_mint-keypair.json");
+        println!("\nOptions:");
+        println!("  --mint-keypair <path>     Override mint keypair path");
+        println!("  --program-keypair <path>  Override program keypair path");
+        println!("  --help, -h                Show this help message");
         return;
     }
     
-    let mint_input = &args[1];
-    let program_id_str = &args[2];
+    // Parse optional arguments
+    let mut custom_mint_path = None;
+    let mut custom_program_path = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mint-keypair" => {
+                if i + 1 < args.len() {
+                    custom_mint_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    println!("Error: --mint-keypair requires a path argument");
+                    process::exit(1);
+                }
+            },
+            "--program-keypair" => {
+                if i + 1 < args.len() {
+                    custom_program_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    println!("Error: --program-keypair requires a path argument");
+                    process::exit(1);
+                }
+            },
+            _ => {
+                println!("Unknown argument: {}", args[i]);
+                println!("Use --help to see available options");
+                process::exit(1);
+            }
+        }
+    }
     
-    // Use network URL from args or default to testnet X1
+    // Use custom paths or defaults
+    let final_mint_path = custom_mint_path.as_ref().map(|s| s.as_str()).unwrap_or(&mint_keypair_path);
+    let final_program_path = custom_program_path.as_ref().map(|s| s.as_str()).unwrap_or(program_keypair_path);
+    
+    println!("=== Memo Token Mint Authority Transfer ===");
+    println!("Mint keypair path: {}", final_mint_path);
+    println!("Program keypair path: {}", final_program_path);
+    println!();
+    
+    // Load mint keypair and get address
+    let mint_address = match read_keypair_file(final_mint_path) {
+        Ok(keypair) => {
+            let pubkey = keypair.pubkey();
+            println!("✓ Loaded mint keypair");
+            println!("  Mint address: {}", pubkey);
+            pubkey
+        },
+        Err(e) => {
+            println!("✗ Error: Could not load mint keypair from: {}", final_mint_path);
+            println!("  Error details: {}", e);
+            println!("\nPlease ensure:");
+            println!("  1. The file exists at the specified path");
+            println!("  2. The file is a valid Solana keypair JSON file");
+            process::exit(1);
+        }
+    };
+    
+    // Load program keypair and get program ID
+    let program_id = match read_keypair_file(final_program_path) {
+        Ok(keypair) => {
+            let pubkey = keypair.pubkey();
+            println!("✓ Loaded program keypair");
+            println!("  Program ID: {}", pubkey);
+            pubkey
+        },
+        Err(e) => {
+            println!("✗ Error: Could not load program keypair from: {}", final_program_path);
+            println!("  Error details: {}", e);
+            println!("\nPlease ensure:");
+            println!("  1. The file exists at the specified path");
+            println!("  2. You have built the program (run: anchor build)");
+            println!("  3. The file is a valid Solana keypair JSON file");
+            process::exit(1);
+        }
+    };
+    
+    // Use network URL from environment or default to testnet X1
     let rpc_url = get_rpc_url();
     
-    println!("Connecting to network at: {}", rpc_url);
+    println!("\nConnecting to network: {}", rpc_url);
     let client = RpcClient::new_with_commitment(
         rpc_url.to_string(),
         CommitmentConfig::confirmed(),
     );
-
-    // Try to parse the input as either a pubkey or load it as a keypair file
-    let mint_address = match Pubkey::from_str(mint_input) {
-        Ok(pubkey) => {
-            println!("Interpreted input as a mint public key: {}", pubkey);
-            pubkey
-        },
-        Err(_) => {
-            // Try loading it as a keypair file
-            println!("Input is not a valid public key, trying to load as keypair file...");
-            
-            let expanded_path = shellexpand::tilde(mint_input).to_string();
-            match read_keypair_file(&expanded_path) {
-                Ok(keypair) => {
-                    let pubkey = keypair.pubkey();
-                    println!("Loaded keypair with public key: {}", pubkey);
-                    pubkey
-                },
-                Err(e) => {
-                    println!("Error: Could not interpret input as public key or keypair file.");
-                    println!("If providing a public key, it should be a Base58 encoded string (typically 32-44 characters).");
-                    println!("If providing a keypair file, make sure the path is correct.");
-                    println!("Error details: {}", e);
-                    process::exit(1);
-                }
-            }
-        }
-    };
-    
-    println!("Using token mint address: {}", mint_address);
 
     // Load payer keypair (wallet that will pay for transaction)
     let payer = read_keypair_file(
         shellexpand::tilde("~/.config/solana/memo-token/authority/deploy_admin-keypair.json").to_string()
     ).expect("Failed to read payer keypair file");
     
-    println!("Using payer: {}", payer.pubkey());
-
-    // Parse program ID
-    let program_id = match Pubkey::from_str(program_id_str) {
-        Ok(pubkey) => pubkey,
-        Err(e) => {
-            println!("Error: Invalid program ID. Program ID should be a Base58 encoded string.");
-            println!("Error details: {}", e);
-            process::exit(1);
-        }
-    };
-    
-    println!("Program ID: {}", program_id);
+    println!("✓ Using payer: {}", payer.pubkey());
 
     // Calculate PDA for mint authority
     let (mint_authority_pda, _bump) = Pubkey::find_program_address(
@@ -100,7 +143,8 @@ fn main() {
         &program_id,
     );
     
-    println!("Calculated mint authority PDA: {}", mint_authority_pda);
+    println!("✓ Calculated mint authority PDA: {}", mint_authority_pda);
+    println!();
 
     // First, check if the mint actually exists and verify it's a Token-2022 mint
     match client.get_account(&mint_address) {
@@ -108,27 +152,29 @@ fn main() {
             let owner = account.owner;
             let token_2022_id = Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap();
             
-            println!("Mint account owner: {}", owner);
+            println!("Mint account verification:");
+            println!("  Owner: {}", owner);
             
             // Only support Token-2022
             if owner == token_2022_id {
-                println!("This is a Token-2022 token mint.");
+                println!("  ✓ This is a Token-2022 token mint.");
+                println!();
                 transfer_token_2022_authority(&client, &mint_address, &mint_authority_pda, &payer);
             } else {
-                println!("Error: This tool only supports Token-2022 mints!");
-                println!("Expected owner to be Token-2022 ({})", token_2022_id);
-                println!("Actual owner: {}", owner);
-                println!("If you need to transfer authority for a legacy SPL token, please use the spl-token CLI tool:");
+                println!("  ✗ Error: This tool only supports Token-2022 mints!");
+                println!("  Expected owner: Token-2022 ({})", token_2022_id);
+                println!("  Actual owner: {}", owner);
+                println!("\nIf you need to transfer authority for a legacy SPL token, please use the spl-token CLI tool:");
                 println!("spl-token authorize {} mint {}", mint_address, mint_authority_pda);
                 process::exit(1);
             }
         },
         Err(e) => {
-            println!("Error: Could not find mint account. Make sure:");
-            println!("1. The mint address is correct");
-            println!("2. You are connected to the correct network");
-            println!("3. The account exists on this network");
-            println!("Error details: {}", e);
+            println!("✗ Error: Could not find mint account. Make sure:");
+            println!("  1. The mint address is correct");
+            println!("  2. You are connected to the correct network");
+            println!("  3. The account exists on this network");
+            println!("  Error details: {}", e);
             process::exit(1);
         }
     }
@@ -229,11 +275,11 @@ fn transfer_token_2022_authority(
     println!("\nTransferring mint authority to PDA using Token-2022 program...");
     match client.send_and_confirm_transaction_with_spinner(&transfer_auth_transaction) {
         Ok(sig) => {
-            println!("\nMint authority transferred to PDA successfully!");
-            println!("Transaction signature: {}", sig);
+            println!("\n✓ Mint authority transferred to PDA successfully!");
+            println!("  Transaction signature: {}", sig);
             println!("\nToken Info Summary:");
-            println!("Mint address: {}", mint_address);
-            println!("Mint authority (PDA): {}", mint_authority_pda);
+            println!("  Mint address: {}", mint_address);
+            println!("  Mint authority (PDA): {}", mint_authority_pda);
             println!("\nSave these addresses for future use!");
             
             // Optional: Create a token account for the current wallet
@@ -241,8 +287,8 @@ fn transfer_token_2022_authority(
             println!("spl-token create-account {} --program-id {}", mint_address, TOKEN_2022_PROGRAM_ID);
         },
         Err(e) => {
-            println!("Error transferring mint authority: {}", e);
-            println!("Detailed error: {:?}", e);
+            println!("✗ Error transferring mint authority: {}", e);
+            println!("  Detailed error: {:?}", e);
             
             println!("\nYou can try using the spl-token CLI tool instead:");
             println!("spl-token authorize {} mint {} --program-id {}", 
