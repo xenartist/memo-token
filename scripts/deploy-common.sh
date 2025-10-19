@@ -379,7 +379,7 @@ deploy_to_env() {
         for program in "${SELECTED_PROGRAMS[@]}"; do
             local program_dash=$(get_program_name_dash "${program}")
             print_info "Building ${program_dash}..."
-            anchor build --features "${FEATURE_FLAG}" -p "${program_dash}"
+            anchor build -p "${program_dash}" -- --features "${FEATURE_FLAG}"
         done
     else
         for program in "${SELECTED_PROGRAMS[@]}"; do
