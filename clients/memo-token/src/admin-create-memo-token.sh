@@ -4,7 +4,7 @@ set -e  # Exit on error
 # Default values
 TOKEN_NAME="MEMO Engraves Memories Onchain"
 TOKEN_SYMBOL="MEMO"
-TOKEN_URI="https://raw.githubusercontent.com/xenartist/memo-token/refs/heads/dev/metadata/memo_token-metadata.json"
+TOKEN_URI="https://raw.githubusercontent.com/xenartist/memo-token/refs/heads/main/metadata/memo_token-metadata.json"
 DECIMALS=6
 MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/memo_token_mint-keypair.json"
 
