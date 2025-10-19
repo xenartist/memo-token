@@ -11,7 +11,7 @@ memo_chat = "54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF"
 memo_profile = "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US"
 memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 
-# [programs.mainnet]
+[programs.mainnet]
 memo_mint = "3rncCFCJ6sGULiUKXXziLL4AExejR1UmNSvvTj8czLgB"
 memo_burn = "811qP5g565ttsizvc1qTrW65YcBpJ7ce98xoMvu6wQHu"
 memo_chat = "7pfQ8w5hETwoejmUV18Fm4xkfSjp23K6LCwHSUdnP43e"
