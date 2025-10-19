@@ -5,7 +5,6 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
-use anchor_lang::solana_program::pubkey;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
 // Program ID - different for testnet and mainnet
