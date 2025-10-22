@@ -16,7 +16,7 @@ declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
 
 // Authorized mint pubkey - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1g5dtnxeN6zVdHMYWCCg3Qgre8WGFNs7YF2Mbc");
+pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
