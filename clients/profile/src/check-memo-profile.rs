@@ -7,7 +7,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
 };
 use std::str::FromStr;
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -71,8 +71,9 @@ fn check_user_profile(user_pubkey: Pubkey) -> Result<(), Box<dyn std::error::Err
     // Create RPC client
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
-    // Program IDs
-    let memo_profile_program_id = Pubkey::from_str("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US")?;
+    // Get Program ID from Anchor.toml
+    let memo_profile_program_id = get_program_id("memo_profile")
+        .map_err(|e| format!("Failed to get memo_profile program ID: {}", e))?;
 
     // Derive profile PDA
     let (profile_pda, profile_bump) = Pubkey::find_program_address(

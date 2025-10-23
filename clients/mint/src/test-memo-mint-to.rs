@@ -21,7 +21,7 @@ use serde_json;
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Mint-To Test Client ===\n");
@@ -612,8 +612,7 @@ fn load_payer_keypair() -> solana_sdk::signature::Keypair {
 
 fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey, Pubkey) {
     // Program addresses
-    let program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
-        .expect("Invalid program ID");
+    let program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
     

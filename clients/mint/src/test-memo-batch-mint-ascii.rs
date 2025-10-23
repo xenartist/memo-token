@@ -94,7 +94,7 @@ fn create_exact_length_ascii_memo(target_length: usize) -> Result<Vec<u8>, Box<d
 const EXPECTED_CATEGORY: &str = "mint";
 const EXPECTED_OPERATION: &str = "batch_mint";
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Token batch mint test client (PURE ASCII STRING FORMAT) ===\n");
@@ -336,8 +336,7 @@ fn load_payer_keypair() -> solana_sdk::signature::Keypair {
 }
 
 fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
-    let program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
-        .expect("Invalid program id");
+    let program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
     

@@ -15,7 +15,7 @@ use std::{str::FromStr, env, process};
 // Token-2022 program ID constant
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() {
     // Default paths

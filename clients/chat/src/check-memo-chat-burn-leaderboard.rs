@@ -5,7 +5,7 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-CHAT BURN LEADERBOARD CHECKER ===");
@@ -18,8 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     // Program address
-    let memo_chat_program_id = Pubkey::from_str("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF")
-        .expect("Invalid memo-chat program ID");
+    let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
 
     println!("🔍 Connecting to: {}", get_rpc_url());
     println!("📋 Memo-chat program: {}", memo_chat_program_id);

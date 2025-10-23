@@ -22,6 +22,6 @@ memo_project = "FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa"
 url = "https://api.apr.dev"
 
 [provider]
-# testnet
-cluster = "https://rpc.testnet.x1.xyz"
+cluster = "https://rpc.testnet.x1.xyz" # or "https://rpc.mainnet.x1.xyz"
 wallet = "~/.config/solana/memo-token/authority/deploy_admin-keypair.json"
+program_env = "testnet"  # Which program IDs to use: "testnet" or "mainnet"

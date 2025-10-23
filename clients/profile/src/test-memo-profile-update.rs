@@ -112,7 +112,7 @@ struct UpdateParams {
     pub test_description: String,         // Description of what this test validates
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -231,8 +231,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: {}", payer.pubkey());
 
     // Program IDs
-    let memo_profile_program_id = Pubkey::from_str("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US")?;
-    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")?;
+    let memo_profile_program_id = get_program_id("memo_profile")?;
+    let memo_burn_program_id = get_program_id("memo_burn")?;
     let mint_pubkey = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")?;
 
     println!("Memo Profile Program: {}", memo_profile_program_id);

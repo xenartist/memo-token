@@ -145,7 +145,7 @@ impl ProjectCreationData {
     }
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT CREATE PROJECT TEST ===");
@@ -162,10 +162,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).expect("Failed to read keypair file");
 
     // Program addresses
-    let memo_project_program_id = Pubkey::from_str("ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx")
-        .expect("Invalid memo-project program ID");
-    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
-        .expect("Invalid memo-burn program ID");
+    let memo_project_program_id = get_program_id("memo_project").expect("Failed to get memo_project program ID");
+    let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 

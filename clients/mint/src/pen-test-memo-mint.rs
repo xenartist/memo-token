@@ -19,7 +19,7 @@ use std::collections::HashMap;
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parse command line arguments
@@ -78,8 +78,7 @@ fn get_test_config() -> (RpcClient, Keypair, Pubkey, Pubkey, Pubkey) {
     let payer = read_keypair_file("/Users/bobdos/.config/solana/id.json")
         .expect("Failed to read keypair file");
     
-    let memo_mint_program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
-        .expect("Invalid program ID");
+    let memo_mint_program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     
     let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");

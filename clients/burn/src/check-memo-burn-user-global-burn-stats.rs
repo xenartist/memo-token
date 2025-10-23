@@ -7,7 +7,7 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BURN USER GLOBAL BURN STATISTICS CHECKER ===");
@@ -28,8 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Program ID
-    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
-        .expect("Invalid memo-burn program ID");
+    let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
 
     println!("📋 Memo-burn program: {}", memo_burn_program_id);
     println!();

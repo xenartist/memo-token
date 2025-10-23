@@ -105,7 +105,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Resu
     Ok(memo_bytes)
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -369,10 +369,8 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     ).expect("Failed to read keypair file");
 
     // Program addresses
-    let memo_chat_program_id = Pubkey::from_str("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF")
-        .expect("Invalid memo-chat program ID");
-    let memo_mint_program_id = Pubkey::from_str("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy")
-        .expect("Invalid memo-mint program ID");
+    let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
+    let memo_mint_program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 

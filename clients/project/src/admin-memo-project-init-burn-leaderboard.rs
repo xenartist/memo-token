@@ -22,7 +22,7 @@ fn get_admin_authority_keypair_path() -> PathBuf {
         .join(".config/solana/memo-token/authority/deploy_admin-keypair.json")
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT INITIALIZE BURN LEADERBOARD (ADMIN ONLY) ===");
@@ -46,8 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Program address
-    let memo_project_program_id = Pubkey::from_str("ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx")
-        .expect("Invalid memo-project program ID");
+    let memo_project_program_id = get_program_id("memo_project").expect("Failed to get memo_project program ID");
 
     // Calculate burn leaderboard PDA
     let (burn_leaderboard_pda, bump) = Pubkey::find_program_address(

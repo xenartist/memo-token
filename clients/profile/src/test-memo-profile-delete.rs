@@ -19,7 +19,7 @@ struct DeleteParams {
     pub test_description: String,         // Description of what this test validates
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: {}", payer.pubkey());
 
     // Program ID
-    let memo_profile_program_id = Pubkey::from_str("BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US")?;
+    let memo_profile_program_id = get_program_id("memo_profile")?;
 
     println!("Memo Profile Program: {}", memo_profile_program_id);
 

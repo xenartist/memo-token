@@ -14,7 +14,7 @@ use std::str::FromStr;
 use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use solana_system_interface::program as system_program;
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 // Get admin authority keypair path (unified for all environments)
 fn get_admin_authority_keypair_path() -> PathBuf {
@@ -46,8 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Program address
-    let memo_chat_program_id = Pubkey::from_str("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF")
-        .expect("Invalid memo-chat program ID");
+    let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
 
     // Calculate global counter PDA
     let (global_counter_pda, bump) = Pubkey::find_program_address(

@@ -170,7 +170,7 @@ struct TestParams {
     pub test_description: String,   // Description of what this test validates
 }
 
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -390,10 +390,8 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     ).expect("Failed to read keypair file");
 
     // Program addresses
-    let memo_chat_program_id = Pubkey::from_str("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF")
-        .expect("Invalid memo-chat program ID");
-    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
-        .expect("Invalid memo-burn program ID");
+    let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
+    let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
     let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
         .expect("Invalid mint address");
 

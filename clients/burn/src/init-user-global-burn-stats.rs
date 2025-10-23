@@ -12,7 +12,7 @@ use solana_sdk::{
 use sha2::{Sha256, Digest};
 use std::str::FromStr;
 use solana_system_interface::program as system_program;
-use memo_token_client::get_rpc_url;
+use memo_token_client::{get_rpc_url, get_program_id};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BURN USER GLOBAL BURN STATISTICS INITIALIZATION ===");
@@ -31,8 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: {}", user.pubkey());
 
     // Program ID
-    let memo_burn_program_id = Pubkey::from_str("FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP")
-        .expect("Invalid memo-burn program ID");
+    let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
 
     // Derive user global burn statistics PDA
     let (user_global_burn_stats_pda, bump) = Pubkey::find_program_address(
