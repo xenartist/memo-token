@@ -14,18 +14,13 @@ use std::str::FromStr;
 use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use solana_system_interface::program as system_program;
+use memo_token_client::get_rpc_url;
 
 // Get admin authority keypair path (unified for all environments)
 fn get_admin_authority_keypair_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME environment variable not set");
     PathBuf::from(home)
         .join(".config/solana/memo-token/authority/deploy_admin-keypair.json")
-}
-
-// Get RPC URL from environment or use default testnet
-fn get_rpc_url() -> String {
-    std::env::var("X1_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

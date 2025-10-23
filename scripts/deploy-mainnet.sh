@@ -8,7 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="mainnet"
-CLUSTER="https://rpc.mainnet.x1.xyz"
 FEATURE_FLAG="mainnet"  # Use mainnet feature
 
 # Environment validation checks
@@ -16,41 +15,30 @@ echo ""
 print_warning "MAINNET ENVIRONMENT VALIDATION"
 echo ""
 
-# Check 1: Verify solana config is pointing to mainnet
-print_info "Check 1: Verifying Solana CLI configuration..."
-SOLANA_CONFIG_URL=$(solana config get | grep "RPC URL" | awk '{print $3}')
-echo "  Current Solana RPC URL: ${SOLANA_CONFIG_URL}"
+# Read cluster from Anchor.toml (single source of truth)
+print_info "Reading configuration from Anchor.toml..."
+CLUSTER=$(grep "^cluster" Anchor.toml | awk -F'"' '{print $2}')
 
-if [[ ! "${SOLANA_CONFIG_URL}" =~ "mainnet" ]]; then
-    print_error "Solana CLI configuration is NOT mainnet!"
-    echo "  Current config: ${SOLANA_CONFIG_URL}"
+if [ -z "${CLUSTER}" ]; then
+    print_error "Could not read cluster from Anchor.toml"
+    echo "Please ensure Anchor.toml has [provider] section with cluster defined"
+    exit 1
+fi
+
+echo "  Cluster: ${CLUSTER}"
+
+# Verify it's a mainnet cluster
+if [[ ! "${CLUSTER}" =~ "mainnet" ]]; then
+    print_error "Anchor.toml cluster is NOT mainnet!"
+    echo "  Current value: ${CLUSTER}"
     echo "  Expected: should contain 'mainnet'"
     echo ""
-    echo "Please run the following command to switch to mainnet:"
-    echo "  solana config set --url https://rpc.mainnet.x1.xyz"
+    echo "Please update Anchor.toml [provider] section:"
+    echo "  cluster = \"https://rpc.mainnet.x1.xyz\""
     echo ""
     exit 1
 fi
-print_success "Solana CLI configuration correct (mainnet)"
-
-# Check 2: Verify X1_RPC_URL environment variable if set
-print_info "Check 2: Verifying X1_RPC_URL environment variable..."
-if [ -n "${X1_RPC_URL}" ]; then
-    echo "  X1_RPC_URL: ${X1_RPC_URL}"
-    if [[ ! "${X1_RPC_URL}" =~ "mainnet" ]]; then
-        print_error "X1_RPC_URL environment variable is NOT mainnet!"
-        echo "  Current value: ${X1_RPC_URL}"
-        echo "  Expected: should contain 'mainnet'"
-        echo ""
-        echo "Please run the following command to set correct environment variable:"
-        echo "  export X1_RPC_URL=https://rpc.mainnet.x1.xyz"
-        echo ""
-        exit 1
-    fi
-    print_success "X1_RPC_URL environment variable correct (mainnet)"
-else
-    print_warning "X1_RPC_URL environment variable not set (optional)"
-fi
+print_success "Anchor.toml configuration correct (mainnet)"
 
 echo ""
 print_success "Environment validation passed"

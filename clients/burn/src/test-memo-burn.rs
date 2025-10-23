@@ -17,6 +17,7 @@ use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
+use memo_token_client::get_rpc_url;
 
 // Borsh memo structure (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, BorshSchema, Debug)]
@@ -31,12 +32,6 @@ pub struct BurnMemo {
 
 // Current version constant
 const BURN_MEMO_VERSION: u8 = 1;
-
-// Get RPC URL from environment or use default testnet
-fn get_rpc_url() -> String {
-    std::env::var("X1_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments

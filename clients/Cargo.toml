@@ -3,6 +3,10 @@ name = "memo-token-test-client"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "memo_token_client"
+path = "src/lib.rs"
+
 [[bin]]
 name = "test-memo-mint"
 path = "mint/src/test-memo-mint.rs"
@@ -125,7 +129,9 @@ spl-associated-token-account = "7.0.0"
 spl-memo = "6.0.0"
 shellexpand = "3.1.0"
 sha2 = "0.10.8"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 borsh = "0.10.4"

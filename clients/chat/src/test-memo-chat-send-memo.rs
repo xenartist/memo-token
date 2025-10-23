@@ -105,11 +105,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Resu
     Ok(memo_bytes)
 }
 
-// Get RPC URL from environment or use default testnet
-fn get_rpc_url() -> String {
-    std::env::var("X1_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
-}
+use memo_token_client::get_rpc_url;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments

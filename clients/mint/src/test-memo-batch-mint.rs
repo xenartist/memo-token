@@ -87,11 +87,7 @@ const BATCH_MINT_MEMO_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "mint";
 const EXPECTED_OPERATION: &str = "batch_mint";
 
-// Get RPC URL from environment or use default testnet
-fn get_rpc_url() -> String {
-    std::env::var("X1_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
-}
+use memo_token_client::get_rpc_url;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Token batch mint test client (BORSH FORMAT) ===\n");

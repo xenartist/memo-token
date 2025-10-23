@@ -7,12 +7,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
 };
 use std::str::FromStr;
-
-// Get RPC URL from environment or use default testnet
-fn get_rpc_url() -> String {
-    std::env::var("X1_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string())
-}
+use memo_token_client::get_rpc_url;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -68,7 +63,7 @@ fn check_own_profile() -> Result<(), Box<dyn std::error::Error>> {
 
 fn check_user_profile(user_pubkey: Pubkey) -> Result<(), Box<dyn std::error::Error>> {
     // Constants
-    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://rpc.testnet.x1.xyz".to_string());
+    let rpc_url = get_rpc_url();
     
     println!("=== CHECK MEMO PROFILE ===");
     println!("User: {}", user_pubkey);
@@ -326,9 +321,9 @@ fn print_usage() {
     println!("  own                    - Check your own profile");
     println!("  user <pubkey>          - Check a specific user's profile");
     println!();
-    println!("Environment Variables:");
-    println!("  RPC_URL      - Solana RPC endpoint (default: testnet)");
-    println!("  WALLET_PATH  - Path to wallet keypair file (for 'own' command)");
+    println!("Configuration:");
+    println!("  RPC URL and wallet path are read from Anchor.toml");
+    println!("  Override wallet: Set WALLET_PATH environment variable");
     println!();
     println!("Examples:");
     println!("  check-memo-profile own");

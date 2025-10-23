@@ -2289,6 +2289,7 @@ dependencies = [
  "chrono",
  "hex",
  "rand 0.8.5",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "shellexpand",
@@ -2299,6 +2300,7 @@ dependencies = [
  "spl-associated-token-account",
  "spl-memo",
  "spl-token-2022 9.0.0",
+ "toml 0.8.23",
  "zstd",
 ]
 
