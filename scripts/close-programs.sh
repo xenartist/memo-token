@@ -160,14 +160,14 @@ for program in "${VALIDATED_PROGRAMS[@]}"; do
     echo "Closing ${program}..."
     
     if solana program close ${PROGRAM_ID} \
-        --upgrade-authority "${UPGRADE_AUTHORITY_KEYPAIR}" \
+        --authority "${UPGRADE_AUTHORITY_KEYPAIR}" \
         --bypass-warning 2>&1; then
         print_success "${program} closed successfully"
     else
         print_error "Failed to close ${program}"
         echo "  This might mean:"
         echo "  - Program doesn't exist on chain"
-        echo "  - Wrong upgrade authority"
+        echo "  - Wrong authority"
         echo "  - Insufficient balance for transaction fees"
     fi
     echo ""
