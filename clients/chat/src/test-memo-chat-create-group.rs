@@ -170,7 +170,7 @@ struct TestParams {
     pub test_description: String,   // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -392,8 +392,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     // Program addresses
     let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
     let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
-    let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("Invalid mint address");
+    let mint = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
 
     // Calculate global counter PDA and get next group_id
     let (global_counter_pda, _) = Pubkey::find_program_address(

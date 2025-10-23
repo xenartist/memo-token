@@ -19,7 +19,7 @@ use std::collections::HashMap;
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parse command line arguments
@@ -80,8 +80,7 @@ fn get_test_config() -> (RpcClient, Keypair, Pubkey, Pubkey, Pubkey) {
     
     let memo_mint_program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     
-    let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("Invalid mint address");
+    let mint_address = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
     
     let token_account = get_associated_token_address_with_program_id(
         &payer.pubkey(),

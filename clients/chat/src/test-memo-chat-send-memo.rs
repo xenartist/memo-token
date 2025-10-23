@@ -105,7 +105,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, sender: &Pubkey) -> Resu
     Ok(memo_bytes)
 }
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -371,8 +371,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     // Program addresses
     let memo_chat_program_id = get_program_id("memo_chat").expect("Failed to get memo_chat program ID");
     let memo_mint_program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
-    let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("Invalid mint address");
+    let mint = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
 
     // Calculate chat group PDA
     let (chat_group_pda, _) = Pubkey::find_program_address(

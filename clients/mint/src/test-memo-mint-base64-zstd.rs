@@ -30,7 +30,7 @@ pub struct ComparisonMemoData {
     pub content: String,
 }
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Format CU Simulation Analysis with ZSTD Compression ===");
@@ -860,8 +860,7 @@ fn load_payer_keypair() -> solana_sdk::signature::Keypair {
 
 fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     let program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
-    let mint_address = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("Invalid mint address");
+    let mint_address = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
     
     let (mint_authority_pda, _bump) = Pubkey::find_program_address(
         &[b"mint_authority"],

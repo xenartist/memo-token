@@ -3,7 +3,7 @@
 /// This demonstrates how all client programs should read configuration
 /// from Anchor.toml instead of hardcoding values.
 
-use memo_token_client::{get_rpc_url, get_wallet_path, get_program_env, get_program_id, get_all_program_ids};
+use memo_token_client::{get_rpc_url, get_wallet_path, get_program_env, get_program_id, get_all_program_ids, get_token_mint, get_all_token_mints};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== UNIFIED CONFIGURATION TEST ===");
@@ -48,6 +48,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
     
+    // 6. Token Mints
+    println!("6. Token Mint Configuration:");
+    match get_token_mint("memo_token") {
+        Ok(mint) => {
+            println!("✓ Loaded memo_token mint ({}): {}", program_env, mint);
+            println!("   memo_token: {}", mint);
+        }
+        Err(e) => {
+            println!("❌ Failed to load memo_token: {}", e);
+        }
+    }
+    println!();
+    
+    println!("7. All Token Mints:");
+    match get_all_token_mints() {
+        Ok(all_mints) => {
+            for (name, mint) in all_mints.iter() {
+                println!("   {} = {}", name, mint);
+            }
+        }
+        Err(e) => {
+            println!("❌ Failed to load token mints: {}", e);
+        }
+    }
+    println!();
+    
     println!("=== CONFIGURATION TEST COMPLETE ===");
     println!();
     println!("Configuration Summary:");
@@ -55,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - RPC cluster: {}", if rpc_url.contains("testnet") { "testnet" } else { "mainnet" });
     println!("  - Program environment: {}", program_env);
     println!("  - Total programs loaded: {}", all_programs.len());
+    println!("  - Token configuration: Unified with program_env");
     
     Ok(())
 }

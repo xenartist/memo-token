@@ -4,5 +4,13 @@
 pub mod config;
 
 // Re-export commonly used functions
-pub use config::{get_rpc_url, get_wallet_path, get_program_env, get_program_id, get_all_program_ids};
+pub use config::{
+    get_rpc_url, 
+    get_wallet_path, 
+    get_program_env, 
+    get_program_id, 
+    get_all_program_ids,
+    get_token_mint,
+    get_all_token_mints,
+};
 

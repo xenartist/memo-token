@@ -17,7 +17,7 @@ use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 // Borsh memo structure (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, BorshSchema, Debug)]
@@ -106,8 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program and token addresses
     let program_id = get_program_id("memo_burn")
         .expect("Failed to get memo_burn program ID");
-    let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")
-        .expect("Invalid mint address");
+    let mint = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
 
     // Get user's token account
     let token_account = get_associated_token_address_with_program_id(

@@ -18,6 +18,12 @@ memo_chat = "7pfQ8w5hETwoejmUV18Fm4xkfSjp23K6LCwHSUdnP43e"
 memo_profile = "8eHwuUazmE5Nd3VAWQu91z5qimPyS2xJsbiJvRhm6Diu"
 memo_project = "FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa"
 
+[tokens.testnet]
+memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"
+
+[tokens.mainnet]
+memo_token = "memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick"
+
 [registry]
 url = "https://api.apr.dev"
 

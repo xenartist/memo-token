@@ -12,10 +12,20 @@ struct AnchorToml {
     provider: Provider,
     #[serde(default)]
     programs: Programs,
+    #[serde(default)]
+    tokens: Tokens,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct Programs {
+    #[serde(default)]
+    testnet: HashMap<String, String>,
+    #[serde(default)]
+    mainnet: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Tokens {
     #[serde(default)]
     testnet: HashMap<String, String>,
     #[serde(default)]
@@ -207,6 +217,87 @@ pub fn get_all_program_ids() -> HashMap<String, Pubkey> {
     }
     
     result
+}
+
+/// Get token mint address by name based on current program_env
+/// 
+/// # Arguments
+/// * `token_name` - Name of the token (e.g., "memo_token")
+/// 
+/// # Returns
+/// The Pubkey of the token mint for the current environment
+/// 
+/// # Example
+/// ```rust
+/// let mint = get_token_mint("memo_token")?;
+/// ```
+pub fn get_token_mint(token_name: &str) -> Result<Pubkey, Box<dyn std::error::Error>> {
+    let anchor_toml_path = get_anchor_toml_path();
+    let config = read_anchor_config(&anchor_toml_path)?;
+    let env = &config.provider.program_env;
+    
+    // Validate program_env
+    if env != "testnet" && env != "mainnet" {
+        return Err(format!("Invalid program_env '{}'. Must be 'testnet' or 'mainnet'", env).into());
+    }
+    
+    let token_map = if env == "testnet" {
+        &config.tokens.testnet
+    } else {
+        &config.tokens.mainnet
+    };
+    
+    // Support both underscore and dash formats
+    let normalized_name = token_name.replace("-", "_");
+    
+    if let Some(mint_str) = token_map.get(&normalized_name).or_else(|| token_map.get(token_name)) {
+        match Pubkey::from_str(mint_str) {
+            Ok(pubkey) => {
+                println!("✓ Loaded {} token mint ({}): {}", token_name, env, pubkey);
+                Ok(pubkey)
+            },
+            Err(e) => Err(format!("Invalid token mint address for {}: {}", token_name, e).into())
+        }
+    } else {
+        Err(format!("Token '{}' not found in Anchor.toml [tokens.{}]", token_name, env).into())
+    }
+}
+
+/// Get all token mints for the current environment
+/// 
+/// # Returns
+/// HashMap of token name -> Pubkey for all configured tokens
+/// 
+/// # Example
+/// ```rust
+/// let all_mints = get_all_token_mints()?;
+/// for (name, mint) in all_mints {
+///     println!("{}: {}", name, mint);
+/// }
+/// ```
+pub fn get_all_token_mints() -> Result<std::collections::HashMap<String, Pubkey>, Box<dyn std::error::Error>> {
+    let anchor_toml_path = get_anchor_toml_path();
+    let config = read_anchor_config(&anchor_toml_path)?;
+    let env = &config.provider.program_env;
+    
+    // Validate program_env
+    if env != "testnet" && env != "mainnet" {
+        return Err(format!("Invalid program_env '{}'. Must be 'testnet' or 'mainnet'", env).into());
+    }
+    
+    let token_map = if env == "testnet" {
+        &config.tokens.testnet
+    } else {
+        &config.tokens.mainnet
+    };
+    
+    let mut result = std::collections::HashMap::new();
+    for (name, mint_str) in token_map {
+        let mint = Pubkey::from_str(mint_str)?;
+        result.insert(name.clone(), mint);
+    }
+    
+    Ok(result)
 }
 
 #[cfg(test)]

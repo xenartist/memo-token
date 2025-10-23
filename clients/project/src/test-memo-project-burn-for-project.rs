@@ -138,7 +138,7 @@ struct TestParams {
     pub test_description: String,  // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Program IDs
     let memo_project_program_id = get_program_id("memo_project")?;
     let memo_burn_program_id = get_program_id("memo_burn")?;
-    let mint = Pubkey::from_str("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1")?;
+    let mint = get_token_mint("memo_token")?;
 
     // Setup client and keypair
     let rpc_url = get_rpc_url();
