@@ -308,9 +308,8 @@ verify_configuration() {
 deploy_to_env() {
     local ENV=$1
     local CLUSTER=$2
-    local WALLET=$3
-    local FEATURE_FLAG=$4
-    shift 4
+    local FEATURE_FLAG=$3
+    shift 3
     local SELECTED_PROGRAMS=("$@")
     
     # If no programs specified, deploy all
@@ -357,7 +356,6 @@ deploy_to_env() {
     echo ""
     print_warning "Ready to deploy to $(to_upper "${ENV}")"
     echo "  Cluster: ${CLUSTER}"
-    echo "  Wallet: ${WALLET}"
     echo "  Programs: ${SELECTED_PROGRAMS[*]}"
     echo ""
     read -p "Proceed with deployment? (yes/no): " confirm
@@ -396,7 +394,6 @@ deploy_to_env() {
     print_info "Step 3: Deploying to ${CLUSTER}..."
     
     export ANCHOR_PROVIDER_URL="${CLUSTER}"
-    export ANCHOR_WALLET="${WALLET}"
     
     for program in "${SELECTED_PROGRAMS[@]}"; do
         echo ""

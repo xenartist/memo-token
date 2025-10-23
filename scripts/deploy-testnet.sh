@@ -9,7 +9,6 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="testnet"
 CLUSTER="https://rpc.testnet.x1.xyz"
-WALLET="${ANCHOR_WALLET:-${HOME}/.config/solana/memo-token/authority/deploy_admin-keypair.json}"
 FEATURE_FLAG=""  # No feature flag for testnet (default)
 
 # Environment validation checks
@@ -58,4 +57,4 @@ print_success "Environment validation passed"
 echo ""
 
 # Pass all arguments as programs to deploy
-deploy_to_env "${ENV}" "${CLUSTER}" "${WALLET}" "${FEATURE_FLAG}" "$@"
+deploy_to_env "${ENV}" "${CLUSTER}" "${FEATURE_FLAG}" "$@"

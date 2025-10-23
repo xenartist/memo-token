@@ -24,4 +24,4 @@ url = "https://api.apr.dev"
 [provider]
 # testnet
 cluster = "https://rpc.testnet.x1.xyz"
-wallet = "~/.config/solana/id.json"
+wallet = "~/.config/solana/memo-token/authority/deploy_admin-keypair.json"

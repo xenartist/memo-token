@@ -12,7 +12,6 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="mainnet"  # Use mainnet configuration for validation
 CLUSTER="https://rpc.testnet.x1.xyz"
-WALLET="${ANCHOR_WALLET:-${HOME}/.config/solana/memo-token/authority/deploy_admin-keypair.json}"
 FEATURE_FLAG="mainnet"  # Use mainnet feature flag
 
 # Environment validation checks
@@ -100,7 +99,7 @@ if [ "$final_check" != "yes" ]; then
 fi
 
 # Pass all arguments as programs to deploy
-deploy_to_env "${ENV}" "${CLUSTER}" "${WALLET}" "${FEATURE_FLAG}" "$@"
+deploy_to_env "${ENV}" "${CLUSTER}" "${FEATURE_FLAG}" "$@"
 
 # Post-deployment reminder
 echo ""
