@@ -62,7 +62,7 @@ fi
 # Validate and normalize program names
 VALIDATED_PROGRAMS=()
 for prog in "${SELECTED_PROGRAMS[@]}"; do
-    local normalized=$(get_program_name_underscore "$prog")
+    normalized=$(get_program_name_underscore "$prog")
     if is_valid_program "$normalized"; then
         VALIDATED_PROGRAMS+=("$normalized")
     else
