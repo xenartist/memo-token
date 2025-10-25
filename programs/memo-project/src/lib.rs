@@ -13,7 +13,7 @@ use std::str::FromStr;
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa");
+declare_id!("6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx");

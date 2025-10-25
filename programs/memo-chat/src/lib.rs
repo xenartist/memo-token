@@ -15,7 +15,7 @@ use base64::{Engine as _, engine::general_purpose};
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("7pfQ8w5hETwoejmUV18Fm4xkfSjp23K6LCwHSUdnP43e");
+declare_id!("Hni4qE8GGW5uwBWzUEkpPBDRwXvKCWhM96teieAReRyd");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF");

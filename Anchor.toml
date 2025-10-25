@@ -12,11 +12,11 @@ memo_profile = "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US"
 memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 
 [programs.mainnet]
-memo_mint = "3rncCFCJ6sGULiUKXXziLL4AExejR1UmNSvvTj8czLgB"
-memo_burn = "811qP5g565ttsizvc1qTrW65YcBpJ7ce98xoMvu6wQHu"
-memo_chat = "7pfQ8w5hETwoejmUV18Fm4xkfSjp23K6LCwHSUdnP43e"
-memo_profile = "8eHwuUazmE5Nd3VAWQu91z5qimPyS2xJsbiJvRhm6Diu"
-memo_project = "FqTJER3zYqBgfRtJ5b47LRhrDAVLJPbyfTfgwrEyVmLa"
+memo_mint = "8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX"
+memo_burn = "2sb3gz5Cmr2g1ia5si2rmCZqPACxgaZXEmiS5k6Htcvh"
+memo_chat = "Hni4qE8GGW5uwBWzUEkpPBDRwXvKCWhM96teieAReRyd"
+memo_profile = "2BY8vPpQRFFwAqK3HqU5qL3qsGMH3VnX9Gv9bud3vzH8"
+memo_project = "6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a"
 
 [tokens.testnet]
 memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"

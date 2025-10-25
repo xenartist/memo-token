@@ -9,7 +9,7 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 
 // Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("3rncCFCJ6sGULiUKXXziLL4AExejR1UmNSvvTj8czLgB");
+declare_id!("8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");
