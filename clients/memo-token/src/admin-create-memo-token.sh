@@ -1,12 +1,15 @@
 #!/bin/bash
 set -e  # Exit on error
 
-# Default values
+# Keypair paths
+ADMIN_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/deploy_admin-keypair.json"
+MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/memo_token_mint-keypair.json"
+
+# Default token values
 TOKEN_NAME="MEMO Engraves Memories Onchain"
 TOKEN_SYMBOL="MEMO"
 TOKEN_URI="https://raw.githubusercontent.com/xenartist/memo-token/refs/heads/main/metadata/memo_token-metadata.json"
 DECIMALS=6
-MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/memo_token_mint-keypair.json"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -44,9 +47,11 @@ echo "Symbol: $TOKEN_SYMBOL"
 echo "URI: $TOKEN_URI"
 echo "Decimals: $DECIMALS"
 echo "Mint keypair path: $MINT_KEYPAIR_PATH"
+echo "Admin keypair path (fee payer): $ADMIN_KEYPAIR_PATH"
 
-# Expand the mint keypair path
+# Expand keypair paths
 MINT_KEYPAIR_PATH="${MINT_KEYPAIR_PATH/#\~/$HOME}"
+ADMIN_KEYPAIR_PATH="${ADMIN_KEYPAIR_PATH/#\~/$HOME}"
 
 # Check if the mint keypair file exists
 if [ -f "$MINT_KEYPAIR_PATH" ]; then
@@ -72,6 +77,7 @@ fi
 # Read mint public key from the keypair file
 MINT_PUBKEY=$(solana-keygen pubkey "$MINT_KEYPAIR_PATH")
 echo "Mint public key: $MINT_PUBKEY"
+echo "Admin keypair (fee payer): $ADMIN_KEYPAIR_PATH"
 
 # Step 1: Create the token mint with enabled metadata
 echo -e "\nStep 1: Creating Token-2022 token..."
@@ -79,11 +85,13 @@ spl-token create-token \
   --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb \
   --enable-metadata \
   --decimals "$DECIMALS" \
+  --fee-payer "$ADMIN_KEYPAIR_PATH" \
   "$MINT_KEYPAIR_PATH"
 
 # Step 2: Initialize metadata
 echo -e "\nStep 2: Initializing metadata..."
 spl-token initialize-metadata \
+  --fee-payer "$ADMIN_KEYPAIR_PATH" \
   "$MINT_PUBKEY" \
   "$TOKEN_NAME" \
   "$TOKEN_SYMBOL" \

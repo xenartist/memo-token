@@ -15,7 +15,7 @@ use std::{str::FromStr, env, process};
 // Token-2022 program ID constant
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-use memo_token_client::{get_rpc_url, get_program_id};
+use memo_token_client::{get_rpc_url, get_wallet_path};
 
 fn main() {
     // Default paths
@@ -29,6 +29,9 @@ fn main() {
     if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
         println!("Usage: {} [OPTIONS]", args[0]);
         println!("\nThis tool transfers mint authority to the memo-mint program's PDA.");
+        println!("\nConfiguration:");
+        println!("  Payer wallet: Read from Anchor.toml [provider].wallet");
+        println!("  RPC endpoint: Read from Anchor.toml [provider].cluster");
         println!("\nDefault paths:");
         println!("  Mint keypair: ~/.config/solana/memo-token/authority/memo_token_mint-keypair.json");
         println!("  Program keypair: target/deploy/memo_mint-keypair.json");
@@ -127,9 +130,10 @@ fn main() {
     );
 
     // Load payer keypair (wallet that will pay for transaction)
-    let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/memo-token/authority/deploy_admin-keypair.json").to_string()
-    ).expect("Failed to read payer keypair file");
+    // Read from Anchor.toml for unified configuration
+    let payer_path = get_wallet_path();
+    let payer = read_keypair_file(&payer_path)
+        .expect("Failed to read payer keypair file");
     
     println!("✓ Using payer: {}", payer.pubkey());
 
