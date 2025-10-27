@@ -164,8 +164,6 @@ fn execute_mint_operation<'info>(
 /// - Index 0: Compute budget instruction (REQUIRED)
 /// - Index 1: SPL Memo instruction (REQUIRED)
 /// - Index 2+: memo-mint::process_mint or memo-mint::process_mint_to (other instructions)
-///
-/// This function searches both positions to accommodate different transaction structures.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -364,5 +362,8 @@ pub enum ErrorCode {
 
     #[msg("Arithmetic overflow detected.")]
     ArithmeticOverflow,
-} 
+}
 
+// Unit tests in separate file
+#[cfg(test)]
+mod tests;
