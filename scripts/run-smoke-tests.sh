@@ -89,7 +89,7 @@ ${BOLD}EXAMPLES:${NC}
 
 ${BOLD}ABOUT SMOKE TESTS:${NC}
     Smoke tests are quick, single-execution tests that validate core
-    functionality across different environments (testnet/mainnet).
+    functionality across different environments.
     
     Characteristics:
       - Single transaction execution (no loops)
@@ -97,6 +97,20 @@ ${BOLD}ABOUT SMOKE TESTS:${NC}
       - Environment-agnostic configuration
       - Fast execution (< 10 seconds per test)
       - Basic functionality validation
+
+${BOLD}ENVIRONMENT DETECTION:${NC}
+    Environment is determined by cluster + program_env combination:
+    
+    testnet:      cluster=testnet  + program_env=testnet
+                  (Development: testnet cluster, testnet programs)
+    
+    prod-staging: cluster=testnet  + program_env=mainnet
+                  (Pre-production: testnet cluster, mainnet programs)
+    
+    mainnet:      cluster=mainnet  + program_env=mainnet
+                  (Production: mainnet cluster, mainnet programs)
+    
+    Configuration is read from Anchor.toml [provider] section
 
 ${BOLD}AVAILABLE TESTS:${NC}
 EOF
@@ -198,20 +212,52 @@ cd "$(dirname "$0")/.."
 print_message "$BOLD" "🔬 Memo Token Smoke Test Runner"
 echo ""
 
-# Get current environment
-RPC_URL=$(grep -A 5 '\[provider\]' Anchor.toml | grep 'cluster' | sed 's/.*"\(.*\)".*/\1/' | head -n 1)
-if [[ "$RPC_URL" == *"testnet"* ]]; then
-    ENV_NAME="testnet"
+# Get current environment configuration from Anchor.toml
+PROGRAM_ENV=$(grep 'program_env' Anchor.toml | awk -F'"' '{print $2}')
+RPC_URL=$(grep -A 5 '\[provider\]' Anchor.toml | grep 'cluster' | awk -F'"' '{print $2}')
+
+# Detect cluster type from RPC URL
+CLUSTER_TYPE="unknown"
+if [[ "$RPC_URL" == *"testnet"* ]] || [[ "$RPC_URL" == *"test"* ]]; then
+    CLUSTER_TYPE="testnet"
 elif [[ "$RPC_URL" == *"devnet"* ]]; then
-    ENV_NAME="devnet"
+    CLUSTER_TYPE="devnet"
 elif [[ "$RPC_URL" == *"localhost"* ]] || [[ "$RPC_URL" == *"127.0.0.1"* ]]; then
-    ENV_NAME="localnet"
-else
+    CLUSTER_TYPE="localnet"
+elif [[ "$RPC_URL" == *"mainnet"* ]]; then
+    CLUSTER_TYPE="mainnet"
+fi
+
+# Determine environment based on cluster + program_env combination
+# Logic:
+#   cluster: testnet  + program_env: testnet  = testnet (development)
+#   cluster: testnet  + program_env: mainnet  = prod-staging (pre-production testing)
+#   cluster: mainnet  + program_env: mainnet  = mainnet (production)
+if [ "$CLUSTER_TYPE" = "testnet" ] && [ "$PROGRAM_ENV" = "testnet" ]; then
+    ENV_NAME="testnet"
+    ENV_DESC="Development (testnet cluster, testnet programs)"
+elif [ "$CLUSTER_TYPE" = "testnet" ] && [ "$PROGRAM_ENV" = "mainnet" ]; then
+    ENV_NAME="prod-staging"
+    ENV_DESC="Production Staging (testnet cluster, mainnet programs)"
+elif [ "$CLUSTER_TYPE" = "mainnet" ] && [ "$PROGRAM_ENV" = "mainnet" ]; then
     ENV_NAME="mainnet"
+    ENV_DESC="Production (mainnet cluster, mainnet programs)"
+elif [ "$CLUSTER_TYPE" = "devnet" ]; then
+    ENV_NAME="devnet"
+    ENV_DESC="Devnet (devnet cluster)"
+elif [ "$CLUSTER_TYPE" = "localnet" ]; then
+    ENV_NAME="localnet"
+    ENV_DESC="Local (localhost cluster)"
+else
+    ENV_NAME="unknown"
+    ENV_DESC="Unknown configuration (cluster: $CLUSTER_TYPE, program_env: $PROGRAM_ENV)"
 fi
 
 print_message "$BLUE" "Environment: $ENV_NAME"
+print_message "$BLUE" "Description: $ENV_DESC"
+print_message "$BLUE" "RPC Cluster: $CLUSTER_TYPE"
 print_message "$BLUE" "RPC URL: $RPC_URL"
+print_message "$BLUE" "Program Env: $PROGRAM_ENV"
 echo ""
 
 # If no tests specified, run all
