@@ -68,10 +68,6 @@ name = "admin-init-burn-leaderboard"
 path = "chat/src/admin-init-burn-leaderboard.rs"
 
 [[bin]]
-name = "admin-clear-burn-leaderboard"
-path = "chat/src/admin-clear-burn-leaderboard.rs"
-
-[[bin]]
 name = "test-memo-chat-create-group"
 path = "chat/src/test-memo-chat-create-group.rs"
 
