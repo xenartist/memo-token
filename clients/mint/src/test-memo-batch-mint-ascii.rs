@@ -440,9 +440,11 @@ fn execute_transaction(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let recent_blockhash = client.get_latest_blockhash()?;
     
+    // Create transaction for simulation with correct instruction order
+    // IMPORTANT: Memo must be at index 0 for contract validation
     let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
-    let mut sim_instructions = vec![dummy_compute_budget_ix];
-    sim_instructions.extend(instructions.clone());
+    let mut sim_instructions = instructions.clone();
+    sim_instructions.push(dummy_compute_budget_ix);
     
     let sim_transaction = Transaction::new_signed_with_payer(
         &sim_instructions,
@@ -479,8 +481,10 @@ fn execute_transaction(
     
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     
-    let mut final_instructions = vec![compute_budget_ix];
-    final_instructions.extend(instructions);
+    // Create final transaction with memo first (index 0), then mints, then compute budget
+    // IMPORTANT: Contract now requires memo at index 0
+    let mut final_instructions = instructions;
+    final_instructions.push(compute_budget_ix);
     
     let transaction = Transaction::new_signed_with_payer(
         &final_instructions,

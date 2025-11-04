@@ -14,7 +14,6 @@ use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
     instruction::create_associated_token_account,
 };
-use std::str::FromStr;
 use sha2::{Sha256, Digest};
 use serde_json;
 
@@ -23,8 +22,13 @@ use spl_token_2022::id as token_2022_id;
 
 use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
 
+// Default priority fee in micro-lamports per CU
+const DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 100_000;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Memo Mint-To Test Client ===\n");
+    println!("=== Memo Mint Test Client (WITH Priority Fee) ===\n");
+    println!("💰 This client sets BOTH compute unit limits AND priority fees");
+    println!("   Testing if mint operations work with priority fee settings\n");
     
     // Get command line arguments for test scenario
     let args: Vec<String> = std::env::args().collect();
@@ -36,26 +40,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let test_scenario = &args[1];
     
+    // Parse priority fee from command line (optional)
+    let priority_fee = if args.len() > 2 && test_scenario != "custom-length" {
+        match args[2].parse::<u64>() {
+            Ok(fee) => {
+                println!("Using custom priority fee: {} micro-lamports per CU\n", fee);
+                fee
+            },
+            Err(_) => {
+                println!("Invalid priority fee value, using default: {} micro-lamports per CU\n", DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
+                DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS
+            }
+        }
+    } else {
+        println!("Using default priority fee: {} micro-lamports per CU\n", DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
+        DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS
+    };
+    
     // Parse custom memo length for custom-length test
     let custom_memo_length = if args.len() > 2 && test_scenario == "custom-length" {
         Some(args[2].parse::<usize>().unwrap_or(100))
     } else if test_scenario == "custom-length" {
         println!("ERROR: custom-length test requires memo_length parameter");
-        println!("Usage: cargo run -- custom-length <memo_length>");
-        println!("Example: cargo run -- custom-length 800");
+        println!("Usage: cargo run -- custom-length <memo_length> [priority_fee]");
+        println!("Example: cargo run -- custom-length 800 150000");
         return Ok(());
     } else {
         None
     };
     
+    // Parse priority fee for custom-length test (third argument)
+    let priority_fee_for_custom = if args.len() > 3 && test_scenario == "custom-length" {
+        args[3].parse::<u64>().unwrap_or(priority_fee)
+    } else {
+        priority_fee
+    };
+    
     match test_scenario.as_str() {
-        "no-memo" => test_no_memo(),
-        "short-memo" => test_short_memo(),
-        "valid-memo" => test_valid_memo(),
-        "long-memo" => test_long_memo(),
-        "memo-69" => test_memo_exact_69(),
-        "memo-800" => test_memo_exact_800(),
-        "custom-length" => test_custom_length(custom_memo_length.unwrap()),
+        "no-memo" => test_no_memo(priority_fee),
+        "short-memo" => test_short_memo(priority_fee),
+        "valid-memo" => test_valid_memo(priority_fee),
+        "long-memo" => test_long_memo(priority_fee),
+        "memo-69" => test_memo_exact_69(priority_fee),
+        "memo-800" => test_memo_exact_800(priority_fee),
+        "custom-length" => test_custom_length(custom_memo_length.unwrap(), priority_fee_for_custom),
         "help" | _ => {
             print_help(&args[0]);
             Ok(())
@@ -64,35 +92,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_help(program_name: &str) {
-    println!("Usage: {} <test_scenario> [memo_length]", program_name);
+    println!("Usage: {} <test_scenario> [priority_fee_micro_lamports]", program_name);
     println!("Test scenarios:");
-    println!("  no-memo         - Test mint-to without memo (should fail)");
-    println!("  short-memo      - Test mint-to with memo < 69 bytes (should fail)");
-    println!("  memo-69         - Test mint-to with memo exactly 69 bytes (should succeed)");
-    println!("  valid-memo      - Test mint-to with memo 69-800 bytes (should succeed)");
-    println!("  memo-800        - Test mint-to with memo exactly 800 bytes (should succeed)");
-    println!("  long-memo       - Test mint-to with memo > 800 bytes (should fail)");
-    println!("  custom-length   - Test mint-to with custom memo length (requires memo_length parameter)");
-    println!("\nRecipient: HQKcKVTXrnjRxKrbppouQ1HQot9aimaYApLtVGxjCBCb");
+    println!("  no-memo         - Test mint without memo (should fail)");
+    println!("  short-memo      - Test mint with memo < 69 bytes (should fail)");
+    println!("  memo-69         - Test mint with memo exactly 69 bytes (should succeed)");
+    println!("  valid-memo      - Test mint with memo 69-800 bytes (should succeed)");
+    println!("  memo-800        - Test mint with memo exactly 800 bytes (should succeed)");
+    println!("  long-memo       - Test mint with memo > 800 bytes (should fail)");
+    println!("  custom-length   - Test mint with custom memo length (requires memo_length parameter)");
+    println!("\nPriority Fee (optional):");
+    println!("  Specify priority fee in micro-lamports per CU");
+    println!("  Default: {} micro-lamports", DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
+    println!("  Common values:");
+    println!("    1,000 - 10,000   = Low priority");
+    println!("    10,000 - 100,000 = Medium priority (default: 100,000)");
+    println!("    100,000+         = High priority");
     println!("\nExamples:");
-    println!("  {} valid-memo", program_name);
-    println!("  {} custom-length 800    # Test 800-byte memo", program_name);
-    println!("  {} custom-length 50     # Test 50-byte memo", program_name);
-    println!("  {} custom-length 1000   # Test 1000-byte memo", program_name);
+    println!("  {} valid-memo                    # Use default priority fee", program_name);
+    println!("  {} valid-memo 200000             # High priority (200k micro-lamports)", program_name);
+    println!("  {} custom-length 800 150000      # 800-byte memo with 150k priority fee", program_name);
+    println!("  {} memo-69 50000                 # Low priority (50k micro-lamports)", program_name);
+    println!("\n💰 Note: This client ALWAYS sets priority fees!");
+    println!("   Total fee = CU_limit × priority_fee_per_CU / 1,000,000 lamports");
 }
 
-fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with CUSTOM LENGTH memo ({} bytes)...\n", target_length);
+fn test_custom_length(target_length: usize, priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with CUSTOM LENGTH memo ({} bytes)...\n", target_length);
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Get current token balance (raw lamports)
-    let balance_before = get_token_balance_raw(&client, &recipient_token_account);
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create memo with custom length
     let memo_text = create_memo_with_exact_length(target_length);
@@ -130,11 +166,11 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], &format!("Custom Length ({} bytes) Mint-To Test", actual_length));
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], &format!("Custom Length ({} bytes) Test", actual_length), priority_fee);
     
     match result {
         Ok(signature) => {
@@ -142,10 +178,9 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
             println!("   Signature: {}", signature);
             
             // Check token balance after mint
-            let balance_after = get_token_balance_raw(&client, &recipient_token_account);
+            let balance_after = get_token_balance_raw(&client, &token_account);
             let raw_minted = balance_after - balance_before;
             
-            println!("   Recipient: {}", recipient);
             println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
             println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
             println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
@@ -161,6 +196,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                 println!("      - System limit is higher than expected");
             } else {
                 println!("   ✅ EXPECTED SUCCESS: Memo length within valid range (69-800 bytes)");
+                println!("   ✅ Transaction succeeded WITH priority fee!");
             }
             
             // Validate mint amount
@@ -199,6 +235,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                     println!("   🔍 Possible issues:");
                     println!("      - Contract bug");
                     println!("      - Network/RPC issue");
+                    println!("      - Priority fee too low (unlikely)");
                     println!("      - Other validation failure");
                 }
             }
@@ -206,13 +243,13 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     }
     
     // Summary for custom length test
-    println!("\n📊 CUSTOM LENGTH MINT-TO TEST SUMMARY:");
+    println!("\n📊 CUSTOM LENGTH TEST SUMMARY:");
     println!("   Target length: {} bytes", target_length);
     println!("   Actual length: {} bytes", actual_length);
-    println!("   Recipient: {}", recipient);
     println!("   Contract valid range: 69-800 bytes");
     println!("   System limit: ~1000+ bytes (varies)");
     println!("   Possible mint amounts: 1, 0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001 tokens");
+    println!("   💰 Priority fee used: {} micro-lamports per CU", priority_fee);
     
     if actual_length != target_length {
         println!("   ⚠️  Note: Actual length differs from target due to JSON formatting");
@@ -221,21 +258,21 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-fn test_no_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to WITHOUT memo (expected to fail)...\n");
+fn test_no_memo(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint WITHOUT memo (expected to fail)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Create mint-to instruction without memo
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction without memo
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![mint_ix], "No Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![mint_ix], "No Memo Test", priority_fee);
     
     match result {
         Ok(_) => {
@@ -252,21 +289,21 @@ fn test_no_memo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_short_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with SHORT memo < 69 bytes (expected to fail)...\n");
+fn test_short_memo(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with SHORT memo < 69 bytes (expected to fail)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Create short memo (less than 69 bytes)
-    let short_message = "Short mint-to memo test";
+    let short_message = "Short memo test";
     let memo_json = serde_json::json!({
         "message": short_message,
-        "test": "short-memo-mint-to"
+        "test": "short-memo"
     });
     let memo_text = memo_json.to_string();
     
@@ -276,11 +313,11 @@ fn test_short_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Short Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], "Short Memo Test", priority_fee);
     
     match result {
         Ok(_) => {
@@ -297,18 +334,18 @@ fn test_short_memo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with memo EXACTLY 69 bytes (expected to succeed)...\n");
+fn test_memo_exact_69(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with memo EXACTLY 69 bytes (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Get current token balance (raw lamports)
-    let balance_before = get_token_balance_raw(&client, &recipient_token_account);
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create memo with exactly 69 bytes
     let memo_text = create_memo_with_exact_length(69);
@@ -319,22 +356,22 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 69 Bytes Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], "Exact 69 Bytes Memo Test", priority_fee);
     
     match result {
         Ok(signature) => {
             println!("✅ SUCCESS: Transaction completed successfully!");
             println!("   Signature: {}", signature);
+            println!("   ✅ Transaction succeeded WITH priority fee!");
             
             // Check token balance after mint
-            let balance_after = get_token_balance_raw(&client, &recipient_token_account);
+            let balance_after = get_token_balance_raw(&client, &token_account);
             let raw_minted = balance_after - balance_before;
             
-            println!("   Recipient: {}", recipient);
             println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
             println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
             println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
@@ -362,25 +399,24 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with VALID memo (69-800 bytes) (expected to succeed)...\n");
+fn test_valid_memo(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with VALID memo (69-800 bytes) (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Get current token balance (raw lamports)
-    let balance_before = get_token_balance_raw(&client, &recipient_token_account);
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create valid memo (between 69-800 bytes)
-    let message = "This is a valid memo test for the memo-mint-to contract. ".repeat(2);
+    let message = "This is a valid memo test for the memo-mint contract. ".repeat(2);
     let memo_json = serde_json::json!({
         "message": message,
-        "test": "valid-memo-mint-to",
-        "recipient": recipient.to_string(),
+        "test": "valid-memo",
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "additional_data": "padding_to_ensure_minimum_length_requirement_is_met"
     });
@@ -392,22 +428,22 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Valid Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], "Valid Memo Test", priority_fee);
     
     match result {
         Ok(signature) => {
             println!("✅ SUCCESS: Transaction completed successfully!");
             println!("   Signature: {}", signature);
+            println!("   ✅ Transaction succeeded WITH priority fee!");
             
             // Check token balance after mint
-            let balance_after = get_token_balance_raw(&client, &recipient_token_account);
+            let balance_after = get_token_balance_raw(&client, &token_account);
             let raw_minted = balance_after - balance_before;
             
-            println!("   Recipient: {}", recipient);
             println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
             println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
             println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
@@ -432,18 +468,18 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with memo EXACTLY 800 bytes (expected to succeed)...\n");
+fn test_memo_exact_800(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with memo EXACTLY 800 bytes (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Get current token balance (raw lamports)
-    let balance_before = get_token_balance_raw(&client, &recipient_token_account);
+    let balance_before = get_token_balance_raw(&client, &token_account);
     
     // Create memo with exactly 800 bytes
     let memo_text = create_memo_with_exact_length(800);
@@ -454,22 +490,22 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Test", priority_fee);
     
     match result {
         Ok(signature) => {
             println!("✅ SUCCESS: Transaction completed successfully!");
             println!("   Signature: {}", signature);
+            println!("   ✅ Transaction succeeded WITH priority fee!");
             
             // Check token balance after mint
-            let balance_after = get_token_balance_raw(&client, &recipient_token_account);
+            let balance_after = get_token_balance_raw(&client, &token_account);
             let raw_minted = balance_after - balance_before;
             
-            println!("   Recipient: {}", recipient);
             println!("   Token balance before: {} lamports ({})", balance_before, format_token_amount(balance_before));
             println!("   Token balance after:  {} lamports ({})", balance_after, format_token_amount(balance_after));
             println!("   Tokens minted: {} lamports ({})", raw_minted, format_token_amount(raw_minted));
@@ -497,22 +533,21 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint-to with LONG memo > 800 bytes (expected to fail)...\n");
+fn test_long_memo(priority_fee: u64) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with LONG memo > 800 bytes (expected to fail)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
-    let (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account) = get_program_addresses();
+    let (program_id, mint_address, mint_authority_pda, token_account) = get_program_addresses();
     
-    // Ensure recipient token account exists
-    ensure_token_account_exists(&client, &payer, &mint_address, &recipient_token_account, &recipient)?;
+    // Ensure token account exists
+    ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
     // Create long memo (more than 800 bytes)
-    let long_message = "This is a very long memo test for mint-to that exceeds the maximum allowed length. ".repeat(15);
+    let long_message = "This is a very long memo test that exceeds the maximum allowed length. ".repeat(15);
     let memo_json = serde_json::json!({
         "message": long_message,
-        "test": "long-memo-mint-to",
-        "recipient": recipient.to_string(),
+        "test": "long-memo",
         "additional_padding": "x".repeat(100)
     });
     let memo_text = memo_json.to_string();
@@ -523,11 +558,11 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction
     let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
     
-    // Create mint-to instruction
-    let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
+    // Create mint instruction
+    let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
-    // Execute transaction
-    let result = execute_transaction(&client, &payer, vec![memo_ix, mint_ix], "Long Memo Mint-To Test");
+    // Execute transaction WITH priority fee
+    let result = execute_transaction_with_priority_fee(&client, &payer, vec![memo_ix, mint_ix], "Long Memo Test", priority_fee);
     
     match result {
         Ok(_) => {
@@ -547,7 +582,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
 // Helper function to create memo with exact length
 fn create_memo_with_exact_length(target_length: usize) -> String {
     let base_json = serde_json::json!({
-        "test": "mint-to-length-test",
+        "test": "length-test",
         "target": target_length,
         "data": ""
     });
@@ -577,7 +612,7 @@ fn create_memo_with_exact_length(target_length: usize) -> String {
         let padding = "x".repeat(padding_needed);
         
         let final_json = serde_json::json!({
-            "test": "mint-to-length-test",
+            "test": "length-test",
             "target": target_length,
             "data": padding
         });
@@ -610,7 +645,7 @@ fn load_payer_keypair() -> solana_sdk::signature::Keypair {
     payer
 }
 
-fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey, Pubkey) {
+fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
     // Program addresses
     let program_id = get_program_id("memo_mint").expect("Failed to get memo_mint program ID");
     let mint_address = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
@@ -621,13 +656,13 @@ fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey, Pubkey) {
         &program_id,
     );
     
-    // Recipient address (specified in requirements)
-    let recipient = Pubkey::from_str("HQKcKVTXrnjRxKrbppouQ1HQot9aimaYApLtVGxjCBCb")
-        .expect("Invalid recipient address");
+    // Calculate associated token account using Token-2022
+    let payer = read_keypair_file(
+        shellexpand::tilde("~/.config/solana/id.json").to_string()
+    ).expect("Failed to read keypair file");
     
-    // Calculate associated token account for recipient using Token-2022
-    let recipient_token_account = get_associated_token_address_with_program_id(
-        &recipient,
+    let token_account = get_associated_token_address_with_program_id(
+        &payer.pubkey(),
         &mint_address,
         &token_2022_id(),
     );
@@ -635,11 +670,10 @@ fn get_program_addresses() -> (Pubkey, Pubkey, Pubkey, Pubkey, Pubkey) {
     println!("Program ID: {}", program_id);
     println!("Mint address: {}", mint_address);
     println!("Mint authority PDA: {}", mint_authority_pda);
-    println!("Recipient: {}", recipient);
-    println!("Recipient token account: {}", recipient_token_account);
+    println!("Token account: {}", token_account);
     println!();
     
-    (program_id, mint_address, mint_authority_pda, recipient, recipient_token_account)
+    (program_id, mint_address, mint_authority_pda, token_account)
 }
 
 fn ensure_token_account_exists(
@@ -647,20 +681,19 @@ fn ensure_token_account_exists(
     payer: &solana_sdk::signature::Keypair,
     mint_address: &Pubkey,
     token_account: &Pubkey,
-    recipient: &Pubkey,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Check if token account exists
     match client.get_account(token_account) {
         Ok(_) => {
-            println!("✅ Recipient token account already exists: {}", token_account);
+            println!("✅ Token account already exists: {}", token_account);
         },
         Err(_) => {
-            println!("⚠️  Recipient token account not found, creating...");
+            println!("⚠️  Token account not found, creating...");
             
-            // Create associated token account instruction for the recipient
+            // Create associated token account instruction
             let create_ata_ix = create_associated_token_account(
-                &payer.pubkey(),    // payer (current user pays for creation)
-                recipient,          // wallet (owner of the new account)
+                &payer.pubkey(),    // payer
+                &payer.pubkey(),    // wallet (owner)
                 mint_address,       // mint
                 &token_2022_id(),   // token program (Token-2022)
             );
@@ -678,13 +711,12 @@ fn ensure_token_account_exists(
             
             match client.send_and_confirm_transaction(&transaction) {
                 Ok(signature) => {
-                    println!("✅ Recipient token account created successfully!");
+                    println!("✅ Token account created successfully!");
                     println!("   Signature: {}", signature);
                     println!("   Account: {}", token_account);
-                    println!("   Owner: {}", recipient);
                 },
                 Err(e) => {
-                    return Err(format!("Failed to create recipient token account: {}", e).into());
+                    return Err(format!("Failed to create token account: {}", e).into());
                 }
             }
         }
@@ -693,42 +725,42 @@ fn ensure_token_account_exists(
     Ok(())
 }
 
-fn create_mint_to_instruction(
+fn create_mint_instruction(
     program_id: &Pubkey,
-    caller: &Pubkey,
+    user: &Pubkey,
     mint: &Pubkey,
     mint_authority: &Pubkey,
-    recipient_token_account: &Pubkey,
-    recipient: &Pubkey,
+    token_account: &Pubkey,
 ) -> Instruction {
-    // Calculate Anchor instruction sighash for "process_mint_to"
+    // Calculate Anchor instruction sighash for "process_mint"
     let mut hasher = Sha256::new();
-    hasher.update(b"global:process_mint_to");
+    hasher.update(b"global:process_mint");
     let result = hasher.finalize();
-    let mut instruction_data = result[..8].to_vec();
-    
-    // Add recipient parameter (32 bytes for Pubkey)
-    instruction_data.extend_from_slice(&recipient.to_bytes());
+    let instruction_data = result[..8].to_vec();
     
     let accounts = vec![
-        AccountMeta::new(*caller, true),                      // caller (signer)
-        AccountMeta::new(*mint, false),                       // mint
-        AccountMeta::new_readonly(*mint_authority, false),    // mint_authority (PDA)
-        AccountMeta::new(*recipient_token_account, false),    // recipient_token_account
-        AccountMeta::new_readonly(token_2022_id(), false),    // token_program (Token-2022)
+        AccountMeta::new(*user, true),                    // user (signer)
+        AccountMeta::new(*mint, false),                   // mint
+        AccountMeta::new_readonly(*mint_authority, false), // mint_authority (PDA)
+        AccountMeta::new(*token_account, false),          // token_account
+        AccountMeta::new_readonly(token_2022_id(), false), // token_program (Token-2022)
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
     ];
     
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
 }
 
-fn execute_transaction(
+/// Execute transaction WITH priority fee setting
+/// This sets BOTH compute unit limit (via simulation) AND priority fee
+fn execute_transaction_with_priority_fee(
     client: &RpcClient,
     payer: &solana_sdk::signature::Keypair,
     instructions: Vec<Instruction>,
     test_name: &str,
+    priority_fee_micro_lamports: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     println!("Executing {}...", test_name);
+    println!("💰 Setting priority fee: {} micro-lamports per CU", priority_fee_micro_lamports);
     
     // Get recent blockhash
     let recent_blockhash = client.get_latest_blockhash()?;
@@ -784,14 +816,26 @@ fn execute_transaction(
         }
     };
     
+    // Calculate estimated priority fee cost
+    let estimated_priority_fee = (optimal_cu as u64 * priority_fee_micro_lamports) / 1_000_000;
+    println!("💰 Estimated total priority fee: {} lamports ({:.9} SOL)", 
+        estimated_priority_fee, 
+        estimated_priority_fee as f64 / 1_000_000_000.0);
+    
     // Create compute budget instruction with optimal CU
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     
-    // Create final transaction with memo first (index 0), then mint, then compute budget
-    // IMPORTANT: Contract now requires memo at index 0
-    // Compute budget can be anywhere as it's processed by Solana runtime before execution
+    // Create priority fee instruction
+    let priority_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(priority_fee_micro_lamports);
+    
+    // Create final transaction with BOTH compute budget AND priority fee
+    // IMPORTANT: Instruction ordering to satisfy contract requirements:
+    // - Index 0: memo instruction (contract REQUIRES memo at index 0)
+    // - Index 1: mint instruction
+    // - Index 2+: compute budget instructions (processed by Solana runtime before execution)
     let mut final_instructions = instructions;
     final_instructions.push(compute_budget_ix);
+    final_instructions.push(priority_fee_ix);
     
     let transaction = Transaction::new_signed_with_payer(
         &final_instructions,
@@ -852,3 +896,4 @@ fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
         _ => (false, format!("Unexpected amount: {} lamports ({:.6} tokens)", raw_amount, raw_amount as f64 / 1_000_000.0)),
     }
 }
+
