@@ -10,7 +10,6 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     commitment_config::CommitmentConfig,
 };
-use solana_system_interface::program as system_program;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use sha2::{Sha256, Digest};
@@ -419,11 +418,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // First, simulate transaction to get optimal CU limit
+    // Instruction order: memo (index 0), burn (index 1), compute budget (index 2)
     println!("Simulating transaction to calculate optimal compute units...");
     
     let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_000_000);
     let sim_transaction = Transaction::new_signed_with_payer(
-        &[dummy_compute_budget_ix, memo_ix.clone(), burn_ix.clone()],
+        &[memo_ix.clone(), burn_ix.clone(), dummy_compute_budget_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -468,9 +468,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create final transaction with optimal compute budget
+    // Instruction order: memo (index 0), burn (index 1), compute budget (index 2)
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     let transaction = Transaction::new_signed_with_payer(
-        &[compute_budget_ix, memo_ix, burn_ix],
+        &[memo_ix, burn_ix, compute_budget_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,

@@ -11,7 +11,6 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
-use std::str::FromStr;
 use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 use base64::{Engine as _, engine::general_purpose};
 
@@ -229,9 +228,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             // Simulate transaction to get optimal CU limit
+            // Instruction order: memo (index 0), burn (index 1), compute budget (index 2)
             let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
             let sim_transaction = Transaction::new_signed_with_payer(
-                &[dummy_compute_budget_ix, memo_ix.clone(), burn_ix.clone()],
+                &[memo_ix.clone(), burn_ix.clone(), dummy_compute_budget_ix],
                 Some(&payer.pubkey()),
                 &[&payer],
                 recent_blockhash,
@@ -276,9 +276,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             // Create transaction with optimal compute budget
+            // Instruction order: memo (index 0), burn (index 1), compute budget (index 2)
             let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
             let transaction = Transaction::new_signed_with_payer(
-                &[compute_budget_ix, memo_ix, burn_ix],
+                &[memo_ix, burn_ix, compute_budget_ix],
                 Some(&payer.pubkey()),
                 &[&payer],
                 recent_blockhash,

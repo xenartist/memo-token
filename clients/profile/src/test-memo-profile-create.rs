@@ -361,9 +361,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recent_blockhash = client.get_latest_blockhash()?;
 
     // Create simulation transaction with high CU limit
+    // Instruction order: memo (index 0), profile (index 1), compute budget (index 2)
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_000_000);
-    let mut sim_transaction_instructions = vec![compute_budget_ix];
-    sim_transaction_instructions.extend(sim_instructions.clone());
+    let mut sim_transaction_instructions = sim_instructions.clone();
+    sim_transaction_instructions.push(compute_budget_ix);
 
     let sim_transaction = Transaction::new_signed_with_payer(
         &sim_transaction_instructions,
@@ -426,15 +427,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Compute Units: {}", optimal_cu);
 
     // Create final transaction with optimized CU
+    // Instruction order: memo (index 0), profile (index 1), compute budget (index 2)
     let optimized_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     let final_transaction = Transaction::new_signed_with_payer(
         &[
-            // Index 0: Compute budget instruction (required for CU optimization)
-            optimized_compute_budget_ix,
-            // Index 1: SPL Memo instruction (REQUIRED at this position)
+            // Index 0: SPL Memo instruction (REQUIRED at this position)
             memo_instruction,
-            // Index 2: Profile creation instruction
+            // Index 1: Profile creation instruction
             profile_instruction,
+            // Index 2: Compute budget instruction (processed before execution by Solana runtime)
+            optimized_compute_budget_ix,
         ],
         Some(&payer.pubkey()),
         &[&payer],

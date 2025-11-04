@@ -475,11 +475,12 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // First, simulate transaction to get optimal CU limit
+    // Instruction order: memo (index 0), send_memo (index 1), compute budget (index 2)
     println!("Simulating transaction to calculate optimal compute units...");
     
     let dummy_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_000_000);
     let sim_transaction = Transaction::new_signed_with_payer(
-        &[dummy_compute_budget_ix, memo_ix.clone(), send_memo_ix.clone()],
+        &[memo_ix.clone(), send_memo_ix.clone(), dummy_compute_budget_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -524,9 +525,10 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create final transaction with optimal compute budget
+    // Instruction order: memo (index 0), send_memo (index 1), compute budget (index 2)
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(optimal_cu);
     let transaction = Transaction::new_signed_with_payer(
-        &[compute_budget_ix, memo_ix, send_memo_ix],
+        &[memo_ix, send_memo_ix, compute_budget_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
