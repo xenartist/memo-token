@@ -123,6 +123,10 @@ path = "project/src/test-memo-project-create-project.rs"
 name = "test-memo-project-burn-for-project"
 path = "project/src/test-memo-project-burn-for-project.rs"
 
+[[bin]]
+name = "smoke-test-memo-mint"
+path = "smoke-test/src/smoke-test-memo-mint.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"
