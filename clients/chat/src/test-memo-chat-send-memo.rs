@@ -507,11 +507,11 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Using default compute units for error case: {}", default_cu);
                 default_cu
             } else if let Some(units_consumed) = result.value.units_consumed {
-                // Add 20% margin
-                let optimal_cu = ((units_consumed as f64) * 1.2) as u32;
-                println!("Simulation consumed {} CUs, setting limit to {} CUs (+20% margin)", 
-                    units_consumed, optimal_cu);
-                optimal_cu
+                // Use EXACT simulated CU (NO BUFFER)
+                let exact_cu = units_consumed as u32;
+                println!("Simulation consumed {} CUs, setting limit to {} CUs (EXACT, no buffer)", 
+                    units_consumed, exact_cu);
+                exact_cu
             } else {
                 let default_cu = 400_000u32;
                 println!("Simulation successful but no CU data, using default: {}", default_cu);
