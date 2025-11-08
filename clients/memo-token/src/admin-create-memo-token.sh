@@ -86,12 +86,15 @@ spl-token create-token \
   --enable-metadata \
   --decimals "$DECIMALS" \
   --fee-payer "$ADMIN_KEYPAIR_PATH" \
+  --mint-authority "$ADMIN_KEYPAIR_PATH" \
   "$MINT_KEYPAIR_PATH"
 
 # Step 2: Initialize metadata
 echo -e "\nStep 2: Initializing metadata..."
 spl-token initialize-metadata \
   --fee-payer "$ADMIN_KEYPAIR_PATH" \
+  --authority "$ADMIN_KEYPAIR_PATH" \
+  --update-authority "$ADMIN_KEYPAIR_PATH" \
   "$MINT_PUBKEY" \
   "$TOKEN_NAME" \
   "$TOKEN_SYMBOL" \
