@@ -10,6 +10,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use borsh::{BorshSerialize, BorshDeserialize};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
+use sha2::{Sha256, Digest};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
@@ -181,9 +182,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[&payer.pubkey()],
     );
 
-    // Create burn instruction data
-    let discriminator = [220, 214, 24, 210, 116, 16, 167, 18];
-    let mut instruction_data = discriminator.to_vec();
+    // Create burn instruction data using Anchor's discriminator calculation
+    let mut hasher = Sha256::new();
+    hasher.update(b"global:process_burn");
+    let hash_result = hasher.finalize();
+    let mut instruction_data = hash_result[..8].to_vec();
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
 
     // Build accounts list for burn
@@ -365,9 +368,11 @@ fn initialize_burn_stats(
     program_id: &Pubkey,
     stats_pda: &Pubkey,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create instruction data for initialize_user_global_burn_stats
-    let discriminator = [109, 178, 49, 106, 200, 87, 4, 107];
-    let instruction_data = discriminator.to_vec();
+    // Create instruction data using Anchor's discriminator calculation
+    let mut hasher = Sha256::new();
+    hasher.update(b"global:initialize_user_global_burn_stats");
+    let hash_result = hasher.finalize();
+    let instruction_data = hash_result[..8].to_vec();
 
     // Build accounts list
     let accounts = vec![
