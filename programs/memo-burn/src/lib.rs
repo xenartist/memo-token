@@ -404,3 +404,10 @@ pub enum ErrorCode {
     #[msg("Unauthorized user. User mismatch in global burn statistics account.")]
     UnauthorizedUser,
 }
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests;
