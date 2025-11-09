@@ -22,6 +22,8 @@ BOLD='\033[1m'
 # Available smoke tests (these should match the [[bin]] names in Cargo.toml)
 AVAILABLE_SMOKE_TESTS=(
     "memo-mint"
+    "memo-burn-initialize"
+    "memo-burn"
 )
 
 # Function to normalize test name (convert underscore to hyphen)
@@ -71,8 +73,10 @@ ${BOLD}OPTIONS:${NC}
     --verbose, -v       Show verbose output
 
 ${BOLD}TESTS:${NC}
-    memo-mint           Run memo-mint smoke test
-    memo_mint           Alternative naming (underscore)
+    memo-mint                Run memo-mint smoke test
+    memo-burn-initialize     Run memo-burn initialization smoke test
+    memo-burn                Run memo-burn smoke test
+    memo_mint                Alternative naming (underscore)
 
 ${BOLD}EXAMPLES:${NC}
     # Run all smoke tests
@@ -82,7 +86,7 @@ ${BOLD}EXAMPLES:${NC}
     ./scripts/run-smoke-tests.sh memo-mint
 
     # Run multiple smoke tests
-    ./scripts/run-smoke-tests.sh memo-mint memo-burn
+    ./scripts/run-smoke-tests.sh memo-mint memo-burn-initialize memo-burn
 
     # List available tests
     ./scripts/run-smoke-tests.sh --list

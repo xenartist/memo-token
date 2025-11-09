@@ -127,6 +127,14 @@ path = "project/src/test-memo-project-burn-for-project.rs"
 name = "smoke-test-memo-mint"
 path = "smoke-test/src/smoke-test-memo-mint.rs"
 
+[[bin]]
+name = "smoke-test-memo-burn-initialize"
+path = "smoke-test/src/smoke-test-memo-burn-initialize.rs"
+
+[[bin]]
+name = "smoke-test-memo-burn"
+path = "smoke-test/src/smoke-test-memo-burn.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"
