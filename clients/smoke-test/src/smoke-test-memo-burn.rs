@@ -23,13 +23,23 @@ pub struct BurnMemo {
     pub payload: Vec<u8>,
 }
 
+// User global burn statistics structure (must match the contract)
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct UserGlobalBurnStats {
+    pub user: Pubkey,
+    pub total_burned: u64,
+    pub burn_count: u64,
+    pub last_burn_time: i64,
+    pub bump: u8,
+}
+
 const BURN_MEMO_VERSION: u8 = 1;
 const BURN_AMOUNT_TOKENS: u64 = 1; // Burn 1 token
 const DECIMAL_FACTOR: u64 = 1_000_000;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════════╗");
-    println!("║         MEMO-BURN SMOKE TEST (Single Transaction)           ║");
+    println!("║    MEMO-BURN SMOKE TEST (Initialize + Burn + Verify)        ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
     
@@ -78,30 +88,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Stats PDA:      {}", user_global_burn_stats_pda);
     println!();
 
-    // Check if user global burn statistics account exists
+    // Step 1: Check and initialize if needed
+    println!("─────────────────────────────────────────────────────────────────");
+    println!("🔧 Step 1: Initialize User Global Burn Statistics");
+    println!("─────────────────────────────────────────────────────────────────");
+    
     match client.get_account(&user_global_burn_stats_pda) {
         Ok(_) => {
-            println!("✅ User global burn statistics account found");
+            println!("✅ Account already exists, skipping initialization");
         },
         Err(_) => {
-            println!("❌ User global burn statistics account not found");
-            println!("💡 Please run smoke-test-memo-burn-initialize first");
-            println!();
-            println!("╔═══════════════════════════════════════════════════════════════╗");
-            println!("║                    ❌ SMOKE TEST FAILED                       ║");
-            println!("╚═══════════════════════════════════════════════════════════════╝");
-            return Err("User global burn statistics account not initialized".into());
+            println!("📝 Account not found, initializing...");
+            initialize_burn_stats(&client, &payer, &program_id, &user_global_burn_stats_pda)?;
+            println!("✅ Initialization successful");
         }
     }
+    println!();
 
-    // Check token balance
+    // Get stats before burn
+    let stats_before = get_burn_stats(&client, &user_global_burn_stats_pda)?;
+    println!("─────────────────────────────────────────────────────────────────");
+    println!("📊 Statistics Before Burn");
+    println!("─────────────────────────────────────────────────────────────────");
+    println!("Total Burned:   {} tokens ({} units)", stats_before.total_burned / DECIMAL_FACTOR, stats_before.total_burned);
+    println!("Burn Count:     {}", stats_before.burn_count);
+    println!("Last Burn Time: {}", if stats_before.last_burn_time == 0 { "Never".to_string() } else { format!("{}", stats_before.last_burn_time) });
+    println!();
+
+    // Step 2: Check token balance and burn
+    println!("─────────────────────────────────────────────────────────────────");
+    println!("🔥 Step 2: Burn Tokens");
+    println!("─────────────────────────────────────────────────────────────────");
+    
     let balance_before = match client.get_token_account_balance(&token_account) {
         Ok(balance) => {
             let current_balance = balance.ui_amount.unwrap_or(0.0);
-            println!();
-            println!("─────────────────────────────────────────────────────────────────");
-            println!("💰 Initial Balance");
-            println!("─────────────────────────────────────────────────────────────────");
             println!("Token Balance:  {} tokens", current_balance);
             
             if current_balance < BURN_AMOUNT_TOKENS as f64 {
@@ -197,9 +218,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         recent_blockhash,
     );
 
-    println!("─────────────────────────────────────────────────────────────────");
-    println!("🔥 Burning Tokens");
-    println!("─────────────────────────────────────────────────────────────────");
     println!("Sending burn transaction...");
     
     // Send and confirm transaction
@@ -219,32 +237,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let burned = balance_before - balance_after;
                 
                 println!("─────────────────────────────────────────────────────────────────");
-                println!("💰 Final Balance");
+                println!("💰 Token Balance Verification");
                 println!("─────────────────────────────────────────────────────────────────");
                 println!("Balance Before: {} tokens", balance_before);
                 println!("Balance After:  {} tokens", balance_after);
                 println!("Burned:         {} tokens", burned);
-                println!();
                 
                 // Verify burn amount
                 let expected_burned = BURN_AMOUNT_TOKENS as f64;
-                let tolerance = 0.000001; // Allow small floating point difference
+                let tolerance = 0.000001;
                 
                 if (burned - expected_burned).abs() < tolerance {
-                    println!("✅ Burn amount verified: {} tokens", burned);
+                    println!("✅ Token balance verified");
                 } else {
                     println!("⚠️  Warning: Burn amount mismatch");
                     println!("   Expected: {} tokens", expected_burned);
                     println!("   Actual:   {} tokens", burned);
                 }
             }
+            println!();
+            
+            // Step 3: Verify burn statistics
+            println!("─────────────────────────────────────────────────────────────────");
+            println!("🔍 Step 3: Verify Burn Statistics");
+            println!("─────────────────────────────────────────────────────────────────");
+            
+            let stats_after = get_burn_stats(&client, &user_global_burn_stats_pda)?;
+            
+            println!("Statistics After Burn:");
+            println!("  Total Burned:   {} tokens ({} units)", stats_after.total_burned / DECIMAL_FACTOR, stats_after.total_burned);
+            println!("  Burn Count:     {}", stats_after.burn_count);
+            println!("  Last Burn Time: {}", stats_after.last_burn_time);
+            println!();
+            
+            // Verify statistics changes
+            let mut all_checks_passed = true;
+            
+            println!("Verification:");
+            
+            // Check total burned increased
+            let expected_total = stats_before.total_burned + burn_amount;
+            if stats_after.total_burned == expected_total {
+                println!("  ✅ Total burned increased correctly: {} -> {} (+{} tokens)",
+                    stats_before.total_burned / DECIMAL_FACTOR,
+                    stats_after.total_burned / DECIMAL_FACTOR,
+                    BURN_AMOUNT_TOKENS);
+            } else {
+                println!("  ❌ Total burned mismatch:");
+                println!("     Expected: {} units", expected_total);
+                println!("     Actual:   {} units", stats_after.total_burned);
+                all_checks_passed = false;
+            }
+            
+            // Check burn count increased
+            let expected_count = stats_before.burn_count + 1;
+            if stats_after.burn_count == expected_count {
+                println!("  ✅ Burn count increased correctly: {} -> {}",
+                    stats_before.burn_count, stats_after.burn_count);
+            } else {
+                println!("  ❌ Burn count mismatch:");
+                println!("     Expected: {}", expected_count);
+                println!("     Actual:   {}", stats_after.burn_count);
+                all_checks_passed = false;
+            }
+            
+            // Check last burn time updated
+            if stats_after.last_burn_time > stats_before.last_burn_time {
+                println!("  ✅ Last burn time updated: {} -> {}",
+                    stats_before.last_burn_time, stats_after.last_burn_time);
+            } else {
+                println!("  ❌ Last burn time not updated");
+                all_checks_passed = false;
+            }
+            
+            // Check user pubkey matches
+            if stats_after.user == payer.pubkey() {
+                println!("  ✅ User pubkey verified: {}", stats_after.user);
+            } else {
+                println!("  ❌ User pubkey mismatch:");
+                println!("     Expected: {}", payer.pubkey());
+                println!("     Actual:   {}", stats_after.user);
+                all_checks_passed = false;
+            }
             
             println!();
-            println!("╔═══════════════════════════════════════════════════════════════╗");
-            println!("║                    ✅ SMOKE TEST PASSED                       ║");
-            println!("╚═══════════════════════════════════════════════════════════════╝");
             
-            Ok(())
+            if all_checks_passed {
+                println!("╔═══════════════════════════════════════════════════════════════╗");
+                println!("║                    ✅ SMOKE TEST PASSED                       ║");
+                println!("║                                                               ║");
+                println!("║  All verifications passed:                                    ║");
+                println!("║  ✓ Account initialization                                     ║");
+                println!("║  ✓ Token burn execution                                       ║");
+                println!("║  ✓ Balance verification                                       ║");
+                println!("║  ✓ Statistics verification                                    ║");
+                println!("╚═══════════════════════════════════════════════════════════════╝");
+                Ok(())
+            } else {
+                println!("╔═══════════════════════════════════════════════════════════════╗");
+                println!("║                    ⚠️  SMOKE TEST WARNING                     ║");
+                println!("║                                                               ║");
+                println!("║  Burn succeeded but some verifications failed                 ║");
+                println!("╚═══════════════════════════════════════════════════════════════╝");
+                Err("Statistics verification failed".into())
+            }
         },
         Err(err) => {
             println!();
@@ -260,5 +356,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(err.into())
         }
     }
+}
+
+/// Initialize user global burn statistics account
+fn initialize_burn_stats(
+    client: &RpcClient,
+    payer: &dyn Signer,
+    program_id: &Pubkey,
+    stats_pda: &Pubkey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create instruction data for initialize_user_global_burn_stats
+    let discriminator = [109, 178, 49, 106, 200, 87, 4, 107];
+    let instruction_data = discriminator.to_vec();
+
+    // Build accounts list
+    let accounts = vec![
+        AccountMeta::new(payer.pubkey(), true),
+        AccountMeta::new(*stats_pda, false),
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    let initialize_ix = Instruction::new_with_bytes(
+        *program_id,
+        &instruction_data,
+        accounts,
+    );
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(200_000);
+    
+    let transaction = Transaction::new_signed_with_payer(
+        &[compute_budget_ix, initialize_ix],
+        Some(&payer.pubkey()),
+        &[payer],
+        recent_blockhash,
+    );
+
+    client.send_and_confirm_transaction(&transaction)?;
+    Ok(())
+}
+
+/// Get and deserialize burn statistics
+fn get_burn_stats(
+    client: &RpcClient,
+    stats_pda: &Pubkey,
+) -> Result<UserGlobalBurnStats, Box<dyn std::error::Error>> {
+    let account = client.get_account(stats_pda)?;
+    
+    // Skip 8-byte discriminator
+    if account.data.len() < 8 {
+        return Err("Account data too short".into());
+    }
+    
+    let stats = UserGlobalBurnStats::try_from_slice(&account.data[8..])?;
+    Ok(stats)
 }
 

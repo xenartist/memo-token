@@ -128,10 +128,6 @@ name = "smoke-test-memo-mint"
 path = "smoke-test/src/smoke-test-memo-mint.rs"
 
 [[bin]]
-name = "smoke-test-memo-burn-initialize"
-path = "smoke-test/src/smoke-test-memo-burn-initialize.rs"
-
-[[bin]]
 name = "smoke-test-memo-burn"
 path = "smoke-test/src/smoke-test-memo-burn.rs"
 
