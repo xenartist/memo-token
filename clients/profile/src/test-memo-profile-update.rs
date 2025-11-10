@@ -522,7 +522,7 @@ fn create_update_profile_instruction(
     mint: &Pubkey,
     user_token_account: &Pubkey,
     user_global_burn_stats: &Pubkey,
-    params: &UpdateParams,
+    _params: &UpdateParams,
 ) -> Result<Instruction, Box<dyn std::error::Error>> {
     // Calculate Anchor instruction sighash for "update_profile"
     let mut hasher = Sha256::new();
@@ -530,17 +530,9 @@ fn create_update_profile_instruction(
     let result = hasher.finalize();
     let mut instruction_data = result[..8].to_vec();
     
-    // Serialize parameters in order: burn_amount, username, image, about_me
+    // Serialize only burn_amount parameter (all data now comes from memo)
     let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
-    let username = &params.username;
-    let image = &params.image;
-    let about_me = &params.about_me;
-    
-    // Serialize each parameter using Borsh
     instruction_data.extend(burn_amount.try_to_vec()?);
-    instruction_data.extend(username.try_to_vec()?);
-    instruction_data.extend(image.try_to_vec()?);
-    instruction_data.extend(about_me.try_to_vec()?);
     
     let accounts = vec![
         AccountMeta::new(*user, true),                      // user (signer)

@@ -23,6 +23,7 @@ BOLD='\033[1m'
 AVAILABLE_SMOKE_TESTS=(
     "memo-mint"
     "memo-burn"
+    "memo-profile"
 )
 
 # Function to normalize test name (convert underscore to hyphen)
@@ -74,6 +75,7 @@ ${BOLD}OPTIONS:${NC}
 ${BOLD}TESTS:${NC}
     memo-mint                Run memo-mint smoke test
     memo-burn                Run memo-burn smoke test (includes init + burn + verify)
+    memo-profile             Run memo-profile smoke test (includes create + update + delete)
     memo_mint                Alternative naming (underscore)
 
 ${BOLD}EXAMPLES:${NC}

@@ -136,24 +136,10 @@ impl ProfileCreationData {
             return Err(ErrorCode::InvalidCategory.into());
         }
         
-        // Validate category length
-        if self.category.len() != EXPECTED_CATEGORY.len() {
-            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
-                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
-            return Err(ErrorCode::InvalidCategoryLength.into());
-        }
-        
         // Validate operation (must be exactly "create_profile")
         if self.operation != EXPECTED_OPERATION {
             msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_OPERATION);
             return Err(ErrorCode::InvalidOperation.into());
-        }
-        
-        // Validate operation length
-        if self.operation.len() != EXPECTED_OPERATION.len() {
-            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
-                 self.operation.len(), EXPECTED_OPERATION.len(), EXPECTED_OPERATION);
-            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate user_pubkey matches transaction signer
@@ -240,24 +226,10 @@ impl ProfileUpdateData {
             return Err(ErrorCode::InvalidCategory.into());
         }
         
-        // Validate category length
-        if self.category.len() != EXPECTED_CATEGORY.len() {
-            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
-                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
-            return Err(ErrorCode::InvalidCategoryLength.into());
-        }
-        
         // Validate operation (must be exactly "update_profile")
         if self.operation != EXPECTED_UPDATE_OPERATION {
             msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_UPDATE_OPERATION);
             return Err(ErrorCode::InvalidOperation.into());
-        }
-        
-        // Validate operation length
-        if self.operation.len() != EXPECTED_UPDATE_OPERATION.len() {
-            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
-                 self.operation.len(), EXPECTED_UPDATE_OPERATION.len(), EXPECTED_UPDATE_OPERATION);
-            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate user_pubkey matches transaction signer
@@ -388,9 +360,6 @@ pub mod memo_profile {
     pub fn update_profile(
         ctx: Context<UpdateProfile>,
         burn_amount: u64,
-        username: Option<String>,
-        image: Option<String>,
-        about_me: Option<Option<String>>,
     ) -> Result<()> {
         // Validate burn amount for profile update
         if burn_amount < MIN_PROFILE_UPDATE_BURN_AMOUNT {
@@ -413,7 +382,7 @@ pub mod memo_profile {
         }
 
         // Parse and validate Borsh memo data for profile update
-        let _profile_data = parse_profile_update_borsh_memo(&memo_data, ctx.accounts.user.key(), burn_amount)?;
+        let profile_data = parse_profile_update_borsh_memo(&memo_data, ctx.accounts.user.key(), burn_amount)?;
         
         // Call memo-burn contract to burn tokens
         let cpi_program = ctx.accounts.memo_burn_program.to_account_info();
@@ -431,32 +400,16 @@ pub mod memo_profile {
 
         let profile = &mut ctx.accounts.profile;
         
-        // Validate username if provided
-        if let Some(ref new_username) = username {
-            if new_username.is_empty() {
-                return Err(ErrorCode::EmptyUsername.into());
-            }
-            if new_username.len() > MAX_USERNAME_LENGTH {
-                return Err(ErrorCode::UsernameTooLong.into());
-            }
-            profile.username = new_username.clone();
+        // Update fields from memo data (validation already done in parse_profile_update_borsh_memo)
+        if let Some(new_username) = profile_data.username {
+            profile.username = new_username;
         }
         
-        // Validate image if provided
-        if let Some(ref new_image) = image {
-            if new_image.len() > MAX_PROFILE_IMAGE_LENGTH {
-                return Err(ErrorCode::ProfileImageTooLong.into());
-            }
-            profile.image = new_image.clone();
+        if let Some(new_image) = profile_data.image {
+            profile.image = new_image;
         }
         
-        // Update about_me if provided
-        if let Some(new_about_me) = about_me {
-            if let Some(ref about_me_text) = new_about_me {
-                if about_me_text.len() > MAX_ABOUT_ME_LENGTH {
-                    return Err(ErrorCode::AboutMeTooLong.into());
-                }
-            }
+        if let Some(new_about_me) = profile_data.about_me {
             profile.about_me = new_about_me;
         }
         
@@ -925,14 +878,8 @@ pub enum ErrorCode {
     #[msg("Invalid category: Must be 'profile' for profile operations.")]
     InvalidCategory,
     
-    #[msg("Invalid category length. Category must be exactly the expected length.")]
-    InvalidCategoryLength,
-    
     #[msg("Invalid operation: Operation does not match the expected operation for this instruction.")]
     InvalidOperation,
-
-    #[msg("Invalid operation length. Operation must be exactly the expected length.")]
-    InvalidOperationLength,
 
     #[msg("Invalid user pubkey format in memo. Must be a valid Pubkey string.")]
     InvalidUserPubkeyFormat,
@@ -967,3 +914,10 @@ pub enum ErrorCode {
     #[msg("Payload too long. (maximum 787 bytes).")]
     PayloadTooLong,
 }
+
+// ============================================================================
+// Unit Tests Module
+// ============================================================================
+
+#[cfg(test)]
+mod tests;
