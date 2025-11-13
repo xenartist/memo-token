@@ -2,6 +2,9 @@
 #![allow(unexpected_cfgs)]
 
 use anchor_lang::prelude::*;
+
+#[cfg(test)]
+mod tests;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::Token2022;
 use memo_burn::program::MemoBurn;
@@ -522,20 +525,23 @@ pub mod memo_project {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         memo_burn::cpi::process_burn(cpi_ctx, burn_amount)?;
         
+        // Get current timestamp once for consistency and efficiency
+        let timestamp = Clock::get()?.unix_timestamp;
+        
         // Initialize project data after successful burn
         let project = &mut ctx.accounts.project;
         project.project_id = actual_project_id;
         project.creator = ctx.accounts.creator.key();
-        project.created_at = Clock::get()?.unix_timestamp;
-        project.last_updated = Clock::get()?.unix_timestamp;
+        project.created_at = timestamp;
+        project.last_updated = timestamp;
         project.name = project_data.name.clone();
         project.description = project_data.description.clone();
         project.image = project_data.image.clone();
         project.website = project_data.website.clone();
         project.tags = project_data.tags.clone();
-        project.memo_count = 0; // initialize memo_count
+        project.memo_count = 0; // Initialize memo_count (only tracks burn_for_project operations)
         project.burned_amount = burn_amount;
-        project.last_memo_time = 0; // Set last_memo_time
+        project.last_memo_time = 0; // Set to 0 initially (no burn_for_project memos yet)
         project.bump = ctx.bumps.project;
 
         // Increment global counter AFTER successful project creation
@@ -552,7 +558,7 @@ pub mod memo_project {
             website: project_data.website,
             tags: project_data.tags,
             burn_amount,
-            timestamp: Clock::get()?.unix_timestamp,
+            timestamp,
         });
 
         // Update burn leaderboard after successful project creation
@@ -577,7 +583,7 @@ pub mod memo_project {
         project_id: u64,
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 6942 tokens for project update
+        // Validate burn amount - require at least 42069 tokens for project update
         if burn_amount < MIN_PROJECT_UPDATE_BURN_AMOUNT {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
@@ -614,6 +620,9 @@ pub mod memo_project {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         memo_burn::cpi::process_burn(cpi_ctx, burn_amount)?;
 
+        // Get current timestamp once for consistency and efficiency
+        let timestamp = Clock::get()?.unix_timestamp;
+
         let project = &mut ctx.accounts.project;
         
         // Update fields if provided in memo data
@@ -639,9 +648,9 @@ pub mod memo_project {
         
         // Update burn amount and timestamp
         project.burned_amount = project.burned_amount.saturating_add(burn_amount);
-        project.last_updated = Clock::get()?.unix_timestamp;
-        project.last_memo_time = Clock::get()?.unix_timestamp; // Update last_memo_time
-
+        project.last_updated = timestamp;
+        // Note: last_memo_time is NOT updated here - only tracks burn_for_project operations
+        
         // Emit project update event
         emit!(ProjectUpdatedEvent {
             project_id,
@@ -653,7 +662,7 @@ pub mod memo_project {
             tags: project.tags.clone(), // Emit all tags
             burn_amount,
             total_burned: project.burned_amount,
-            timestamp: Clock::get()?.unix_timestamp,
+            timestamp,
         });
 
         // Update burn leaderboard after successful project update
@@ -699,15 +708,13 @@ pub mod memo_project {
         let leaderboard = &mut ctx.accounts.burn_leaderboard;
         
         // Record current state for logging
-        let old_size = leaderboard.current_size;
         let old_entries_count = leaderboard.entries.len();
         
         // Clear all entries
-        leaderboard.current_size = 0;
         leaderboard.entries.clear();
         
         msg!("Burn leaderboard cleared by admin {}", ctx.accounts.admin.key());
-        msg!("Removed {} entries (current_size was {})", old_entries_count, old_size);
+        msg!("Removed {} entries", old_entries_count);
         
         Ok(())
     }
@@ -757,16 +764,19 @@ pub mod memo_project {
         // Call memo-burn's process_burn instruction
         memo_burn::cpi::process_burn(cpi_ctx, amount)?;
         
+        // Get current timestamp once for consistency and efficiency
+        let timestamp = Clock::get()?.unix_timestamp;
+        
         // Update project burned amount tracking
         let project = &mut ctx.accounts.project;
         let old_amount = project.burned_amount;
         project.burned_amount = project.burned_amount.saturating_add(amount);
         
-        // Update memo count since burning tokens is also a form of messaging
+        // Update memo count (only burn_for_project operations count as memos)
         project.memo_count = project.memo_count.saturating_add(1);
         
-        // Update last memo time
-        project.last_memo_time = Clock::get()?.unix_timestamp;
+        // Update last memo time (only tracks burn_for_project operations)
+        project.last_memo_time = timestamp;
         
         if project.burned_amount == u64::MAX && old_amount < u64::MAX {
             msg!("Warning: burned_amount overflow detected for project {}", project_id);
@@ -793,7 +803,7 @@ pub mod memo_project {
             burner: ctx.accounts.burner.key(),
             amount,
             total_burned: project.burned_amount,
-            timestamp: Clock::get()?.unix_timestamp,
+            timestamp,
         });
 
         Ok(())
@@ -1087,22 +1097,19 @@ pub struct LeaderboardEntry {
 /// Burn leaderboard account (stores top 100 projects by burn amount)
 #[account]
 pub struct BurnLeaderboard {
-    /// Current number of entries in the leaderboard (0-100)
-    pub current_size: u8,
-    /// Array of leaderboard entries, sorted by burned_amount in descending order
+    /// Array of leaderboard entries (unsorted for performance - sort off-chain for display)
+    /// Maximum 100 entries
     pub entries: Vec<LeaderboardEntry>,
 }
 
 impl BurnLeaderboard {
     pub const SPACE: usize = 8 + // discriminator
-        1 + // current_size
         4 + // Vec length prefix
         100 * 16 + // max entries (100 * (8 + 8) bytes each)
         64; // safety buffer
     
     /// Initialize with empty entries
     pub fn initialize(&mut self) {
-        self.current_size = 0;
         self.entries = Vec::with_capacity(100);
     }
     
@@ -1151,7 +1158,6 @@ impl BurnLeaderboard {
                 burned_amount: new_burned_amount,
             };
             self.entries.push(new_entry);
-            self.current_size = self.entries.len() as u8;
             return Ok(true);
         }
         
@@ -1275,7 +1281,10 @@ pub struct CreateProject<'info> {
 #[derive(Accounts)]
 #[instruction(project_id: u64, burn_amount: u64)]
 pub struct UpdateProject<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = updater.key() == project.creator @ ErrorCode::UnauthorizedProjectAccess
+    )]
     pub updater: Signer<'info>,
     
     #[account(
@@ -1424,15 +1433,15 @@ pub struct Project {
     pub project_id: u64,              // Sequential project ID (0, 1, 2, ...)
     pub creator: Pubkey,              // Creator
     pub created_at: i64,              // Creation timestamp
-    pub last_updated: i64,            // Last updated timestamp
+    pub last_updated: i64,            // Last updated timestamp (updated on project updates)
     pub name: String,                 // Project name
     pub description: String,          // Project description
     pub image: String,                // Project image info (max 256 chars)
     pub website: String,              // Project website URL (max 128 chars)
     pub tags: Vec<String>,            // Tags (max 4 tags, each max 32 chars)
-    pub memo_count: u64,              // Memo count
+    pub memo_count: u64,              // Number of burn_for_project operations (not create/update)
     pub burned_amount: u64,           // Total burned tokens for this project
-    pub last_memo_time: i64,          // Last memo timestamp
+    pub last_memo_time: i64,          // Last burn_for_project operation timestamp (0 if never burned)
     pub bump: u8,                     // PDA bump
 }
 

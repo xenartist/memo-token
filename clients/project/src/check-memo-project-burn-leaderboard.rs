@@ -95,7 +95,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Struct to hold parsed leaderboard data
 #[derive(Debug)]
 struct BurnLeaderboard {
-    pub current_size: u8,
     pub entries: Vec<LeaderboardEntry>,
 }
 
@@ -107,25 +106,15 @@ struct LeaderboardEntry {
 
 // Parse BurnLeaderboard account data
 fn parse_burn_leaderboard_data(data: &[u8]) -> Result<BurnLeaderboard, Box<dyn std::error::Error>> {
-    if data.len() < 13 { // 8 discriminator + 1 current_size + 4 vec_length
+    if data.len() < 12 { // 8 discriminator + 4 vec_length
         return Err("Data too short for leaderboard structure".into());
     }
 
     let mut offset = 8; // Skip discriminator
 
-    // Read current_size (u8)
-    let current_size = data[offset];
-    offset += 1;
-
     // Read Vec length (u32)
     let vec_length = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     offset += 4;
-
-    // Verify data consistency
-    if current_size as u32 != vec_length {
-        return Err(format!("Inconsistent data: current_size ({}) != vec_length ({})", 
-                          current_size, vec_length).into());
-    }
 
     // Verify remaining data length
     let expected_data_length = offset + (vec_length as usize * 16);
@@ -153,19 +142,13 @@ fn parse_burn_leaderboard_data(data: &[u8]) -> Result<BurnLeaderboard, Box<dyn s
     }
 
     Ok(BurnLeaderboard {
-        current_size,
         entries,
     })
 }
 
 fn display_leaderboard_statistics(leaderboard: &BurnLeaderboard) {
     println!("=== LEADERBOARD STATISTICS ===");
-    println!("📊 Total entries: {}/100", leaderboard.current_size);
-    println!("🔢 Vec length: {}", leaderboard.entries.len());
-    
-    if leaderboard.current_size as usize != leaderboard.entries.len() {
-        println!("⚠️  Warning: Size mismatch detected!");
-    }
+    println!("📊 Total entries: {}/100", leaderboard.entries.len());
 }
 
 fn display_empty_leaderboard() {
