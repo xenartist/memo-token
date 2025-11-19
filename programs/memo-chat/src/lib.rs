@@ -2,6 +2,9 @@
 #![allow(unexpected_cfgs)]
 
 use anchor_lang::prelude::*;
+
+// Unit tests module
+mod tests;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::Token2022;
 use memo_mint::program::MemoMint;
@@ -159,24 +162,10 @@ impl ChatGroupCreationData {
             return Err(ErrorCode::InvalidCategory.into());
         }
         
-        // Validate category length (must be exactly the expected length)
-        if self.category.len() != EXPECTED_CATEGORY.len() {
-            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
-                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
-            return Err(ErrorCode::InvalidCategoryLength.into());
-        }
-        
         // Validate operation (must be exactly "create_group")
         if self.operation != EXPECTED_OPERATION {
             msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_OPERATION);
             return Err(ErrorCode::InvalidOperation.into());
-        }
-        
-        // Validate operation length (must be exactly the expected length)
-        if self.operation.len() != EXPECTED_OPERATION.len() {
-            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
-                 self.operation.len(), EXPECTED_OPERATION.len(), EXPECTED_OPERATION);
-            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate group_id
@@ -276,24 +265,10 @@ impl ChatMessageData {
             return Err(ErrorCode::InvalidCategory.into());
         }
         
-        // Validate category length
-        if self.category.len() != EXPECTED_CATEGORY.len() {
-            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
-                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
-            return Err(ErrorCode::InvalidCategoryLength.into());
-        }
-        
         // Validate operation (must be exactly "send_message")
         if self.operation != EXPECTED_SEND_MESSAGE_OPERATION {
             msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_SEND_MESSAGE_OPERATION);
             return Err(ErrorCode::InvalidOperation.into());
-        }
-        
-        // Validate operation length
-        if self.operation.len() != EXPECTED_SEND_MESSAGE_OPERATION.len() {
-            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
-                 self.operation.len(), EXPECTED_SEND_MESSAGE_OPERATION.len(), EXPECTED_SEND_MESSAGE_OPERATION);
-            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate group_id
@@ -400,24 +375,10 @@ impl ChatGroupBurnData {
             return Err(ErrorCode::InvalidCategory.into());
         }
         
-        // Validate category length
-        if self.category.len() != EXPECTED_CATEGORY.len() {
-            msg!("Invalid category length: {} bytes (expected: {} bytes for '{}')", 
-                 self.category.len(), EXPECTED_CATEGORY.len(), EXPECTED_CATEGORY);
-            return Err(ErrorCode::InvalidCategoryLength.into());
-        }
-        
         // Validate operation (must be exactly "burn_for_group")
         if self.operation != EXPECTED_BURN_FOR_GROUP_OPERATION {
             msg!("Invalid operation: '{}' (expected: '{}')", self.operation, EXPECTED_BURN_FOR_GROUP_OPERATION);
             return Err(ErrorCode::InvalidOperation.into());
-        }
-        
-        // Validate operation length
-        if self.operation.len() != EXPECTED_BURN_FOR_GROUP_OPERATION.len() {
-            msg!("Invalid operation length: {} bytes (expected: {} bytes for '{}')", 
-                 self.operation.len(), EXPECTED_BURN_FOR_GROUP_OPERATION.len(), EXPECTED_BURN_FOR_GROUP_OPERATION);
-            return Err(ErrorCode::InvalidOperationLength.into());
         }
         
         // Validate group_id
@@ -527,19 +488,22 @@ pub mod memo_chat {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         memo_burn::cpi::process_burn(cpi_ctx, burn_amount)?;
         
+        // Get current timestamp once and reuse
+        let current_time = Clock::get()?.unix_timestamp;
+        
         // Initialize chat group data after successful burn
         let chat_group = &mut ctx.accounts.chat_group;
         chat_group.group_id = actual_group_id;
         chat_group.creator = ctx.accounts.creator.key();
-        chat_group.created_at = Clock::get()?.unix_timestamp;
+        chat_group.created_at = current_time;
         chat_group.name = group_data.name.clone();
         chat_group.description = group_data.description.clone();
         chat_group.image = group_data.image.clone();
         chat_group.tags = group_data.tags.clone();
-        chat_group.memo_count = 0;
+        chat_group.memo_count = 0;  // Tracks all group operations (messages + burns)
         chat_group.burned_amount = burn_amount;
         chat_group.min_memo_interval = group_data.min_memo_interval.unwrap_or(DEFAULT_MEMO_INTERVAL_SECONDS);
-        chat_group.last_memo_time = 0;
+        chat_group.last_memo_time = 0;  // Set to 0 so first message is not rate-limited
         chat_group.bump = ctx.bumps.chat_group;
 
         // Increment global counter AFTER successful group creation
@@ -555,7 +519,7 @@ pub mod memo_chat {
             image: group_data.image,
             tags: group_data.tags,
             burn_amount,
-            timestamp: Clock::get()?.unix_timestamp,
+            timestamp: current_time,
         });
 
         // Update burn leaderboard after successful group creation
@@ -588,8 +552,10 @@ pub mod memo_chat {
         // Parse and validate Borsh memo content
         let memo_content = parse_message_borsh_memo(&memo_data, group_id, ctx.accounts.sender.key())?;
         
-        let chat_group = &mut ctx.accounts.chat_group;
+        // Get current timestamp once and reuse
         let current_time = Clock::get()?.unix_timestamp;
+        
+        let chat_group = &mut ctx.accounts.chat_group;
 
         // Check memo frequency limit
         if chat_group.last_memo_time > 0 {
@@ -828,6 +794,12 @@ fn parse_burn_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_amou
             ErrorCode::InvalidChatGroupBurnDataFormat
         })?;
     
+    // check decoded borsh data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
+    
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
     // Deserialize Borsh data from decoded bytes (following memo-burn pattern)
@@ -897,6 +869,12 @@ fn parse_message_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_s
             msg!("Invalid Base64 encoding in memo");
             ErrorCode::InvalidChatMessageDataFormat
         })?;
+    
+    // check decoded borsh data size
+    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
     
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
@@ -991,22 +969,19 @@ pub struct LeaderboardEntry {
 /// Burn leaderboard account (stores top 100 groups by burn amount)
 #[account]
 pub struct BurnLeaderboard {
-    /// Current number of entries in the leaderboard (0-100)
-    pub current_size: u8,
-    /// Array of leaderboard entries, sorted by burned_amount in descending order
+    /// Array of leaderboard entries (unsorted for performance - sort off-chain for display)
+    /// Maximum 100 entries
     pub entries: Vec<LeaderboardEntry>,
 }
 
 impl BurnLeaderboard {
     pub const SPACE: usize = 8 + // discriminator
-        1 + // current_size
         4 + // Vec length prefix
         100 * 16 + // max entries (100 * (8 + 8) bytes each)
         64; // safety buffer
     
     /// Initialize with empty entries
     pub fn initialize(&mut self) {
-        self.current_size = 0;
         self.entries = Vec::with_capacity(100);
     }
     
@@ -1055,7 +1030,6 @@ impl BurnLeaderboard {
                 burned_amount: new_burned_amount,
             };
             self.entries.push(new_entry);
-            self.current_size = self.entries.len() as u8;
             return Ok(true);
         }
         
@@ -1294,7 +1268,6 @@ pub struct InitializeBurnLeaderboard<'info> {
     pub system_program: Program<'info, System>,
 }
 
-
 /// Chat group data structure
 #[account]
 pub struct ChatGroup {
@@ -1305,10 +1278,10 @@ pub struct ChatGroup {
     pub description: String,        // Group description
     pub image: String,              // Group image info (max 256 chars)
     pub tags: Vec<String>,          // Tags
-    pub memo_count: u64,            // Memo count
+    pub memo_count: u64,            // Tracks all group operations: send_memo_to_group + burn_tokens_for_group
     pub burned_amount: u64,         // Total burned tokens for this group
-    pub min_memo_interval: i64,     // Minimum memo interval in seconds
-    pub last_memo_time: i64,        // Last memo timestamp
+    pub min_memo_interval: i64,     // Minimum memo interval in seconds (rate limit for send_memo_to_group only)
+    pub last_memo_time: i64,        // Last send_memo_to_group timestamp (0 = no rate limit for first message)
     pub bump: u8,                   // PDA bump
 }
 
@@ -1362,15 +1335,6 @@ pub struct TokensBurnedForGroupEvent {
     pub burner: Pubkey,
     pub amount: u64,
     pub total_burned: u64,
-    pub timestamp: i64,
-}
-
-/// Event emitted when leaderboard is updated
-#[event]
-pub struct LeaderboardUpdatedEvent {
-    pub group_id: u64,
-    pub new_rank: u8,
-    pub burned_amount: u64,
     pub timestamp: i64,
 }
 

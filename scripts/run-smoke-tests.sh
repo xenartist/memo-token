@@ -25,6 +25,7 @@ AVAILABLE_SMOKE_TESTS=(
     "memo-burn"
     "memo-profile"
     "memo-project"
+    "memo-chat"
 )
 
 # Function to normalize test name (convert underscore to hyphen)

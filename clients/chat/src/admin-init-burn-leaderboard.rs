@@ -76,26 +76,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             
             // Try to read leaderboard data - Updated for Vec<LeaderboardEntry> format
-            if account.data.len() >= 13 { // 8 bytes discriminator + 1 byte current_size + 4 bytes Vec length
-                let current_size = account.data[8];
-                
-                // Read Vec length (4 bytes after current_size)
-                let vec_length_bytes = &account.data[9..13];
+            if account.data.len() >= 12 { // 8 bytes discriminator + 4 bytes Vec length
+                // Read Vec length (4 bytes after discriminator)
+                let vec_length_bytes = &account.data[8..12];
                 let vec_length = u32::from_le_bytes(vec_length_bytes.try_into().unwrap());
                 
-                println!("   Current leaderboard size: {}/100", current_size);
-                println!("   Vec entries count: {}", vec_length);
-                
-                // Verify data consistency
-                if current_size as u32 != vec_length {
-                    println!("   ⚠️  Warning: current_size ({}) != vec_length ({})", current_size, vec_length);
-                }
+                println!("   Current leaderboard size: {}/100", vec_length);
                 
                 // If there are entries, show some
-                if vec_length > 0 && account.data.len() >= 13 + (vec_length as usize * 16) {
+                if vec_length > 0 && account.data.len() >= 12 + (vec_length as usize * 16) {
                     println!("   📊 Current top entries:");
                     for i in 0..std::cmp::min(vec_length as usize, 5) {
-                        let entry_start = 13 + (i * 16); // Start after discriminator(8) + current_size(1) + vec_length(4)
+                        let entry_start = 12 + (i * 16); // Start after discriminator(8) + vec_length(4)
                         
                         if entry_start + 16 <= account.data.len() {
                             let group_id_bytes = &account.data[entry_start..entry_start + 8];
@@ -115,13 +107,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if vec_length > 0 {
                     println!("   ⚠️  Expected {} entries but account data is too short", vec_length);
                     println!("   Expected: {} bytes, Actual: {} bytes", 
-                            13 + (vec_length as usize * 16), account.data.len());
+                            12 + (vec_length as usize * 16), account.data.len());
                 } else {
                     println!("   📊 Leaderboard is empty (no entries yet)");
                 }
             } else {
                 println!("   ⚠️  Account data too short to parse leaderboard structure");
-                println!("   Expected at least 13 bytes, got {} bytes", account.data.len());
+                println!("   Expected at least 12 bytes, got {} bytes", account.data.len());
             }
             
             println!();
@@ -229,10 +221,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   Owner: {}", account.owner);
                     println!("   Data length: {} bytes", account.data.len());
                     
-                    if account.data.len() >= 9 {
-                        let current_size_byte = &account.data[8..9];
-                        let current_size = current_size_byte[0];
-                        println!("   Initial leaderboard size: {}/100", current_size);
+                    if account.data.len() >= 12 {
+                        let vec_length_bytes = &account.data[8..12];
+                        let vec_length = u32::from_le_bytes(vec_length_bytes.try_into().unwrap());
+                        println!("   Initial leaderboard size: {}/100", vec_length);
                     }
                     
                     println!();

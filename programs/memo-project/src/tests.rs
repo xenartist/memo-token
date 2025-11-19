@@ -542,6 +542,104 @@ mod tests {
     }
 
     #[test]
+    fn test_leaderboard_reject_when_equal_to_min() {
+        let mut lb = create_leaderboard();
+        
+        // Fill with 100 projects (1000, 2000, ..., 100000)
+        for i in 0..100 {
+            lb.update_leaderboard(i, (i + 1) * 1000).unwrap();
+        }
+        
+        // Try to add a new project with burn amount EQUAL to minimum (1000)
+        // Should be rejected because we require new_burned_amount > min_amount
+        let result = lb.update_leaderboard(200, 1000).unwrap();
+        assert!(!result); // Should not enter leaderboard
+        assert_eq!(lb.entries.len(), 100);
+        
+        // Verify that project 0 (with 1000) is still there
+        let has_project_0 = lb.entries.iter().any(|e| e.project_id == 0);
+        assert!(has_project_0);
+        
+        // Verify that project 200 was not added
+        let has_project_200 = lb.entries.iter().any(|e| e.project_id == 200);
+        assert!(!has_project_200);
+    }
+
+    #[test]
+    fn test_leaderboard_replace_exact_min_plus_one() {
+        let mut lb = create_leaderboard();
+        
+        // Fill with 100 projects (1000, 2000, ..., 100000)
+        for i in 0..100 {
+            lb.update_leaderboard(i, (i + 1) * 1000).unwrap();
+        }
+        
+        // Try to add with amount = min + 1 (should succeed)
+        let result = lb.update_leaderboard(200, 1001).unwrap();
+        assert!(result); // Should enter leaderboard
+        assert_eq!(lb.entries.len(), 100);
+        
+        // Verify that project 0 (with 1000) was replaced
+        let has_project_0 = lb.entries.iter().any(|e| e.project_id == 0);
+        assert!(!has_project_0);
+        
+        // Verify that project 200 was added
+        let has_project_200 = lb.entries.iter().any(|e| e.project_id == 200 && e.burned_amount == 1001);
+        assert!(has_project_200);
+    }
+
+    #[test]
+    fn test_leaderboard_multiple_replacements() {
+        let mut lb = create_leaderboard();
+        
+        // Fill with 100 projects (1000, 2000, ..., 100000)
+        for i in 0..100 {
+            lb.update_leaderboard(i, (i + 1) * 1000).unwrap();
+        }
+        
+        // Replace multiple times with increasing amounts
+        // Use amounts that are all greater than the smallest 10 (1000-10000)
+        // to ensure we're replacing original entries, not newly added ones
+        for i in 0..10 {
+            let new_amount = 10500 + (i * 1000); // 10500, 11500, ..., 19500
+            let result = lb.update_leaderboard(200 + i, new_amount).unwrap();
+            assert!(result);
+            assert_eq!(lb.entries.len(), 100);
+        }
+        
+        // Verify that the smallest 10 original projects were replaced
+        for i in 0..10 {
+            let has_project = lb.entries.iter().any(|e| e.project_id == i);
+            assert!(!has_project, "Project {} should have been replaced", i);
+        }
+        
+        // Verify that all new projects are in the leaderboard
+        for i in 0..10 {
+            let has_project = lb.entries.iter().any(|e| e.project_id == 200 + i);
+            assert!(has_project, "Project {} should be in leaderboard", 200 + i);
+        }
+    }
+
+    #[test]
+    fn test_leaderboard_update_existing_when_full() {
+        let mut lb = create_leaderboard();
+        
+        // Fill with 100 projects
+        for i in 0..100 {
+            lb.update_leaderboard(i, (i + 1) * 1000).unwrap();
+        }
+        
+        // Update an existing project (should always succeed)
+        let result = lb.update_leaderboard(50, 999999999).unwrap();
+        assert!(result);
+        assert_eq!(lb.entries.len(), 100);
+        
+        // Verify the update
+        let entry = lb.entries.iter().find(|e| e.project_id == 50).unwrap();
+        assert_eq!(entry.burned_amount, 999999999);
+    }
+
+    #[test]
     fn test_leaderboard_find_project_position_and_min() {
         let mut lb = create_leaderboard();
         

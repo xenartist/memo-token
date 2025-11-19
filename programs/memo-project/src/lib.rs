@@ -650,7 +650,7 @@ pub mod memo_project {
         project.burned_amount = project.burned_amount.saturating_add(burn_amount);
         project.last_updated = timestamp;
         // Note: last_memo_time is NOT updated here - only tracks burn_for_project operations
-        
+
         // Emit project update event
         emit!(ProjectUpdatedEvent {
             project_id,
@@ -695,27 +695,6 @@ pub mod memo_project {
         leaderboard.initialize(); // Use the initialize method
         
         msg!("Burn leaderboard initialized by admin {}", ctx.accounts.admin.key());
-        Ok(())
-    }
-
-    /// Clear the burn leaderboard (admin only, for cleaning up duplicate data)
-    pub fn clear_burn_leaderboard(ctx: Context<ClearBurnLeaderboard>) -> Result<()> {
-        // Verify admin authorization
-        if ctx.accounts.admin.key() != AUTHORIZED_ADMIN_PUBKEY {
-            return Err(ErrorCode::UnauthorizedAdmin.into());
-        }
-
-        let leaderboard = &mut ctx.accounts.burn_leaderboard;
-        
-        // Record current state for logging
-        let old_entries_count = leaderboard.entries.len();
-        
-        // Clear all entries
-        leaderboard.entries.clear();
-        
-        msg!("Burn leaderboard cleared by admin {}", ctx.accounts.admin.key());
-        msg!("Removed {} entries", old_entries_count);
-        
         Ok(())
     }
 
@@ -1352,23 +1331,6 @@ pub struct InitializeBurnLeaderboard<'info> {
     pub burn_leaderboard: Account<'info, BurnLeaderboard>,
     
     pub system_program: Program<'info, System>,
-}
-
-/// Account structure for clearing burn leaderboard (admin only)
-#[derive(Accounts)]
-pub struct ClearBurnLeaderboard<'info> {
-    #[account(
-        mut,
-        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
-    )]
-    pub admin: Signer<'info>,
-    
-    #[account(
-        mut,
-        seeds = [b"burn_leaderboard"],
-        bump
-    )]
-    pub burn_leaderboard: Account<'info, BurnLeaderboard>,
 }
 
 /// Account structure for burning tokens for a project
