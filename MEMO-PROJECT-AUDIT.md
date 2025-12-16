@@ -3,7 +3,7 @@
 ## Executive Summary
 
 **Contract**: memo-project  
-**Audit Date**: November 13, 2025  
+**Audit Date**: December 16, 2025  
 **Auditor**: Pre-Production Security Review  
 **Version**: Production Candidate  
 **Language**: Rust (Anchor Framework)  
@@ -18,7 +18,7 @@ The memo-project contract implements a decentralized project registry and leader
 ### Summary Statistics
 
 - **Critical Issues**: 0
-- **Design Confirmations**: 6 (all verified as intentional)
+- **Design Confirmations**: 5 (all verified as intentional)
 - **Security Strengths**: 10
 - **Best Practices**: 6
 - **Code Quality**: Excellent
@@ -32,15 +32,13 @@ The memo-project contract implements a decentralized project registry and leader
 The memo-project contract enables users to:
 1. **Create Projects**: Burn MEMO tokens to create on-chain project profiles
 2. **Update Projects**: Project creators can update project metadata by burning tokens
-3. **Support Projects**: Community members can burn tokens to support projects
+3. **Burn for Projects**: Project creators can burn additional tokens to increase project burn statistics
 4. **Compete on Leaderboard**: Top 100 projects by burned amount tracked globally
 
 ### Key Features
 - Project creation with structured metadata (name, description, image, website, tags)
-- Project creator exclusive update rights
-- Community burn support for any project
+- Project creator exclusive update and burn rights
 - Global burn leaderboard (top 100 projects)
-- Admin-controlled leaderboard management
 - Comprehensive memo validation and tracking
 - Token2022 compatibility
 - Dual network support (testnet/mainnet)
@@ -48,7 +46,7 @@ The memo-project contract enables users to:
 ### Economic Model
 - **Project Creation**: Minimum 42,069 MEMO tokens burned
 - **Project Update**: Minimum 42,069 MEMO tokens burned (creator only)
-- **Burn for Project**: Minimum 420 MEMO tokens burned (anyone)
+- **Burn for Project**: Minimum 420 MEMO tokens burned (creator only)
 - **Maximum Burn**: 1 trillion MEMO tokens per transaction
 
 ---
@@ -150,44 +148,45 @@ pub struct BurnLeaderboard {
 
 ---
 
-### ✅ DESIGN CONFIRMATION #3: Permissionless `burn_for_project`
+### ✅ DESIGN CONFIRMATION #3: Creator-Only `burn_for_project`
 
 **Design Intent**: ✅ **CONFIRMED AS INTENTIONAL**
 
 **Implementation**:
 ```rust
-pub fn burn_for_project(
-    ctx: Context<BurnForProject>,
-    project_id: u64,
-    amount: u64,
-    message: String,
-) -> Result<()> {
-    // Anyone can burn for any project (no authorization check)
+#[derive(Accounts)]
+#[instruction(project_id: u64, amount: u64)]
+pub struct BurnForProject<'info> {
+    #[account(
+        mut,
+        constraint = burner.key() == project.creator @ ErrorCode::UnauthorizedProjectAccess
+    )]
+    pub burner: Signer<'info>,
     // ...
 }
 ```
 
 **Design Rationale**:
-The `burn_for_project` instruction is **intentionally permissionless**:
+The `burn_for_project` instruction is **intentionally restricted to project creator only**:
 
-1. **Community Participation**: Anyone can support any project
-2. **Democratic Support**: Projects gain prominence through community backing
-3. **Burn Mechanism**: Prevents spam (users must burn real tokens)
-4. **Leaderboard Competition**: Encourages genuine community engagement
+1. **Creator Control**: Project creators have exclusive control over their project's burn statistics
+2. **Prevents Manipulation**: Third parties cannot artificially inflate project burn counts
+3. **Clear Ownership**: Only the project owner can boost their project's leaderboard ranking
+4. **Consistent Model**: Aligns with `update_project` which also requires creator authorization
 
 **Who Can Burn**:
-- ✅ Any user with MEMO tokens
-- ✅ Project creator (can support own project)
-- ✅ Other contracts (via CPI)
+- ✅ Project creator only (enforced via constraint)
+- ❌ Other users cannot burn for projects they don't own
 
 **Security Analysis**:
+- ✅ Creator authorization enforced via Anchor constraint
 - ✅ Burn amount validated (minimum 420 tokens)
 - ✅ Maximum burn enforced (1 trillion tokens)
 - ✅ Project existence validated (PDA must exist)
 - ✅ Memo validated and tracked
-- ✅ Natural spam prevention (economic cost)
+- ✅ Burner pubkey in memo must match transaction signer
 
-**Verdict**: Permissionless design is correct for a community-driven platform.
+**Verdict**: Creator-only design ensures project owners have exclusive control over their project's burn statistics and leaderboard position.
 
 ---
 
@@ -208,38 +207,38 @@ pub struct Project {
 **Design Rationale**:
 The contract tracks **only `burn_for_project` operations** in memo statistics:
 
-1. **`memo_count`**: Counts community burn messages (excludes create/update)
-2. **`last_memo_time`**: Tracks last community support timestamp
+1. **`memo_count`**: Counts burn_for_project operations (excludes create/update)
+2. **`last_memo_time`**: Tracks last burn_for_project timestamp
 3. **`burned_amount`**: Accumulates total tokens burned (includes create/update/burn_for_project)
 
 **Why This Split**:
-- **Community Engagement Metrics**: `memo_count` measures genuine community support
-- **Total Burn Tracking**: `burned_amount` reflects economic commitment
+- **Activity Metrics**: `memo_count` measures burn_for_project activity frequency
+- **Total Burn Tracking**: `burned_amount` reflects total economic commitment
 - **Temporal Data**: `last_memo_time` shows recent activity (for ranking/filtering)
 
 **Initialization Values**:
 ```rust
 // In create_project:
-project.memo_count = 0;           // ✅ No community burns yet
-project.last_memo_time = 0;       // ✅ No community burns yet
+project.memo_count = 0;           // ✅ No burn_for_project operations yet
+project.last_memo_time = 0;       // ✅ No burn_for_project operations yet
 project.burned_amount = burn_amount; // ✅ Includes creation burn
 
 // In update_project:
 // memo_count and last_memo_time NOT updated (only in burn_for_project)
 project.burned_amount += burn_amount; // ✅ Includes update burn
 
-// In burn_for_project:
-project.memo_count += 1;             // ✅ Counts community message
+// In burn_for_project (creator only):
+project.memo_count += 1;             // ✅ Counts burn_for_project operation
 project.last_memo_time = timestamp;  // ✅ Updates activity time
-project.burned_amount += amount;     // ✅ Includes community burn
+project.burned_amount += amount;     // ✅ Includes burn amount
 ```
 
 **Security Analysis**:
 - ✅ Clear semantic separation
 - ✅ Prevents confusion about what's being counted
-- ✅ Enables accurate community engagement metrics
+- ✅ Enables accurate activity tracking metrics
 
-**Verdict**: Well-designed tracking system that separates creator actions from community support.
+**Verdict**: Well-designed tracking system that separates different types of burn operations.
 
 ---
 
@@ -289,62 +288,6 @@ All instructions call `Clock::get()` **exactly once** at the beginning:
 
 ---
 
-### ✅ DESIGN CONFIRMATION #6: Admin-Controlled Leaderboard Reset
-
-**Design Intent**: ✅ **CONFIRMED AS INTENTIONAL**
-
-**Implementation**:
-```rust
-pub fn clear_burn_leaderboard(ctx: Context<ClearBurnLeaderboard>) -> Result<()> {
-    require!(
-        ctx.accounts.admin.key() == AUTHORIZED_ADMIN_PUBKEY,
-        ErrorCode::UnauthorizedAdmin
-    );
-    
-    let leaderboard = &mut ctx.accounts.leaderboard;
-    let old_entries_count = leaderboard.entries.len();
-    
-    leaderboard.entries.clear();
-    
-    emit!(LeaderboardClearedEvent {
-        admin: ctx.accounts.admin.key(),
-        entries_count: old_entries_count,
-        timestamp: Clock::get()?.unix_timestamp,
-    });
-    
-    Ok(())
-}
-```
-
-**Design Rationale**:
-The leaderboard can be **reset by admin** for operational flexibility:
-
-1. **Season/Epoch Management**: Start fresh leaderboard periods
-2. **Data Corruption Recovery**: Fix corrupted leaderboard state
-3. **Game Theory Adjustment**: Reset after major events
-4. **Controlled Centralization**: Only admin can clear (not arbitrary users)
-
-**Admin Authority**:
-- ✅ Hardcoded admin pubkey (testnet/mainnet)
-- ✅ Cannot be changed post-deployment
-- ✅ Clear audit trail via events
-
-**Why This is Acceptable**:
-- Leaderboard is **advisory data** (not financial state)
-- Project accounts remain intact (not deleted)
-- Clear event emission for transparency
-- Time-limited centralization risk
-
-**Security Analysis**:
-- ✅ Authorization check enforced
-- ✅ Event emission for transparency
-- ✅ Does not affect project ownership or burn amounts
-- ✅ Aligned with operational needs
-
-**Verdict**: Reasonable admin control for operational leaderboard management. Does not compromise core project or burn functionality.
-
----
-
 ## Security Analysis by Category
 
 ### 1. Access Control ✅ SECURE
@@ -352,8 +295,8 @@ The leaderboard can be **reset by admin** for operational flexibility:
 **Strengths**:
 - Project creation: Permissionless (anyone can create)
 - Project updates: Creator-only (enforced via constraint)
-- Burn for project: Permissionless (community participation)
-- Leaderboard clear: Admin-only (hardcoded authority)
+- Burn for project: Creator-only (enforced via constraint)
+- Admin operations: Admin-only for initialization (hardcoded authority)
 - Mint address validation (hardcoded and verified)
 - Token account ownership validated
 
@@ -362,11 +305,11 @@ The leaderboard can be **reset by admin** for operational flexibility:
 // Update project - creator only
 constraint = updater.key() == project.creator @ ErrorCode::UnauthorizedProjectAccess
 
-// Clear leaderboard - admin only
-require!(
-    ctx.accounts.admin.key() == AUTHORIZED_ADMIN_PUBKEY,
-    ErrorCode::UnauthorizedAdmin
-);
+// Burn for project - creator only
+constraint = burner.key() == project.creator @ ErrorCode::UnauthorizedProjectAccess
+
+// Admin initialization - admin only
+constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
 
 // Mint validation
 constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
@@ -380,25 +323,33 @@ constraint = mint.key() == AUTHORIZED_MINT_PUBKEY @ ErrorCode::UnauthorizedMint
 
 **Strengths**:
 ```rust
-// Checked addition for burn amounts
-project.burned_amount = project.burned_amount.checked_add(burn_amount)
-    .ok_or(ErrorCode::ArithmeticOverflow)?;
+// Saturating addition for burn amounts (stops at u64::MAX without failing)
+project.burned_amount = project.burned_amount.saturating_add(burn_amount);
 
-// Checked increment for memo count
-project.memo_count = project.memo_count.checked_add(1)
-    .ok_or(ErrorCode::ArithmeticOverflow)?;
+// Saturating increment for memo count
+project.memo_count = project.memo_count.saturating_add(1);
 
-// Saturating addition for global counter (prevents overflow halt)
-global_counter.total_projects = global_counter.total_projects.saturating_add(1);
+// Checked addition for global counter (with explicit error handling)
+global_counter.total_projects = global_counter.total_projects.checked_add(1)
+    .ok_or(ErrorCode::ProjectCounterOverflow)?;
 ```
 
-**Analysis**:
-- All critical arithmetic uses checked operations ✓
-- Global counter uses saturating_add (prevents DoS) ✓
-- Proper error handling ✓
-- No unchecked conversions ✓
+**Design Choice - Saturating vs Checked**:
+- **`burned_amount` and `memo_count`**: Use `saturating_add` - stops at `u64::MAX` without failing transaction
+  - Rationale: Allows continued operation even in extreme edge cases
+  - Warning log emitted when overflow detected
+  - Practical impact: negligible (u64::MAX ≈ 18 quintillion)
+- **`total_projects`**: Uses `checked_add` - fails on overflow
+  - Rationale: Project creation should fail if counter overflows (critical state)
 
-**Verdict**: Excellent arithmetic safety implementation.
+**Analysis**:
+- Appropriate arithmetic strategy for each use case ✓
+- Saturating addition prevents transaction failures for non-critical counters ✓
+- Checked addition with proper error handling for critical state ✓
+- No unchecked conversions ✓
+- Overflow warning logged for debugging ✓
+
+**Verdict**: Well-designed arithmetic safety with intentional strategy choices.
 
 ---
 
@@ -406,7 +357,7 @@ global_counter.total_projects = global_counter.total_projects.saturating_add(1);
 
 **Strengths**:
 ```rust
-// Project PDA
+// Project PDA (bump stored in account)
 #[account(
     init,
     payer = creator,
@@ -416,25 +367,27 @@ global_counter.total_projects = global_counter.total_projects.saturating_add(1);
 )]
 pub project: Account<'info, Project>,
 
-// Global counter PDA
+// Global counter PDA (bump derived on access)
 #[account(
+    mut,
     seeds = [b"global_counter"],
-    bump = global_counter.bump
+    bump
 )]
-pub global_counter: Account<'info, GlobalCounter>,
+pub global_counter: Account<'info, GlobalProjectCounter>,
 
-// Leaderboard PDA
+// Leaderboard PDA (bump derived on access)
 #[account(
     mut,
     seeds = [b"burn_leaderboard"],
-    bump = leaderboard.bump
+    bump
 )]
-pub leaderboard: Account<'info, BurnLeaderboard>,
+pub burn_leaderboard: Account<'info, BurnLeaderboard>,
 ```
 
 **Analysis**:
 - Anchor's seeds constraint provides PDA validation ✓
-- Bump seeds stored and verified ✓
+- Project account stores bump for efficiency ✓
+- GlobalProjectCounter and BurnLeaderboard derive bump on access (design choice) ✓
 - Deterministic derivation ✓
 - No PDA collision possible ✓
 
@@ -614,7 +567,11 @@ pub struct ProjectCreatedEvent {
     pub project_id: u64,
     pub creator: Pubkey,
     pub name: String,
-    pub burned_amount: u64,
+    pub description: String,
+    pub image: String,
+    pub website: String,
+    pub tags: Vec<String>,
+    pub burn_amount: u64,
     pub timestamp: i64,
 }
 
@@ -622,7 +579,13 @@ pub struct ProjectCreatedEvent {
 pub struct ProjectUpdatedEvent {
     pub project_id: u64,
     pub updater: Pubkey,
-    pub burned_amount: u64,
+    pub name: String,
+    pub description: String,
+    pub image: String,
+    pub website: String,
+    pub tags: Vec<String>,
+    pub burn_amount: u64,
+    pub total_burned: u64,
     pub timestamp: i64,
 }
 
@@ -631,22 +594,7 @@ pub struct TokensBurnedForProjectEvent {
     pub project_id: u64,
     pub burner: Pubkey,
     pub amount: u64,
-    pub message: String,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct LeaderboardUpdatedEvent {
-    pub project_id: u64,
-    pub new_burned_amount: u64,
-    pub leaderboard_size: usize,
-    pub success: bool,
-}
-
-#[event]
-pub struct LeaderboardClearedEvent {
-    pub admin: Pubkey,
-    pub entries_count: usize,
+    pub total_burned: u64,
     pub timestamp: i64,
 }
 ```
@@ -655,7 +603,7 @@ pub struct LeaderboardClearedEvent {
 - ✅ All state changes emit events
 - ✅ Events include all relevant data for indexing
 - ✅ Timestamps included for temporal queries
-- ✅ Success/failure status included where applicable
+- ✅ Total burned amount tracked in events
 
 **Verdict**: Comprehensive event emission for off-chain indexing.
 
@@ -846,18 +794,24 @@ pub struct Project {
 **Examples**:
 ```rust
 // Explicit validation before processing
-require!(burn_amount >= MIN_PROJECT_CREATION_BURN_AMOUNT, ErrorCode::BurnAmountTooSmall);
-require!(burn_amount <= MAX_BURN_PER_TX, ErrorCode::BurnAmountTooLarge);
+if burn_amount < MIN_PROJECT_CREATION_BURN_AMOUNT {
+    return Err(ErrorCode::BurnAmountTooSmall.into());
+}
+if burn_amount > MAX_BURN_PER_TX {
+    return Err(ErrorCode::BurnAmountTooLarge.into());
+}
 
-// Checked arithmetic everywhere
-project.burned_amount = project.burned_amount.checked_add(burn_amount)
-    .ok_or(ErrorCode::ArithmeticOverflow)?;
+// Saturating arithmetic for burn amounts (design choice: no transaction failure on overflow)
+project.burned_amount = project.burned_amount.saturating_add(burn_amount);
 
-// Saturating for non-critical counters
-global_counter.total_projects = global_counter.total_projects.saturating_add(1);
+// Checked arithmetic for critical counters
+global_counter.total_projects = global_counter.total_projects.checked_add(1)
+    .ok_or(ErrorCode::ProjectCounterOverflow)?;
 
 // Explicit size limits
-require!(decoded_memo.len() <= MAX_BORSH_DATA_SIZE, ErrorCode::MemoBorshDataTooLarge);
+if decoded_data.len() > MAX_BORSH_DATA_SIZE {
+    return Err(ErrorCode::InvalidMemoFormat.into());
+}
 ```
 
 **Verdict**: Excellent defensive programming practices.
@@ -988,13 +942,13 @@ All code quality issues have been resolved:
 - [ ] Initialize burn leaderboard PDA
 - [ ] Test project creation (42,069 tokens)
 - [ ] Test project update (42,069 tokens, creator only)
-- [ ] Test burn for project (420 tokens, anyone)
+- [ ] Test burn for project (420 tokens, creator only)
 - [ ] Test leaderboard updates correctly
 - [ ] Test leaderboard replacement when full (100 entries)
-- [ ] Test admin leaderboard clear
 - [ ] Verify all events emit correctly
 - [ ] Test error cases:
   - [ ] Unauthorized update attempt
+  - [ ] Unauthorized burn for project attempt
   - [ ] Burn amount too small
   - [ ] Invalid project metadata
   - [ ] Invalid memo format
@@ -1020,7 +974,7 @@ All code quality issues have been resolved:
 #### 4. Documentation for Users/Integrators
 - [ ] Project creation guide (minimum burn: 42,069 tokens)
 - [ ] Project update guide (creator-only, 42,069 tokens)
-- [ ] Burn for project guide (anyone, 420 tokens)
+- [ ] Burn for project guide (creator-only, 420 tokens)
 - [ ] Leaderboard query guide
 - [ ] Memo format specification
 - [ ] Event indexing guide
@@ -1063,8 +1017,8 @@ The memo-project contract has passed comprehensive security review with **all de
 ### Security Assessment: **EXCELLENT**
 
 **Critical Security Strengths**:
-- ✅ **Access Control**: Creator-only updates enforced, permissionless burns allowed
-- ✅ **Arithmetic Safety**: All operations use checked math, saturating for non-critical
+- ✅ **Access Control**: Creator-only updates and burns enforced
+- ✅ **Arithmetic Safety**: Saturating math for burn amounts, checked math for critical counters
 - ✅ **Data Validation**: Comprehensive validation for all input data
 - ✅ **PDA Security**: Proper seed derivation and validation
 - ✅ **Memo Validation**: Multi-layer validation (Base64, Borsh, version, amount)
@@ -1077,9 +1031,9 @@ The memo-project contract has passed comprehensive security review with **all de
 **Confirmed Design Features**:
 - ✅ **Unsorted Leaderboard**: Intentional for on-chain performance (O(n) vs O(n log n))
 - ✅ **Creator-Only Updates**: Correct authorization model
-- ✅ **Permissionless Burns**: Democratic community support
-- ✅ **Memo Tracking**: Clear separation between creator and community actions
-- ✅ **Admin Reset**: Operational flexibility for leaderboard management
+- ✅ **Creator-Only Burns**: Project owners control their burn statistics
+- ✅ **Memo Tracking**: Clear separation between different operation types
+- ✅ **Saturating Arithmetic**: Overflow stops at u64::MAX without transaction failure
 
 **Code Quality**: **EXCELLENT**
 - Clean, well-documented code
@@ -1100,10 +1054,10 @@ The memo-project contract has passed comprehensive security review with **all de
 - Testnet validation path defined
 - Integration with memo-burn verified
 
-**Centralization Risk**: ⚠️ **LOW-MODERATE**
-- Admin can clear leaderboard (advisory data only)
+**Centralization Risk**: ✅ **LOW**
+- Admin only required for one-time initialization (global counter, leaderboard)
 - Admin address hardcoded (cannot be changed)
-- Core functionality (create/update/burn) not affected by admin
+- Core functionality (create/update/burn) not affected by admin after initialization
 
 ### Mainnet Deployment Authorization
 
@@ -1137,7 +1091,8 @@ The memo-project contract has passed comprehensive security review with **all de
 **Key Findings**:
 - Zero critical security issues
 - All design decisions verified as intentional
-- Excellent code quality and safety practices
+- Creator-only access for updates and burns (not permissionless)
+- Saturating arithmetic for burn amounts (stops at u64::MAX)
 - Comprehensive validation and error handling
 - Proper Token2022 implementation
 - Clear deployment procedure
@@ -1150,12 +1105,18 @@ The memo-project contract has passed comprehensive security review with **all de
 
 This audit confirms that the memo-project contract implements a well-designed decentralized project platform with:
 - Strong security foundations
-- Clear ownership and permission models
-- Efficient on-chain leaderboard algorithm
+- Clear ownership and permission models (creator-only for updates and burns)
+- Efficient on-chain leaderboard algorithm (unsorted vector with O(n) operations)
+- Intentional arithmetic overflow handling (saturating_add for burn amounts)
 - Excellent code quality
 - Comprehensive testing
 
-All design choices were confirmed as intentional and aligned with the project's goals. The contract demonstrates industry-leading security practices and is ready for production deployment.
+All design choices were confirmed as intentional and aligned with the project's goals:
+- **Creator-only burns**: Ensures project owners control their burn statistics and leaderboard position
+- **Saturating arithmetic**: Prevents transaction failures at extreme values (u64::MAX)
+- **No admin leaderboard clear**: Leaderboard cannot be reset after initialization
+
+The contract demonstrates industry-leading security practices and is ready for production deployment.
 
 **The contract is production-ready** after completing testnet validation.
 
@@ -1163,10 +1124,10 @@ All design choices were confirmed as intentional and aligned with the project's 
 
 ## Appendix A: Code Quality Metrics
 
-- **Lines of Code**: ~1,640 (including comments)
-- **Instructions**: 6 public instructions
-- **Data Structures**: 7 account types
-- **Events**: 5 event types
+- **Lines of Code**: ~1,600 (including comments)
+- **Instructions**: 5 public instructions (initialize_global_counter, create_project, update_project, initialize_burn_leaderboard, burn_for_project)
+- **Data Structures**: 6 account/data types
+- **Events**: 3 event types (ProjectCreatedEvent, ProjectUpdatedEvent, TokensBurnedForProjectEvent)
 - **Error Codes**: 35 descriptive errors
 - **Unit Tests**: 69 tests (100% pass rate)
 - **Complexity**: Moderate (well-structured)
@@ -1196,7 +1157,7 @@ anchor deploy --program-name memo-project --provider.cluster mainnet
 
 **4. Initialize Global Counter**
 ```bash
-cargo run --bin admin-memo-project-init-global-counter
+cargo run --bin admin-memo-project-init-global-project-counter
 ```
 
 **5. Initialize Burn Leaderboard**
@@ -1235,8 +1196,7 @@ cargo run --bin test-memo-project-create-project
 |-----------|--------------|-----------------|---------|
 | Create Project | 42,069 tokens | Anyone | Register new project on-chain |
 | Update Project | 42,069 tokens | Creator only | Update project metadata |
-| Burn for Project | 420 tokens | Anyone | Support project, increase leaderboard rank |
-| Clear Leaderboard | 0 tokens | Admin only | Reset leaderboard for new season |
+| Burn for Project | 420 tokens | Creator only | Increase project burn statistics and leaderboard rank |
 
 ### Economic Incentives
 
@@ -1250,14 +1210,14 @@ cargo run --bin test-memo-project-create-project
 - Prevents frivolous updates
 - Ensures metadata quality
 
-**Community Support**:
-- Lower barrier (420 tokens) encourages participation
-- Builds burn statistics and leaderboard position
-- Demonstrates community backing
+**Creator Burn Support**:
+- Lower barrier (420 tokens) for burn_for_project operations
+- Allows creators to incrementally build burn statistics
+- Creator controls their project's leaderboard position
 
 **Leaderboard Competition**:
 - Top 100 projects tracked globally
-- Organic ranking by community burn support
+- Ranking by total burned amount (creation + updates + burns)
 - Transparent on-chain metrics
 
 ---
@@ -1287,18 +1247,19 @@ pub struct Project {
 
 ### Global Counter
 ```rust
-pub struct GlobalCounter {
-    pub total_projects: u64,          // Total projects ever created
-    pub bump: u8,                     // PDA bump
+pub struct GlobalProjectCounter {
+    pub total_projects: u64,          // Total projects ever created (starts at 0)
 }
 ```
 
 **PDA Seeds**: `[b"global_counter"]`
 
+**Note**: Bump is derived on each access (not stored in account)
+
 ### Burn Leaderboard
 ```rust
 pub struct BurnLeaderboard {
-    pub entries: Vec<LeaderboardEntry>, // Max 100 entries (unsorted)
+    pub entries: Vec<LeaderboardEntry>, // Max 100 entries (unsorted for performance)
 }
 
 pub struct LeaderboardEntry {
@@ -1308,6 +1269,8 @@ pub struct LeaderboardEntry {
 ```
 
 **PDA Seeds**: `[b"burn_leaderboard"]`
+
+**Note**: Bump is derived on each access (not stored in account). Entries are unsorted for O(1) updates - sort off-chain for display.
 
 ---
 
@@ -1322,11 +1285,12 @@ pub struct LeaderboardEntry {
 | `InvalidDataVersion` | Version mismatch | Client using wrong data format |
 | `ProjectNameEmpty` | Name is required | Empty name string |
 | `ProjectNameTooLong` | Name exceeds 64 chars | Name too long |
-| `UnauthorizedProjectAccess` | Not project creator | Non-creator tried to update |
+| `UnauthorizedProjectAccess` | Not project creator | Non-creator tried to update or burn |
 | `InvalidMemoEncoding` | Base64 decode failed | Malformed memo data |
 | `InvalidBorshDeserialization` | Borsh parse failed | Corrupted memo structure |
 | `BurnAmountMismatch` | Memo amount != instruction | Memo-burn discrepancy |
 | `UnauthorizedAdmin` | Not authorized admin | Non-admin tried admin action |
+| `BurnerPubkeyMismatch` | Burner in memo != signer | Memo burner doesn't match transaction signer |
 
 Full error list: 35 error codes with descriptive messages
 
@@ -1334,9 +1298,18 @@ Full error list: 35 error codes with descriptive messages
 
 **Audit Report End**
 
-**Audit Date**: November 13, 2025  
+**Audit Date**: December 16, 2025  
 **Contract Version**: Production Candidate  
 **Final Status**: ✅ APPROVED FOR MAINNET  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
+
+---
+
+## Revision History
+
+| Date | Changes |
+|------|---------|
+| November 13, 2025 | Initial audit report |
+| December 16, 2025 | Updated to reflect confirmed design intent: (1) `burn_for_project` is creator-only, not permissionless; (2) `burned_amount` uses `saturating_add` instead of `checked_add`; (3) Removed references to non-existent `clear_burn_leaderboard` instruction |
 
