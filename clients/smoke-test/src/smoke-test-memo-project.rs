@@ -504,21 +504,25 @@ fn create_project(
     instruction_data.extend_from_slice(&project_id.to_le_bytes());
     instruction_data.extend_from_slice(&burn_amount.to_le_bytes());
     
+    // Account order must match CreateProject struct in lib.rs:
+    // 1. creator, 2. global_counter, 3. project, 4. burn_leaderboard,
+    // 5. mint, 6. creator_token_account, 7. user_global_burn_stats,
+    // 8. token_program, 9. memo_burn_program, 10. system_program, 11. instructions
     let create_project_instruction = Instruction::new_with_bytes(
         *project_program_id,
         &instruction_data,
         vec![
-            AccountMeta::new(payer.pubkey(), true),
-            AccountMeta::new(*project_pda, false),
-            AccountMeta::new(*global_counter_pda, false),
-            AccountMeta::new(*mint, false),
-            AccountMeta::new(*token_account, false),
-            AccountMeta::new(*user_global_burn_stats_pda, false),
-            AccountMeta::new(*burn_leaderboard_pda, false),
-            AccountMeta::new_readonly(token_2022_id(), false),
-            AccountMeta::new_readonly(*burn_program_id, false),
-            AccountMeta::new_readonly(system_program::id(), false),
-            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new(payer.pubkey(), true),              // 1. creator
+            AccountMeta::new(*global_counter_pda, false),        // 2. global_counter
+            AccountMeta::new(*project_pda, false),               // 3. project
+            AccountMeta::new(*burn_leaderboard_pda, false),      // 4. burn_leaderboard
+            AccountMeta::new(*mint, false),                      // 5. mint
+            AccountMeta::new(*token_account, false),             // 6. creator_token_account
+            AccountMeta::new(*user_global_burn_stats_pda, false),// 7. user_global_burn_stats
+            AccountMeta::new_readonly(token_2022_id(), false),   // 8. token_program
+            AccountMeta::new_readonly(*burn_program_id, false),  // 9. memo_burn_program
+            AccountMeta::new_readonly(system_program::id(), false), // 10. system_program
+            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // 11. instructions
         ],
     );
     
