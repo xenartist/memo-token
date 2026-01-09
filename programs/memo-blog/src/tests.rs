@@ -38,6 +38,8 @@ mod tests {
         assert_eq!(BURN_MEMO_VERSION, 1);
         assert_eq!(BLOG_CREATION_DATA_VERSION, 1);
         assert_eq!(BLOG_UPDATE_DATA_VERSION, 1);
+        assert_eq!(BLOG_BURN_DATA_VERSION, 1);
+        assert_eq!(BLOG_MINT_DATA_VERSION, 1);
     }
 
     #[test]
@@ -306,7 +308,7 @@ mod tests {
 
     fn create_valid_blog_burn_data(burner: Pubkey) -> BlogBurnData {
         BlogBurnData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_BURN_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_BURN_FOR_BLOG_OPERATION.to_string(),
             burner: burner.to_string(),
@@ -391,7 +393,7 @@ mod tests {
 
     fn create_valid_blog_mint_data(minter: Pubkey) -> BlogMintData {
         BlogMintData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_MINT_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_MINT_FOR_BLOG_OPERATION.to_string(),
             minter: minter.to_string(),
@@ -485,7 +487,6 @@ mod tests {
             8 + // last_updated
             8 + // memo_count
             8 + // burned_amount
-            8 + // minted_amount
             8 + // last_memo_time
             1 + // bump
             4 + 64 + // name
@@ -500,8 +501,8 @@ mod tests {
     fn test_blog_space_has_buffer() {
         let space = Blog::calculate_space_max();
         
-        // Minimum required (without buffer) - no blog_id anymore
-        let minimum = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 
+        // Minimum required (without buffer) - no blog_id anymore, no minted_amount
+        let minimum = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 1 + 
                      (4 + 64) + (4 + 256) + (4 + 256);
         
         // Space should be greater than minimum due to buffer
@@ -658,7 +659,7 @@ mod tests {
         
         // Multiple burns with different messages
         let burn1 = BlogBurnData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_BURN_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_BURN_FOR_BLOG_OPERATION.to_string(),
             burner: creator.to_string(),
@@ -667,7 +668,7 @@ mod tests {
         assert!(burn1.validate(creator).is_ok());
         
         let burn2 = BlogBurnData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_BURN_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_BURN_FOR_BLOG_OPERATION.to_string(),
             burner: creator.to_string(),
@@ -677,7 +678,7 @@ mod tests {
         
         // Multiple mints with different messages
         let mint1 = BlogMintData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_MINT_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_MINT_FOR_BLOG_OPERATION.to_string(),
             minter: creator.to_string(),
@@ -686,7 +687,7 @@ mod tests {
         assert!(mint1.validate(creator).is_ok());
         
         let mint2 = BlogMintData {
-            version: BLOG_CREATION_DATA_VERSION,
+            version: BLOG_MINT_DATA_VERSION,
             category: EXPECTED_CATEGORY.to_string(),
             operation: EXPECTED_MINT_FOR_BLOG_OPERATION.to_string(),
             minter: creator.to_string(),
@@ -713,5 +714,582 @@ mod tests {
         // Description and image can be empty but exist as fields
         let _ = data.description;
         let _ = data.image;
+    }
+
+    // ============================================================================
+    // validate_memo_length() Tests
+    // ============================================================================
+
+    #[test]
+    fn test_valid_memo_minimum_length() {
+        let memo_data = vec![b'x'; MEMO_MIN_LENGTH];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_ok(), "Memo at minimum length should be valid");
+        let (valid, data) = result.unwrap();
+        assert!(valid);
+        assert_eq!(data.len(), MEMO_MIN_LENGTH);
+    }
+
+    #[test]
+    fn test_valid_memo_maximum_length() {
+        let memo_data = vec![b'x'; MEMO_MAX_LENGTH];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_ok(), "Memo at maximum length should be valid");
+        let (valid, data) = result.unwrap();
+        assert!(valid);
+        assert_eq!(data.len(), MEMO_MAX_LENGTH);
+    }
+
+    #[test]
+    fn test_valid_memo_mid_length() {
+        let memo_data = vec![b'x'; 400];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_ok(), "Memo at mid-range length should be valid");
+    }
+
+    #[test]
+    fn test_memo_too_short() {
+        let memo_data = vec![b'x'; MEMO_MIN_LENGTH - 1];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_err(), "Memo below minimum length should fail");
+    }
+
+    #[test]
+    fn test_memo_too_long() {
+        let memo_data = vec![b'x'; MEMO_MAX_LENGTH + 1];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_err(), "Memo above maximum length should fail");
+    }
+
+    #[test]
+    fn test_memo_empty() {
+        let memo_data = vec![];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_err(), "Empty memo should fail");
+    }
+
+    #[test]
+    fn test_memo_one_byte_short() {
+        let memo_data = vec![b'x'; 68];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_err(), "Memo one byte short should fail");
+    }
+
+    #[test]
+    fn test_memo_one_byte_long() {
+        let memo_data = vec![b'x'; 801];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        assert!(result.is_err(), "Memo one byte long should fail");
+    }
+
+    // ============================================================================
+    // Base64 Encoding/Decoding Tests
+    // ============================================================================
+
+    #[test]
+    fn test_base64_encode_decode_roundtrip() {
+        let original = b"Hello, World!".to_vec();
+        let encoded = general_purpose::STANDARD.encode(&original);
+        let decoded = general_purpose::STANDARD.decode(&encoded).unwrap();
+        
+        assert_eq!(original, decoded, "Base64 encode/decode should be reversible");
+    }
+
+    #[test]
+    fn test_base64_encode_burn_memo() {
+        use borsh::BorshSerialize;
+        
+        let memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount: MIN_BLOG_BURN_AMOUNT,
+            payload: b"test".to_vec(),
+        };
+        
+        let borsh_data = memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        let decoded_data = general_purpose::STANDARD.decode(&base64_encoded).unwrap();
+        let decoded_memo = BurnMemo::try_from_slice(&decoded_data).unwrap();
+        
+        assert_eq!(memo.version, decoded_memo.version);
+        assert_eq!(memo.burn_amount, decoded_memo.burn_amount);
+        assert_eq!(memo.payload, decoded_memo.payload);
+    }
+
+    // ============================================================================
+    // Helper Functions for Memo Creation
+    // ============================================================================
+
+    /// Create a valid Borsh+Base64 encoded memo for blog creation
+    fn create_blog_creation_memo(
+        burn_amount: u64,
+        creator: Pubkey,
+        name: &str,
+        description: &str,
+        image: &str,
+    ) -> Vec<u8> {
+        use borsh::BorshSerialize;
+        
+        let blog_data = BlogCreationData {
+            version: BLOG_CREATION_DATA_VERSION,
+            category: EXPECTED_CATEGORY.to_string(),
+            operation: EXPECTED_OPERATION.to_string(),
+            creator: creator.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            image: image.to_string(),
+        };
+        
+        let payload = blog_data.try_to_vec().unwrap();
+        
+        let burn_memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount,
+            payload,
+        };
+        
+        let borsh_data = burn_memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        base64_encoded.into_bytes()
+    }
+
+    /// Create a valid Borsh+Base64 encoded memo for blog update
+    fn create_blog_update_memo(
+        burn_amount: u64,
+        creator: Pubkey,
+        name: Option<String>,
+        description: Option<String>,
+        image: Option<String>,
+    ) -> Vec<u8> {
+        use borsh::BorshSerialize;
+        
+        let update_data = BlogUpdateData {
+            version: BLOG_UPDATE_DATA_VERSION,
+            category: EXPECTED_CATEGORY.to_string(),
+            operation: EXPECTED_UPDATE_OPERATION.to_string(),
+            creator: creator.to_string(),
+            name,
+            description,
+            image,
+        };
+        
+        let payload = update_data.try_to_vec().unwrap();
+        
+        let burn_memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount,
+            payload,
+        };
+        
+        let borsh_data = burn_memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        base64_encoded.into_bytes()
+    }
+
+    /// Create a valid Borsh+Base64 encoded memo for blog burn
+    fn create_blog_burn_memo(
+        burn_amount: u64,
+        burner: Pubkey,
+        message: &str,
+    ) -> Vec<u8> {
+        use borsh::BorshSerialize;
+        
+        let burn_data = BlogBurnData {
+            version: BLOG_BURN_DATA_VERSION,
+            category: EXPECTED_CATEGORY.to_string(),
+            operation: EXPECTED_BURN_FOR_BLOG_OPERATION.to_string(),
+            burner: burner.to_string(),
+            message: message.to_string(),
+        };
+        
+        let payload = burn_data.try_to_vec().unwrap();
+        
+        let burn_memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount,
+            payload,
+        };
+        
+        let borsh_data = burn_memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        base64_encoded.into_bytes()
+    }
+
+    /// Create a valid Borsh+Base64 encoded memo for blog mint
+    fn create_blog_mint_memo(
+        minter: Pubkey,
+        message: &str,
+    ) -> Vec<u8> {
+        use borsh::BorshSerialize;
+        
+        let mint_data = BlogMintData {
+            version: BLOG_MINT_DATA_VERSION,
+            category: EXPECTED_CATEGORY.to_string(),
+            operation: EXPECTED_MINT_FOR_BLOG_OPERATION.to_string(),
+            minter: minter.to_string(),
+            message: message.to_string(),
+        };
+        
+        let payload = mint_data.try_to_vec().unwrap();
+        
+        // For mint operations, burn_amount should be 0
+        let burn_memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount: 0,
+            payload,
+        };
+        
+        let borsh_data = burn_memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        base64_encoded.into_bytes()
+    }
+
+    // ============================================================================
+    // parse_blog_creation_borsh_memo() Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_valid_blog_creation_memo() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_creation_memo(
+            burn_amount,
+            creator,
+            "Test Blog",
+            "Test description",
+            "https://example.com/image.png",
+        );
+        
+        let result = parse_blog_creation_borsh_memo(&memo_data, creator, burn_amount);
+        assert!(result.is_ok(), "Valid blog creation memo should parse successfully");
+        
+        let blog_data = result.unwrap();
+        assert_eq!(blog_data.name, "Test Blog");
+        assert_eq!(blog_data.description, "Test description");
+        assert_eq!(blog_data.image, "https://example.com/image.png");
+    }
+
+    #[test]
+    fn test_parse_blog_creation_memo_minimal() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_creation_memo(
+            burn_amount,
+            creator,
+            "A",
+            "",
+            "",
+        );
+        
+        let result = parse_blog_creation_borsh_memo(&memo_data, creator, burn_amount);
+        assert!(result.is_ok(), "Minimal blog creation memo should parse successfully");
+        
+        let blog_data = result.unwrap();
+        assert_eq!(blog_data.name, "A");
+        assert_eq!(blog_data.description, "");
+        assert_eq!(blog_data.image, "");
+    }
+
+    #[test]
+    fn test_parse_blog_creation_memo_wrong_burn_amount() {
+        let creator = Pubkey::new_unique();
+        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
+        
+        let memo_data = create_blog_creation_memo(
+            memo_burn_amount,
+            creator,
+            "Test Blog",
+            "Test description",
+            "",
+        );
+        
+        let result = parse_blog_creation_borsh_memo(&memo_data, creator, expected_burn_amount);
+        assert!(result.is_err(), "Mismatched burn amount should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_creation_memo_wrong_user() {
+        let creator1 = Pubkey::new_unique();
+        let creator2 = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        
+        let memo_data = create_blog_creation_memo(
+            burn_amount,
+            creator1,
+            "Test Blog",
+            "Test description",
+            "",
+        );
+        
+        let result = parse_blog_creation_borsh_memo(&memo_data, creator2, burn_amount);
+        assert!(result.is_err(), "Mismatched user should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_creation_memo_invalid_base64() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let invalid_base64 = b"not valid base64!!!".to_vec();
+        
+        let result = parse_blog_creation_borsh_memo(&invalid_base64, creator, burn_amount);
+        assert!(result.is_err(), "Invalid base64 should fail parsing");
+    }
+
+    // ============================================================================
+    // parse_blog_update_borsh_memo() Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_valid_blog_update_memo() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_update_memo(
+            burn_amount,
+            creator,
+            Some("Updated Blog".to_string()),
+            Some("Updated description".to_string()),
+            Some("https://example.com/new-image.png".to_string()),
+        );
+        
+        let result = parse_blog_update_borsh_memo(&memo_data, creator, burn_amount);
+        assert!(result.is_ok(), "Valid blog update memo should parse successfully");
+        
+        let update_data = result.unwrap();
+        assert_eq!(update_data.name, Some("Updated Blog".to_string()));
+        assert_eq!(update_data.description, Some("Updated description".to_string()));
+        assert_eq!(update_data.image, Some("https://example.com/new-image.png".to_string()));
+    }
+
+    #[test]
+    fn test_parse_blog_update_memo_no_changes() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_update_memo(
+            burn_amount,
+            creator,
+            None,
+            None,
+            None,
+        );
+        
+        let result = parse_blog_update_borsh_memo(&memo_data, creator, burn_amount);
+        assert!(result.is_ok(), "Blog update memo with no changes should parse successfully");
+        
+        let update_data = result.unwrap();
+        assert_eq!(update_data.name, None);
+        assert_eq!(update_data.description, None);
+        assert_eq!(update_data.image, None);
+    }
+
+    #[test]
+    fn test_parse_blog_update_memo_partial() {
+        let creator = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_update_memo(
+            burn_amount,
+            creator,
+            Some("New Name".to_string()),
+            None,
+            None,
+        );
+        
+        let result = parse_blog_update_borsh_memo(&memo_data, creator, burn_amount);
+        assert!(result.is_ok(), "Partial update memo should parse successfully");
+        
+        let update_data = result.unwrap();
+        assert_eq!(update_data.name, Some("New Name".to_string()));
+        assert_eq!(update_data.description, None);
+    }
+
+    #[test]
+    fn test_parse_blog_update_memo_wrong_burn_amount() {
+        let creator = Pubkey::new_unique();
+        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
+        
+        let memo_data = create_blog_update_memo(
+            memo_burn_amount,
+            creator,
+            Some("Updated".to_string()),
+            None,
+            None,
+        );
+        
+        let result = parse_blog_update_borsh_memo(&memo_data, creator, expected_burn_amount);
+        assert!(result.is_err(), "Mismatched burn amount should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_update_memo_wrong_user() {
+        let creator1 = Pubkey::new_unique();
+        let creator2 = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        
+        let memo_data = create_blog_update_memo(
+            burn_amount,
+            creator1,
+            Some("Updated".to_string()),
+            None,
+            None,
+        );
+        
+        let result = parse_blog_update_borsh_memo(&memo_data, creator2, burn_amount);
+        assert!(result.is_err(), "Mismatched user should fail parsing");
+    }
+
+    // ============================================================================
+    // parse_blog_burn_borsh_memo() Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_valid_blog_burn_memo() {
+        let burner = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_burn_memo(
+            burn_amount,
+            burner,
+            "Burning for blog support",
+        );
+        
+        let result = parse_blog_burn_borsh_memo(&memo_data, burn_amount, burner);
+        assert!(result.is_ok(), "Valid blog burn memo should parse successfully");
+    }
+
+    #[test]
+    fn test_parse_blog_burn_memo_empty_message() {
+        let burner = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_data = create_blog_burn_memo(
+            burn_amount,
+            burner,
+            "",
+        );
+        
+        let result = parse_blog_burn_borsh_memo(&memo_data, burn_amount, burner);
+        assert!(result.is_ok(), "Blog burn memo with empty message should parse successfully");
+    }
+
+    #[test]
+    fn test_parse_blog_burn_memo_wrong_burn_amount() {
+        let burner = Pubkey::new_unique();
+        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
+        
+        let memo_data = create_blog_burn_memo(
+            memo_burn_amount,
+            burner,
+            "Test",
+        );
+        
+        let result = parse_blog_burn_borsh_memo(&memo_data, expected_burn_amount, burner);
+        assert!(result.is_err(), "Mismatched burn amount should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_burn_memo_wrong_burner() {
+        let burner1 = Pubkey::new_unique();
+        let burner2 = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        
+        let memo_data = create_blog_burn_memo(
+            burn_amount,
+            burner1,
+            "Test",
+        );
+        
+        let result = parse_blog_burn_borsh_memo(&memo_data, burn_amount, burner2);
+        assert!(result.is_err(), "Mismatched burner should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_burn_memo_invalid_base64() {
+        let burner = Pubkey::new_unique();
+        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let invalid_base64 = b"not valid base64!!!".to_vec();
+        
+        let result = parse_blog_burn_borsh_memo(&invalid_base64, burn_amount, burner);
+        assert!(result.is_err(), "Invalid base64 should fail parsing");
+    }
+
+    // ============================================================================
+    // parse_blog_mint_borsh_memo() Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_valid_blog_mint_memo() {
+        let minter = Pubkey::new_unique();
+        let memo_data = create_blog_mint_memo(
+            minter,
+            "Minting for blog reward",
+        );
+        
+        let result = parse_blog_mint_borsh_memo(&memo_data, minter);
+        assert!(result.is_ok(), "Valid blog mint memo should parse successfully");
+    }
+
+    #[test]
+    fn test_parse_blog_mint_memo_empty_message() {
+        let minter = Pubkey::new_unique();
+        let memo_data = create_blog_mint_memo(
+            minter,
+            "",
+        );
+        
+        let result = parse_blog_mint_borsh_memo(&memo_data, minter);
+        assert!(result.is_ok(), "Blog mint memo with empty message should parse successfully");
+    }
+
+    #[test]
+    fn test_parse_blog_mint_memo_wrong_minter() {
+        let minter1 = Pubkey::new_unique();
+        let minter2 = Pubkey::new_unique();
+        
+        let memo_data = create_blog_mint_memo(
+            minter1,
+            "Test",
+        );
+        
+        let result = parse_blog_mint_borsh_memo(&memo_data, minter2);
+        assert!(result.is_err(), "Mismatched minter should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_mint_memo_invalid_base64() {
+        let minter = Pubkey::new_unique();
+        let invalid_base64 = b"not valid base64!!!".to_vec();
+        
+        let result = parse_blog_mint_borsh_memo(&invalid_base64, minter);
+        assert!(result.is_err(), "Invalid base64 should fail parsing");
+    }
+
+    #[test]
+    fn test_parse_blog_mint_memo_with_nonzero_burn_amount() {
+        use borsh::BorshSerialize;
+        
+        let minter = Pubkey::new_unique();
+        
+        let mint_data = BlogMintData {
+            version: BLOG_MINT_DATA_VERSION,
+            category: EXPECTED_CATEGORY.to_string(),
+            operation: EXPECTED_MINT_FOR_BLOG_OPERATION.to_string(),
+            minter: minter.to_string(),
+            message: "Test".to_string(),
+        };
+        
+        let payload = mint_data.try_to_vec().unwrap();
+        
+        // Create memo with non-zero burn_amount (should be 0 for mint)
+        let burn_memo = BurnMemo {
+            version: BURN_MEMO_VERSION,
+            burn_amount: MIN_BLOG_BURN_AMOUNT, // Should be 0 for mint
+            payload,
+        };
+        
+        let borsh_data = burn_memo.try_to_vec().unwrap();
+        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
+        let memo_data = base64_encoded.into_bytes();
+        
+        let result = parse_blog_mint_borsh_memo(&memo_data, minter);
+        assert!(result.is_err(), "Mint memo with non-zero burn_amount should fail");
     }
 }

@@ -75,6 +75,12 @@ pub const BLOG_CREATION_DATA_VERSION: u8 = 1;
 // Current version of BlogUpdateData structure  
 pub const BLOG_UPDATE_DATA_VERSION: u8 = 1;
 
+// Current version of BlogBurnData structure
+pub const BLOG_BURN_DATA_VERSION: u8 = 1;
+
+// Current version of BlogMintData structure
+pub const BLOG_MINT_DATA_VERSION: u8 = 1;
+
 // Expected category for memo-blog contract
 pub const EXPECTED_CATEGORY: &str = "blog";
 
@@ -331,9 +337,9 @@ impl BlogBurnData {
     /// Validate the structure fields
     pub fn validate(&self, expected_burner: Pubkey) -> Result<()> {
         // Validate version
-        if self.version != BLOG_CREATION_DATA_VERSION {
+        if self.version != BLOG_BURN_DATA_VERSION {
             msg!("Unsupported blog burn data version: {} (expected: {})", 
-                 self.version, BLOG_CREATION_DATA_VERSION);
+                 self.version, BLOG_BURN_DATA_VERSION);
             return Err(ErrorCode::UnsupportedBlogBurnDataVersion.into());
         }
         
@@ -413,9 +419,9 @@ impl BlogMintData {
     /// Validate the structure fields
     pub fn validate(&self, expected_minter: Pubkey) -> Result<()> {
         // Validate version
-        if self.version != BLOG_CREATION_DATA_VERSION {
+        if self.version != BLOG_MINT_DATA_VERSION {
             msg!("Unsupported blog mint data version: {} (expected: {})", 
-                 self.version, BLOG_CREATION_DATA_VERSION);
+                 self.version, BLOG_MINT_DATA_VERSION);
             return Err(ErrorCode::UnsupportedBlogMintDataVersion.into());
         }
         
@@ -531,7 +537,6 @@ pub mod memo_blog {
         blog.image = blog_data.image.clone();
         blog.memo_count = 0; // Initialize memo_count (tracks burn_for_blog and mint_for_blog operations)
         blog.burned_amount = burn_amount;
-        blog.minted_amount = 0; // Initialize minted amount
         blog.last_memo_time = 0; // Set to 0 initially (no burn/mint_for_blog memos yet)
         blog.bump = ctx.bumps.blog;
 
@@ -740,27 +745,20 @@ pub mod memo_blog {
         // Get current timestamp once for consistency and efficiency
         let timestamp = Clock::get()?.unix_timestamp;
         
-        // Update blog minted amount tracking
-        // Note: We don't know the exact mint amount as it depends on supply tier
-        // We track only that a mint operation occurred
+        // Update blog tracking
         let blog = &mut ctx.accounts.blog;
         
         // Update memo count (burn_for_blog and mint_for_blog operations count as memos)
         blog.memo_count = blog.memo_count.saturating_add(1);
         
-        // Increment minted_amount by 1 to track mint operation count
-        // (actual token amount varies based on supply tier in memo-mint)
-        blog.minted_amount = blog.minted_amount.saturating_add(1);
-        
         // Update last memo time
         blog.last_memo_time = timestamp;
         
-        msg!("Successfully minted tokens for blog (creator: {}, mint count: {})", ctx.accounts.minter.key(), blog.minted_amount);
+        msg!("Successfully minted tokens for blog (creator: {})", ctx.accounts.minter.key());
         
         // Emit mint event
         emit!(TokensMintedForBlogEvent {
             creator: ctx.accounts.minter.key(),
-            mint_count: blog.minted_amount,
             timestamp,
         });
 
@@ -1310,7 +1308,6 @@ pub struct Blog {
     pub image: String,                // Blog image info (max 256 chars)
     pub memo_count: u64,              // Number of burn_for_blog + mint_for_blog operations
     pub burned_amount: u64,           // Total burned tokens for this blog
-    pub minted_amount: u64,           // Mint operation count for this blog
     pub last_memo_time: i64,          // Last burn/mint_for_blog operation timestamp (0 if never)
     pub bump: u8,                     // PDA bump
 }
@@ -1324,7 +1321,6 @@ impl Blog {
         8 + // last_updated
         8 + // memo_count
         8 + // burned_amount
-        8 + // minted_amount
         8 + // last_memo_time
         1 + // bump
         4 + 64 + // name (max 64 chars)
@@ -1370,7 +1366,6 @@ pub struct TokensBurnedForBlogEvent {
 #[event]
 pub struct TokensMintedForBlogEvent {
     pub creator: Pubkey,
-    pub mint_count: u64,
     pub timestamp: i64,
 }
 

@@ -76,7 +76,6 @@ pub struct Blog {
     pub image: String,
     pub memo_count: u64,
     pub burned_amount: u64,
-    pub minted_amount: u64,
     pub last_memo_time: i64,
     pub bump: u8,
 }
@@ -410,7 +409,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Last Updated:   {}", blog.last_updated);
     println!("Memo Count:     {}", blog.memo_count);
     println!("Burned Amount:  {} units ({} tokens)", blog.burned_amount, format_token_amount(blog.burned_amount));
-    println!("Minted Amount:  {}", blog.minted_amount);
     println!("Last Memo Time: {}", blog.last_memo_time);
     println!("Bump:           {}", blog.bump);
     
@@ -577,12 +575,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let blog = verify_blog(&client, &blog_pda, &payer.pubkey())?;
     
-    println!("Minted Count:   {}", blog.minted_amount);
     println!("Memo Count:     {}", blog.memo_count);
     println!("Last Memo Time: {}", blog.last_memo_time);
     
     // Verify mint tracking
-    assert!(blog.minted_amount >= 1, "Minted amount should be at least 1");
     assert!(blog.memo_count > memo_count_after_burn, "Memo count should increase after mint");
     assert!(blog.last_memo_time > 0, "Last memo time should be updated");
     
@@ -607,7 +603,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Creator:         {}", blog.creator);
     println!("  - Name:            {}", blog.name);
     println!("  - Total Burned:    {} tokens", format_token_amount(blog.burned_amount));
-    println!("  - Mint Count:      {}", blog.minted_amount);
     println!("  - Memo Count:      {}", blog.memo_count);
     println!();
 
