@@ -18,7 +18,7 @@ memo_burn = "2sb3gz5Cmr2g1ia5si2rmCZqPACxgaZXEmiS5k6Htcvh"
 memo_chat = "Hni4qE8GGW5uwBWzUEkpPBDRwXvKCWhM96teieAReRyd"
 memo_profile = "2BY8vPpQRFFwAqK3HqU5qL3qsGMH3VnX9Gv9bud3vzH8"
 memo_project = "6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a"
-memo_blog = "BLogXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+memo_blog = "3EKdp88FgyPC41bxRDzFAtCDUMV2g9SVt5UiytE8wdzM"
 
 [tokens.testnet]
 memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"

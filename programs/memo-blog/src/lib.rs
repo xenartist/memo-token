@@ -19,7 +19,7 @@ use std::str::FromStr;
 // Program ID - different for testnet and mainnet
 // Note: These are placeholder IDs, should be replaced after deployment
 #[cfg(feature = "mainnet")]
-declare_id!("BLogXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+declare_id!("3EKdp88FgyPC41bxRDzFAtCDUMV2g9SVt5UiytE8wdzM");
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("HPvqPUneCLwb8YYoYTrWmy6o7viRKsnLTgxwkg7CCpfB");
