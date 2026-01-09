@@ -57,7 +57,7 @@ mkdir -p "${AUTHORITY_KEYPAIR_DIR}"
 # Set restrictive permissions for authority keypairs
 chmod 700 "${AUTHORITY_KEYPAIR_DIR}"
 
-PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project")
+PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog")
 
 echo "========================================"
 echo "PART 1: Program Keypairs"

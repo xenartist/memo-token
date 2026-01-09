@@ -21,7 +21,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-ALL_PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project")
+ALL_PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog")
 
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_success() { echo -e "${GREEN}✅ $1${NC}"; }
@@ -41,6 +41,7 @@ get_program_name_dash() {
         memo_chat|memo-chat) echo "memo-chat" ;;
         memo_profile|memo-profile) echo "memo-profile" ;;
         memo_project|memo-project) echo "memo-project" ;;
+        memo_blog|memo-blog) echo "memo-blog" ;;
         *) echo "$1" ;;
     esac
 }
@@ -53,6 +54,7 @@ get_program_name_underscore() {
         memo-chat|memo_chat) echo "memo_chat" ;;
         memo-profile|memo_profile) echo "memo_profile" ;;
         memo-project|memo_project) echo "memo_project" ;;
+        memo-blog|memo_blog) echo "memo_blog" ;;
         *) echo "$1" ;;
     esac
 }
@@ -249,6 +251,7 @@ verify_configuration() {
         fi
         
         # 6. Verify admin authority (only for memo_chat and memo_project)
+        # Note: memo_blog no longer requires admin authority (global counter removed)
         if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ]; then
             local code_admin_authority=$(extract_authority_from_code "${program}" "ADMIN" "${ENV}")
             echo -n "  Admin Authority: "

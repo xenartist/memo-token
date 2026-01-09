@@ -143,6 +143,27 @@ path = "smoke-test/src/smoke-test-memo-project.rs"
 name = "smoke-test-memo-chat"
 path = "smoke-test/src/smoke-test-memo-chat.rs"
 
+[[bin]]
+name = "smoke-test-memo-blog"
+path = "smoke-test/src/smoke-test-memo-blog.rs"
+
+# Blog client binaries
+[[bin]]
+name = "test-memo-blog-create-blog"
+path = "blog/src/test-memo-blog-create-blog.rs"
+
+[[bin]]
+name = "test-memo-blog-update-blog"
+path = "blog/src/test-memo-blog-update-blog.rs"
+
+[[bin]]
+name = "test-memo-blog-burn-for-blog"
+path = "blog/src/test-memo-blog-burn-for-blog.rs"
+
+[[bin]]
+name = "test-memo-blog-mint-for-blog"
+path = "blog/src/test-memo-blog-mint-for-blog.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

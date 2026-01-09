@@ -26,6 +26,7 @@ AVAILABLE_SMOKE_TESTS=(
     "memo-profile"
     "memo-project"
     "memo-chat"
+    "memo-blog"
 )
 
 # Function to normalize test name (convert underscore to hyphen)
@@ -79,6 +80,7 @@ ${BOLD}TESTS:${NC}
     memo-burn                Run memo-burn smoke test (includes init + burn + verify)
     memo-profile             Run memo-profile smoke test (includes create + update + delete)
     memo-project             Run memo-project smoke test (includes create + verify)
+    memo-blog                Run memo-blog smoke test (includes create + update + burn + mint)
     memo_mint                Alternative naming (underscore)
 
 ${BOLD}EXAMPLES:${NC}
