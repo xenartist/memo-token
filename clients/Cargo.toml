@@ -164,6 +164,27 @@ path = "blog/src/test-memo-blog-burn-for-blog.rs"
 name = "test-memo-blog-mint-for-blog"
 path = "blog/src/test-memo-blog-mint-for-blog.rs"
 
+# Forum client binaries
+[[bin]]
+name = "admin-init-global-post-counter"
+path = "forum/src/admin-init-global-post-counter.rs"
+
+[[bin]]
+name = "test-memo-forum-create-post"
+path = "forum/src/test-memo-forum-create-post.rs"
+
+[[bin]]
+name = "test-memo-forum-burn-for-post"
+path = "forum/src/test-memo-forum-burn-for-post.rs"
+
+[[bin]]
+name = "test-memo-forum-mint-for-post"
+path = "forum/src/test-memo-forum-mint-for-post.rs"
+
+[[bin]]
+name = "smoke-test-memo-forum"
+path = "smoke-test/src/smoke-test-memo-forum.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

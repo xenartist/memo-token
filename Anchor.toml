@@ -11,6 +11,7 @@ memo_chat = "54ky4LNnRsbYioDSBKNrc5hG8HoDyZ6yhf8TuncxTBRF"
 memo_profile = "BwQTxuShrwJR15U6Utdfmfr4kZ18VT6FA1fcp58sT8US"
 memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 memo_blog = "HPvqPUneCLwb8YYoYTrWmy6o7viRKsnLTgxwkg7CCpfB"
+memo_forum = "9kwS5nSidmoHq84TyNzqFrtD29odp4sdRxm97tCbdpbS"
 
 [programs.mainnet]
 memo_mint = "8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX"
@@ -19,6 +20,7 @@ memo_chat = "Hni4qE8GGW5uwBWzUEkpPBDRwXvKCWhM96teieAReRyd"
 memo_profile = "2BY8vPpQRFFwAqK3HqU5qL3qsGMH3VnX9Gv9bud3vzH8"
 memo_project = "6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a"
 memo_blog = "3EKdp88FgyPC41bxRDzFAtCDUMV2g9SVt5UiytE8wdzM"
+memo_forum = "6gzhG5BveTkJfTi466toX4qmN3BtU9qp1Grnk61GvmXD"
 
 [tokens.testnet]
 memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"

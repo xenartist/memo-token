@@ -2259,6 +2259,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "memo-forum"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "base64 0.22.1",
+ "memo-burn",
+ "memo-mint",
+ "spl-memo",
+]
+
+[[package]]
 name = "memo-mint"
 version = "0.1.0"
 dependencies = [

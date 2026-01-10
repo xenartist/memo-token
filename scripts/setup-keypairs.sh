@@ -57,7 +57,7 @@ mkdir -p "${AUTHORITY_KEYPAIR_DIR}"
 # Set restrictive permissions for authority keypairs
 chmod 700 "${AUTHORITY_KEYPAIR_DIR}"
 
-PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog")
+PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog" "memo_forum")
 
 echo "========================================"
 echo "PART 1: Program Keypairs"
@@ -140,7 +140,7 @@ else
     echo ""
     echo "This keypair is used for:"
     echo "  - Paying for contract deployment"
-    echo "  - Admin operations in memo_chat and memo_project contracts"
+    echo "  - Admin operations in memo_chat, memo_project, and memo_forum contracts"
     echo ""
     echo "Options:"
     echo "  1) Copy existing keypair from backup"
@@ -254,7 +254,7 @@ echo "Next steps:"
 echo "  1. Update program IDs in programs/*/src/lib.rs"
 echo "  2. Update program IDs in Anchor.toml"
 echo "  3. Update AUTHORIZED_MINT_PUBKEY in program code"
-echo "  4. Update AUTHORIZED_ADMIN_PUBKEY in program code (memo_chat, memo_project)"
+echo "  4. Update AUTHORIZED_ADMIN_PUBKEY in program code (memo_chat, memo_project, memo_forum)"
 echo "  5. Commit changes to git"
 echo "  6. Run deployment: ./scripts/deploy-${ENV}.sh"
 echo ""

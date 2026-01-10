@@ -1,0 +1,26 @@
+[package]
+name = "memo-forum"
+version = "0.1.0"
+description = "Memo Forum - Decentralized forum posts with burn/mint mechanics"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "memo_forum"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+mainnet = []
+
+[dependencies]
+anchor-lang = "0.32.1"
+anchor-spl = "0.32.1"
+spl-memo = "6.0"
+base64 = "0.22"
+memo-burn = { path = "../memo-burn", features = ["cpi"] }
+memo-mint = { path = "../memo-mint", features = ["cpi"] }
