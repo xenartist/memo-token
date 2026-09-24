@@ -3,3 +3,6 @@
 /clients/img
 /clients/target
 .DS_Store
+# Claude Code (local only, do not commit)
+/CLAUDE.md
+/memory/
