@@ -3,9 +3,9 @@
 ## Executive Summary
 
 **Contract**: memo-mint  
-**Audit Date**: October 27, 2025  
+**Audit Date**: October 27, 2025 (original), revised October 13, 2026  
 **Auditor**: Pre-Production Security Review  
-**Version**: Production Candidate  
+**Version**: Revision 2, program version 0.2.0 (round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
 **Language**: Rust (Anchor Framework)  
 **Network**: X1 (SVM-based)
 
@@ -13,7 +13,7 @@
 
 **Risk Level**: ✅ **LOW** - Contract is production-ready with confirmed design intent
 
-The memo-mint contract implements a dynamic token minting mechanism with tiered supply-based rewards for a fair-launch mining project. The contract demonstrates excellent security practices and all design decisions have been verified as intentional.
+The memo-mint contract implements a dynamic token minting mechanism with supply-based rewards (a round-number emission curve) for a fair-launch mining project. The contract demonstrates excellent security practices and all design decisions have been verified as intentional.
 
 ### Summary Statistics
 
@@ -28,23 +28,66 @@ The memo-mint contract implements a dynamic token minting mechanism with tiered 
 ## Contract Overview
 
 ### Purpose
-The memo-mint contract enables users to mint MEMO tokens by submitting memo instructions. The minting amount decreases as total supply increases, following a 6-tier progressive reduction model from 1 token down to 0.000001 token per mint.
+The memo-mint contract enables users to mint MEMO tokens by submitting memo instructions. The minting amount decreases as circulating supply increases, stepping down at every round number (10M, 20M, ..., 100M, 200M, ...) from 1 token to 1 lamport (0.000001 token) at the 10 trillion cap.
 
 ### Key Features
-- Dynamic mint amounts based on supply tiers
-- 10 trillion token hard cap
-- Mandatory memo requirement (69-800 bytes)
+- Dynamic mint amounts based on a round-number emission curve
+- 10 trillion token cap on circulating (outstanding) supply
+- Mandatory memo requirement (at least 69 bytes; no contract maximum)
 - PDA-based mint authority
 - Token2022 compatibility
 - Dual network support (testnet/mainnet)
 
-### Supply Tiers
-1. **0-100M tokens**: 1 token per mint
-2. **100M-1B tokens**: 0.1 token per mint
-3. **1B-10B tokens**: 0.01 token per mint
-4. **10B-100B tokens**: 0.001 token per mint
-5. **100B-1T tokens**: 0.0001 token per mint
-6. **1T-10T tokens**: 0.000001 token per mint
+### Emission Curve
+- **Below 10M tokens**: 1 token per mint
+- **From 10M tokens**: supply in `[d × 10ⁿ, (d+1) × 10ⁿ)` (leading digit `d` = 1..9) pays `decade_base × (11 − d) / 10`, where `decade_base` is 1 token for 10M–100M, 0.1 for 100M–1B, 0.01 for 1B–10B, and so on
+
+| Supply reaches | Reward per mint |
+|---|---|
+| below 20M | 1 |
+| 20M / 30M / ... / 90M | 0.9 / 0.8 / ... / 0.2 |
+| 100M | 0.1 |
+| 200M / ... / 900M | 0.09 / ... / 0.02 |
+| 1B | 0.01 |
+| 10B / 100B / 1T | 0.001 / 0.0001 / 0.00001 |
+| 9T – 10T | 0.000002 (2 lamports) |
+
+Every decade start pays exactly 10x less than the previous one, so the long-run slope matches the original 6-tier schedule; the single 10x cliff at each tier boundary is replaced by nine smaller steps.
+
+---
+
+## Revision 2 Changes (October 13, 2026)
+
+| Change | Details |
+|---|---|
+| Round-number emission curve | Replaces the 6-tier `match` in `calculate_dynamic_mint_amount`. Integer math only, at most 5 loop iterations. Compile-time assertions: the curve ends exactly at `MAX_SUPPLY`, every step is a whole number of lamports, and the smallest reward is ≥ 1 lamport. |
+| No maximum memo length | Only the 69-byte minimum is checked. The transaction size limit (1,232 bytes on X1 today, 4,096 bytes on Solana since September 2026) bounds the memo, so the contract adapts to future transaction-size changes without an upgrade. The `MemoTooLong` error was removed. On a local validator, an 801-byte and an 812-byte memo minted successfully; a 900-byte memo failed only at the transaction size limit (1,279 > 1,232 bytes). |
+| `process_mint_to` fixed | `recipient: Pubkey` is now a real handler argument, matching `#[instruction(recipient: Pubkey)]`. Previously the IDL showed no arguments, so IDL-generated clients and Anchor CPI calls always failed with `InstructionDidNotDeserialize`. The wire format (8-byte discriminator + 32-byte recipient) is unchanged, so existing hand-built clients keep working. |
+| Compute-unit optimization | Removed the duplicate `find_program_address` (the `seeds = [b"mint_authority"], bump` constraint already verifies the PDA and canonical bump), success-path logs and floating-point log formatting (`calculate_token_count_safe` removed), and the memo data copy. memo-mint's own consumption dropped from 17,749 to 12,638 CU on a local validator (−29%). On X1 mainnet a single mint with a 70-byte memo is expected to drop from about 60,331 to about 55,220 CU (−8.5%). |
+| Comments and messages | Corrected the compute-budget comment (it also occupies an instruction index, so it must be at index 1 or later). `UnauthorizedTokenAccount` now reads "Token account must be owned by the minting user or the declared recipient." |
+| Error codes renumbered | `MemoTooLong` was removed, together with `InvalidMemoFormat` and `InvalidMintAuthority`, which were never returned (mint does not parse memo contents, and the mint authority PDA is checked by the account constraint). Every remaining error after them moved down (see the table below). |
+
+**Error codes (Revision 2)**:
+
+| Error | Old code | New code |
+|---|---|---|
+| `MemoRequired` | 6000 | 6000 |
+| `InvalidMemoFormat` | 6001 | removed |
+| `MemoTooShort` | 6002 | 6001 |
+| `MemoTooLong` | 6003 | removed |
+| `InvalidTokenAccount` | 6004 | 6002 |
+| `UnauthorizedMint` | 6005 | 6003 |
+| `UnauthorizedTokenAccount` | 6006 | 6004 |
+| `InvalidMintAuthority` | 6007 | removed |
+| `SupplyLimitReached` | 6008 | 6005 |
+| `ArithmeticOverflow` | 6009 | 6006 |
+
+**Behavior changes integrators must know**:
+1. **Success log format**: `Minted {amount} units to {owner}, supply before mint: {supply} units` (integer units, 1 token = 1,000,000 units). It replaces `Successfully minted X tokens ... current supply: Y tokens`. Off-chain parsers of the old line must be updated.
+2. **Boundary semantics**: the old schedule paid tier-1 rewards at exactly 100M (inclusive). The new curve pays 0.1 from exactly 100M on, matching the round-number rule.
+3. **IDL**: `process_mint_to` now has one argument, `recipient: pubkey`. Upgrade the on-chain IDL after deploying.
+
+**Verification**: 47 unit tests pass (every round number from 10M to 9T and one lamport below each, decade starts, monotonicity, cap edge cases, `process_mint_to` wire format). `process_mint` and `process_mint_to` were exercised on a local validator, including rejection of a mismatched recipient (`UnauthorizedTokenAccount`) and of a missing token account (`AccountNotInitialized`).
 
 ---
 
@@ -68,12 +111,18 @@ This is a **fair-launch mining project** where any user can mint tokens by submi
 
 1. **Equal Opportunity**: All users start from zero and can participate in mining
 2. **Market-Driven Supply**: Total supply depends on community participation
-3. **Competition Encouraged**: Users are expected to compete for early-tier rewards
+3. **Competition Encouraged**: Users are expected to compete for early, higher rewards
 4. **No Anti-Spam Needed**: High transaction volume is the desired behavior
+
+**Multiple Mints per Transaction (confirmed as intentional, Revision 2)**:
+- One memo at index 0 backs every `process_mint` in the same transaction, either as several top-level instructions or as a loop of CPI calls from another program.
+- The memo program's compute cost (about 40k CU for a 70-byte memo on X1) is paid once per transaction, so batching lowers the cost per token to roughly a third of a single mint.
+- A transaction can hold about 31 mints: the runtime caps the instruction trace at 64 entries and each mint uses two (memo-mint plus the Token-2022 CPI). With memos longer than about 300 bytes, the 1,232-byte transaction size limit binds first.
+- Clients may expose batching to users. The effective price ceiling is therefore the batch mint cost, not the single-mint cost.
 
 **Security Analysis**:
 - ✅ Transaction fees provide natural rate limiting (network-level)
-- ✅ Dynamic tier system naturally reduces rewards as supply increases
+- ✅ The emission curve naturally reduces rewards as supply increases
 - ✅ Early miners get higher rewards (incentivizes early participation)
 - ✅ No privilege escalation possible (everyone has equal access)
 
@@ -87,31 +136,31 @@ This is a **fair-launch mining project** where any user can mint tokens by submi
 
 **Implementation**:
 ```rust
-/// IMPORTANT: This contract enforces a strict instruction ordering:
+/// IMPORTANT: This contract enforces memo at index 0:
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-mint::process_mint or memo-mint::process_mint_to (other instructions)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
-fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 makes the mint fail.
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<bool> {
     let current_index = load_current_index_checked(instructions)?;
     
     // Current instruction (process_mint) must be at index 1 or later
     // to leave index 0 available for memo
     if current_index < 1 {
-        return Ok((false, vec![]));
+        return Ok(false);
     }
     
     // Check that index 0 contains the memo instruction
     match load_instruction_at_checked(0, instructions) {
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
-                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH)
             } else {
-                Ok((false, vec![]))
+                Ok(false)
             }
         },
-        Err(_) => Ok((false, vec![]))
+        Err(_) => Ok(false)
     }
 }
 ```
@@ -123,14 +172,14 @@ The strict position requirement has been **tested and validated** for the follow
 2. **Predictability**: Transaction structure is deterministic and easy to verify
 3. **Gas Efficiency**: Reduces compute units by avoiding position scanning loops
 4. **Security**: Prevents ambiguity about which memo applies to which instruction
-5. **Flexibility**: Compute budget instructions can be placed anywhere (processed by runtime)
+5. **Compute Budget Placement**: Compute budget instructions occupy an instruction index like any other instruction, so they go at index 1 or later (usually last). Wallets or aggregators that prepend them at index 0 make the mint fail; this strict rule was re-confirmed in Revision 2.
 
 **Required Transaction Structure**:
 ```
 Transaction:
-  [0] MemoProgram::Memo (69-800 bytes) (REQUIRED)
+  [0] MemoProgram::Memo (at least 69 bytes) (REQUIRED)
   [1+] MemoMint::process_mint / process_mint_to
-  [2+] ComputeBudgetProgram::SetComputeUnitLimit (optional, can be anywhere)
+  [last] ComputeBudgetProgram::SetComputeUnitLimit (optional, never at index 0)
 ```
 
 **Security Analysis**:
@@ -138,7 +187,7 @@ Transaction:
 - ✅ Efficient validation with minimal compute units
 - ✅ Prevents memo injection attacks
 - ✅ Works reliably with tested client implementations
-- ✅ Compute budget flexibility improves transaction construction
+- ✅ Simple, fixed rule that clients can follow without scanning
 
 **Verdict**: This is an optimal design choice that prioritizes performance and clarity. Client integration guides should document the required transaction structure.
 
@@ -207,50 +256,54 @@ The project includes a dedicated tool for transferring mint authority: `admin-tr
 
 ---
 
-### ✅ DESIGN CONFIRMATION #4: Tier Boundary Behavior
+### ✅ DESIGN CONFIRMATION #4: Emission Curve Boundary Behavior
 
-**Design Intent**: ✅ **CONFIRMED AS INTENTIONAL**
+**Design Intent**: ✅ **CONFIRMED AS INTENTIONAL (Revision 2)**
 
 **Implementation**:
 ```rust
-let amount = match current_supply {
-    0..=TIER_1_THRESHOLD_LAMPORTS => TIER_1_MINT_AMOUNT,           // 0-100M tokens: 1 token
-    _ if current_supply <= TIER_2_THRESHOLD_LAMPORTS => TIER_2_MINT_AMOUNT, // 100M-1B tokens: 0.1 token
-    _ if current_supply <= TIER_3_THRESHOLD_LAMPORTS => TIER_3_MINT_AMOUNT, // 1B-10B tokens: 0.01 token
-    _ if current_supply <= TIER_4_THRESHOLD_LAMPORTS => TIER_4_MINT_AMOUNT, // 10B-100B tokens: 0.001 token
-    _ if current_supply <= TIER_5_THRESHOLD_LAMPORTS => TIER_5_MINT_AMOUNT, // 100B-1T tokens: 0.0001 token
-    _ => TIER_6_MINT_AMOUNT, // 1T+ tokens: 0.000001 token (1 lamport)
+let amount = if current_supply < CURVE_START_LAMPORTS {
+    BASE_MINT_AMOUNT
+} else {
+    // Find the decade: magnitude <= current_supply < magnitude * 10
+    let mut magnitude = CURVE_START_LAMPORTS;
+    let mut decade_base = BASE_MINT_AMOUNT;
+    while current_supply / 10 >= magnitude {
+        magnitude *= 10;
+        decade_base /= 10;
+    }
+    // Leading digit, always 1..=9 here
+    let digit = current_supply / magnitude;
+    decade_base * (11 - digit) / 10
 };
 ```
 
-**Design Rationale**:
-The inclusive boundary logic is **intentional and confirmed**:
-
-**Behavior at Exact Thresholds**:
-- At exactly 100M tokens: User receives **1 token** (Tier 1 reward)
-- At 100M + 1 lamport: User receives **0.1 token** (Tier 2 reward)
-- At exactly 1B tokens: User receives **0.1 token** (Tier 2 reward)
-- At 1B + 1 lamport: User receives **0.01 token** (Tier 3 reward)
+**Behavior at Round Numbers** (each step starts exactly at the round number):
+- 20M − 1 lamport: **1 token**; exactly 20M: **0.9 token**
+- 100M − 1 lamport: **0.2 token**; exactly 100M: **0.1 token**
+- Exactly 1B: **0.01 token**
+- 9T up to the cap: **2 lamports**
 
 **Rationale**:
-1. **Rewards the Last Tier 1 Miner**: Users who reach exactly 100M still get the higher tier reward
-2. **Clear Boundary**: The transition happens immediately after the threshold
-3. **Fair Distribution**: No ambiguity about who gets which tier reward
+1. **Round numbers users can track**: every change happens at 10M, 20M, ..., 100M, 200M, ...
+2. **No 10x cliff**: the original schedule dropped the reward 10x in one step at each tier; the curve spreads the same drop over nine steps
+3. **Same long-run slope**: each decade start pays exactly 10x less than the previous one, matching the original tiers
+4. **Ends at the cap**: the curve would reach exactly 1 lamport at 10T
 
 **Example Scenario**:
 ```
-Current Supply: 99,999,999.000000 tokens
-User A mints: Gets 1 token → Supply becomes 100,000,000.000000 tokens
-User B mints: Gets 0.1 token → Supply becomes 100,000,000.100000 tokens
+Current Supply: 19,999,999.000000 tokens
+User A mints: Gets 1 token   → Supply becomes 20,000,000.000000 tokens
+User B mints: Gets 0.9 token → Supply becomes 20,000,000.900000 tokens
 ```
 
 **Security Analysis**:
-- ✅ Compile-time validation ensures thresholds are in order
-- ✅ No arithmetic overflow possible (checked addition)
-- ✅ Behavior is deterministic and predictable
+- ✅ Compile-time validation ensures the curve ends at `MAX_SUPPLY` and every reward is a whole number of lamports ≥ 1
+- ✅ The decade loop runs at most 5 times and `magnitude * 10 <= current_supply < MAX_SUPPLY`, so it cannot overflow
+- ✅ Behavior is deterministic and covered by unit tests at all 54 round numbers
 - ✅ Race conditions prevented by account locking
 
-**Verdict**: The tier boundary logic is correct, fair, and matches the intended economic model.
+**Verdict**: The curve boundary logic is correct and matches the intended economic model.
 
 ---
 
@@ -260,8 +313,8 @@ User B mints: Gets 0.1 token → Supply becomes 100,000,000.100000 tokens
 
 **Implementation**:
 ```rust
-fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
-    // Only validates length, not content
+fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
+    // Only validates the minimum length, not content; the transaction size limit bounds the maximum
     if memo_data.is_empty() {
         return Err(ErrorCode::MemoTooShort.into());
     }
@@ -270,11 +323,7 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooShort.into());
     }
     
-    if memo_length > max_length {
-        return Err(ErrorCode::MemoTooLong.into());
-    }
-    
-    Ok((true, memo_data.to_vec()))
+    Ok(true)
 }
 ```
 
@@ -289,7 +338,7 @@ The contract **intentionally accepts any binary data** and only validates length
 5. **Binary data**: Any arbitrary bytes
 
 **Contract Integration Example**:
-Other contracts in the system (memo-chat, memo-project, etc.) call `process_mint_to` and pass structured data:
+Other contracts in the system (memo-chat, memo-blog, memo-forum) put structured data in the memo and call `process_mint` via CPI:
 ```rust
 // In memo-chat contract:
 let memo_data = borsh::to_vec(&structured_data)?;
@@ -305,7 +354,7 @@ let base64_memo = base64::encode(&memo_data);
 5. **Off-Chain Filtering**: Content moderation handled by frontends/indexers
 
 **Security Analysis**:
-- ✅ Length validation prevents abuse (69-800 bytes)
+- ✅ Minimum length enforced (69 bytes); the transaction size limit bounds the maximum, and the memo program charges compute units per byte
 - ✅ No injection attacks possible (memo is just data)
 - ✅ No execution of memo content
 - ✅ Off-chain services can filter/validate as needed
@@ -338,7 +387,7 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 ```
 
 **Theoretical Scenario**:
-1. Supply at 9,999,999,999,999.999999 tokens (1 lamport below max)
+1. Supply at 9,999,999,999,999.999998 tokens (2 lamports below max; the last-step reward is 2 lamports)
 2. Two users submit mint transactions simultaneously
 3. Both read supply < MAX_SUPPLY
 
@@ -354,13 +403,15 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 Time | Transaction A              | Transaction B
 -----|----------------------------|---------------------------
 T0   | Locks mint account         | Waits for lock
-T1   | Reads supply = MAX - 1     |
-T2   | Mints 1 lamport           |
+T1   | Reads supply = MAX - 2     |
+T2   | Mints 2 lamports          |
 T3   | Supply = MAX              |
 T4   | Unlocks mint account       | Acquires lock
 T5   |                           | Reads supply = MAX
 T6   |                           | Fails: SupplyLimitReached
 ```
+
+At 1 lamport below the cap the 2-lamport reward would overshoot, so that mint fails with `SupplyLimitReached`; the cap is never exceeded.
 
 **Verdict**: The double-check pattern is excellent defensive programming, but Solana's account locking already prevents race conditions. No changes needed.
 
@@ -368,10 +419,16 @@ T6   |                           | Fails: SupplyLimitReached
 
 ### ℹ️ INFORMATIONAL #2: process_mint_to Recipient Flexibility
 
-**Design**: `process_mint_to` allows minting to any valid token account.
+**Design**: `process_mint_to` allows anyone to mint for someone else (the caller pays the fee, the recipient receives the tokens).
 
 **Implementation**:
 ```rust
+pub fn process_mint_to(ctx: Context<ProcessMintTo>, recipient: Pubkey) -> Result<()>
+
+#[derive(Accounts)]
+#[instruction(recipient: Pubkey)]
+pub struct ProcessMintTo<'info> {
+    // ...
 #[account(
     mut,
     constraint = recipient_token_account.mint == mint.key() @ ErrorCode::InvalidTokenAccount,
@@ -380,9 +437,11 @@ T6   |                           | Fails: SupplyLimitReached
 pub recipient_token_account: InterfaceAccount<'info, TokenAccount>,
 ```
 
+**Revision 2 fix**: `recipient` was declared in `#[instruction(...)]` but missing from the handler signature, so the IDL listed no arguments and every IDL-generated client or Anchor CPI call failed. It is now a handler argument; the wire format is unchanged.
+
 **Validation Performed**:
 - ✅ Token account belongs to correct mint
-- ✅ Token account owner matches specified recipient
+- ✅ Token account owner matches the declared recipient (a consistency check that catches a wrong account; the recipient does not sign, and does not need to)
 - ✅ Uses `InterfaceAccount` for Token2022 compatibility
 
 **Flexibility by Design**:
@@ -415,24 +474,17 @@ The contract allows minting to **any valid token account**, including:
 
 ## Code Quality Excellence
 
-### ✅ Best Practice #1: Safe Floating Point for Display
+### ✅ Best Practice #1: Integer-Only Logging
 
-**Implementation**:
+**Implementation** (Revision 2):
 ```rust
-fn calculate_token_count_safe(lamports: u64) -> Result<f64> {
-    let result = lamports as f64 / DECIMAL_FACTOR as f64;
-    if !result.is_finite() {
-        return Err(ErrorCode::ArithmeticOverflow.into());
-    }
-    Ok(result)
-}
+msg!("Minted {} units to {}, supply before mint: {} units", amount, token_account.owner, current_supply);
 ```
 
 **Why This is Excellent**: 
-- ✅ Used only for logging, not for calculations
-- ✅ Validates for NaN/Infinity edge cases
-- ✅ All actual math uses safe integer arithmetic
-- ✅ Defensive programming for display purposes
+- ✅ No floating-point formatting on-chain (expensive in compute units)
+- ✅ One log line per successful mint; error paths keep their detailed logs
+- ✅ All math uses integer arithmetic
 
 ---
 
@@ -453,7 +505,7 @@ pub enum ErrorCode {
 
 // Runtime messages include actual values
 msg!("Memo too short: {} bytes (minimum: {})", memo_length, min_length);
-msg!("Successfully minted {} tokens ({} units) to {}", token_count, amount, recipient);
+msg!("Minted {} units to {}, supply before mint: {} units", amount, token_account.owner, current_supply);
 ```
 
 **Why This is Excellent**: 
@@ -470,13 +522,9 @@ msg!("Successfully minted {} tokens ({} units) to {}", token_count, amount, reci
 ```rust
 const _: () = {
     assert!(MAX_SUPPLY_TOKENS <= u64::MAX / DECIMAL_FACTOR, "MAX_SUPPLY_TOKENS too large");
-    assert!(TIER_1_THRESHOLD_LAMPORTS < TIER_2_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_2_THRESHOLD_LAMPORTS < TIER_3_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_3_THRESHOLD_LAMPORTS < TIER_4_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_4_THRESHOLD_LAMPORTS < TIER_5_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_5_THRESHOLD_LAMPORTS <= MAX_SUPPLY_LAMPORTS, "Final tier exceeds max supply");
-    assert!(TIER_1_MINT_AMOUNT > 0, "Mint amounts must be positive");
-    assert!(TIER_6_MINT_AMOUNT > 0, "Minimum mint amount must be positive");
+    assert!(CURVE_START_LAMPORTS * 10u64.pow(CURVE_DECADES) == MAX_SUPPLY_LAMPORTS, "Curve must end at max supply");
+    assert!(BASE_MINT_AMOUNT % 10u64.pow(CURVE_DECADES) == 0, "Base mint amount must be divisible across all decades");
+    assert!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES) >= 1, "Minimum mint amount must be positive");
 };
 ```
 
@@ -532,26 +580,23 @@ assert!(MAX_SUPPLY_TOKENS <= u64::MAX / DECIMAL_FACTOR);
 
 ### 3. PDA Validation ✅ SECURE
 
-**Strengths**:
+**Implementation**:
 ```rust
-let (expected_mint_authority, expected_bump) = Pubkey::find_program_address(
-    &[b"mint_authority"],
-    program_id
-);
+/// CHECK: PDA serving as mint authority
+#[account(
+    seeds = [b"mint_authority"],
+    bump
+)]
+pub mint_authority: AccountInfo<'info>,
 
-if expected_mint_authority != mint_authority.key() {
-    return Err(ErrorCode::InvalidMintAuthority.into());
-}
-
-if expected_bump != mint_authority_bump {
-    return Err(ErrorCode::InvalidMintAuthority.into());
-}
+// in the handler: sign with the bump Anchor verified
+&[&[b"mint_authority".as_ref(), &[ctx.bumps.mint_authority]]]
 ```
 
 **Analysis**:
-- Manual PDA validation in addition to Anchor's ✓
-- Bump seed verified ✓
-- Program ID used correctly ✓
+- Anchor derives the PDA with the canonical bump and rejects any other account ✓
+- The verified bump is passed to the signer seeds ✓
+- Revision 2 removed a second, manual `find_program_address` that repeated the same check (compute-unit optimization) ✓
 
 **Verdict**: Robust PDA validation.
 
@@ -598,7 +643,7 @@ pub token_account: InterfaceAccount<'info, TokenAccount>,
 
 ---
 
-### 6. Supply Cap Enforcement ⚠️ MOSTLY SECURE
+### 6. Supply Cap Enforcement ✅ SECURE
 
 **Implementation**:
 ```rust
@@ -615,10 +660,12 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 
 **Analysis**:
 - Double-check prevents overflow ✓
-- Hard cap enforced ✓
-- Question: Race condition behavior at boundary needs verification
+- The cap is enforced on circulating (outstanding) supply ✓
+- Account locking serializes mints at the boundary (see Informational #1) ✓
 
-**Verdict**: Secure with minor edge case questions.
+**Design note**: the cap and the curve both read the live `mint.supply`. Burns lower it, so they free room under the cap and can move the reward back up a step. Total tokens ever minted are therefore not capped; this is intentional, so minting never stops permanently.
+
+**Verdict**: Secure; behavior at the boundary is verified by unit tests.
 
 ---
 
@@ -626,25 +673,25 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 
 **Implementation**:
 ```rust
-fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<bool> {
     let current_index = load_current_index_checked(instructions)?;
     
     // Current instruction (process_mint) must be at index 1 or later
     // to leave index 0 available for memo
     if current_index < 1 {
-        return Ok((false, vec![]));
+        return Ok(false);
     }
     
     // Check that index 0 contains the memo instruction
     match load_instruction_at_checked(0, instructions) {
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
-                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH)
             } else {
-                Ok((false, vec![]))
+                Ok(false)
             }
         },
-        Err(_) => Ok((false, vec![]))
+        Err(_) => Ok(false)
     }
 }
 ```
@@ -765,8 +812,9 @@ All design decisions have been confirmed as intentional:
 - ✅ Fair-launch unrestricted minting model
 - ✅ Fixed memo position requirement
 - ✅ PDA mint authority transfer process
-- ✅ Tier boundary behavior
+- ✅ Emission curve boundary behavior (Revision 2)
 - ✅ Permissive memo content validation
+- ✅ Multiple mints per transaction allowed (Revision 2)
 
 ### 🔴 CRITICAL - Required Before Mainnet Launch
 
@@ -777,10 +825,11 @@ All design decisions have been confirmed as intentional:
   ```
   [0] MemoProgram::Memo (69+ bytes) (REQUIRED)
   [1] MemoMint::process_mint
-  [2+] ComputeBudgetProgram::SetComputeUnitLimit (optional, can be anywhere)
+  [last] ComputeBudgetProgram::SetComputeUnitLimit (optional, never at index 0)
   ```
-- [ ] Verify logs show correct tier amounts
-- [ ] Test all tier transitions
+- [ ] Verify logs show correct curve amounts
+- [ ] Test `process_mint_to` (to another wallet, mismatched recipient, missing token account)
+- [ ] Measure compute units of a real mint transaction
 - [ ] Test error cases (short memo, long memo, no memo)
 
 #### 2. Mainnet Deployment Preparation
@@ -791,22 +840,23 @@ All design decisions have been confirmed as intentional:
 - [ ] Transfer mint authority to PDA
 - [ ] Verify PDA authority: `spl-token display memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick`
 - [ ] Execute test mint with small compute budget
-- [ ] Verify first mint succeeds and gives 1 token (Tier 1)
+- [ ] Verify a mint succeeds and gives the expected curve amount (1 token below 20M)
+- [ ] Upgrade the on-chain IDL (`process_mint_to` now takes `recipient`)
 
 #### 3. Documentation for Users/Integrators
 - [ ] Transaction structure requirements (instruction ordering)
 - [ ] Minimum memo length: 69 bytes
-- [ ] Maximum memo length: 800 bytes
-- [ ] Tier system explanation
+- [ ] No maximum memo length (bounded by the transaction size limit)
+- [ ] Emission curve explanation
 - [ ] Example transactions for wallets
 - [ ] CPI integration guide for contracts
 
 ### ⚠️ RECOMMENDED - Post-Launch Monitoring
 
 #### 4. Operational Monitoring
-- [ ] Track current supply tier
+- [ ] Track current supply and the current curve step
 - [ ] Monitor mint transaction rate
-- [ ] Alert on supply approaching tier thresholds
+- [ ] Alert on supply approaching the next round number
 - [ ] Track failed transactions (memo too short/long)
 
 #### 5. Community Resources
@@ -819,7 +869,7 @@ All design decisions have been confirmed as intentional:
 
 #### 6. Analytics & Insights
 - [ ] Mint rate dashboard
-- [ ] Tier progression visualization
+- [ ] Emission curve visualization
 - [ ] Memo content analysis (off-chain)
 - [ ] User participation metrics
 
@@ -827,42 +877,19 @@ All design decisions have been confirmed as intentional:
 
 ## Testing Recommendations
 
-### Unit Tests Needed
+### Unit Tests (implemented, Revision 2)
 
-```rust
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_tier_boundaries() {
-        // Test exact threshold values
-        assert_eq!(calculate_dynamic_mint_amount(TIER_1_THRESHOLD_LAMPORTS), TIER_1_MINT_AMOUNT);
-        assert_eq!(calculate_dynamic_mint_amount(TIER_1_THRESHOLD_LAMPORTS + 1), TIER_2_MINT_AMOUNT);
-    }
-
-    #[test]
-    fn test_max_supply_boundary() {
-        // Test behavior at max supply
-        let result = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS);
-        assert!(result.is_err());
-        
-        let result = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 1);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_overflow_protection() {
-        // Test arithmetic overflow scenarios
-        let result = calculate_dynamic_mint_amount(u64::MAX - 100);
-        assert!(result.is_err());
-    }
-}
-```
+`programs/memo-mint/src/tests.rs` — 47 tests, all passing:
+- Emission curve: below the curve start, the current mainnet supply, every round number from 10M to 9T and one lamport below each (checked against an independent implementation of the formula), decade starts, monotonicity, minimum reward
+- Max supply: exactly at the cap, above it, the last 2-lamport mint landing exactly on the cap, a mint that would overshoot, values near `u64::MAX`
+- Memo length: empty, below/at/above both limits, binary and text content
+- `process_mint_to` wire format: 8-byte discriminator + 32-byte recipient
 
 ### Integration Tests Needed
 
 1. **Concurrent Minting**
    - Multiple users minting simultaneously
-   - Behavior at tier transitions
+   - Behavior at curve steps
    - Behavior at max supply
 
 2. **Transaction Structure**
@@ -892,7 +919,7 @@ The memo-mint contract has passed comprehensive security review with **all desig
 - ✅ **Account Security**: Comprehensive constraint validation for all accounts
 - ✅ **Token2022 Compatibility**: Proper interface implementation
 - ✅ **Reentrancy Protection**: No external calls before state changes
-- ✅ **Supply Cap Enforcement**: Double-check pattern with hard limit
+- ✅ **Supply Cap Enforcement**: Double-check pattern on circulating supply
 - ✅ **Error Handling**: Descriptive errors with runtime context
 - ✅ **Network Configuration**: Proper testnet/mainnet separation
 
@@ -900,9 +927,9 @@ The memo-mint contract has passed comprehensive security review with **all desig
 - ✅ **Fair-Launch Model**: Unrestricted minting is intentional (equal opportunity for all)
 - ✅ **Performance Optimized**: Fixed memo position at index 0 reduces compute units
 - ✅ **Flexible Integration**: Binary memo support enables contract composability
-- ✅ **Tier System**: Boundary behavior confirmed as economically sound
+- ✅ **Emission Curve**: Round-number steps confirmed as economically sound (Revision 2)
 - ✅ **Permissionless**: No artificial restrictions align with decentralization goals
-- ✅ **Compute Budget Flexibility**: Compute budget instructions can be placed anywhere
+- ✅ **Batch Minting**: Multiple mints per transaction allowed by design (Revision 2)
 
 **Code Quality**: **EXCELLENT**
 - Clean, well-documented code
@@ -934,7 +961,7 @@ The memo-mint contract has passed comprehensive security review with **all desig
 5. ✅ Document transaction structure for integrators
 
 ### Post-Launch Recommendations:
-- Monitor supply tier transitions
+- Monitor supply as it approaches each round number
 - Track mint transaction success rate
 - Provide integration guides for wallets/dApps
 - Set up analytics dashboard
@@ -970,16 +997,18 @@ This audit confirms that the memo-mint contract implements a well-designed fair-
 
 All initial questions were answered satisfactorily, confirming that design choices that initially appeared unusual are in fact intentional and aligned with the project's fair-launch philosophy.
 
-**No code changes required.** The contract is production-ready.
+**Revision 2 (October 13, 2026)** changed the emission curve, fixed `process_mint_to`, and reduced compute units; see "Revision 2 Changes" above.
+
+**Remaining operational risk**: the program upgrade authority and the token metadata update authority are the same hot key. Whoever holds the upgrade authority can replace the program and mint without these rules. Consider moving the upgrade authority to a multisig or making the program immutable (`--final`) once Revision 2 is stable on mainnet.
 
 ---
 
 ## Appendix A: Code Quality Metrics
 
-- **Lines of Code**: 369
-- **Functions**: 5 public, 4 private
+- **Lines of Code**: 326 (Revision 2)
+- **Functions**: 2 instructions, 4 private helpers
 - **Complexity**: Moderate
-- **Test Coverage**: Unknown (not provided)
+- **Test Coverage**: 47 unit tests (see Testing Recommendations)
 - **Documentation**: Good
 - **Error Handling**: Excellent
 
@@ -1016,23 +1045,28 @@ spl-token display memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick --program-id Token
 # Verify "Mint authority" shows the PDA address
 ```
 
-**6. Test Mint Transaction**
+**6. Upgrade the On-Chain IDL**
 ```bash
-cargo run --bin test-memo-mint valid-memo
-# Should succeed and mint 1 token (Tier 1)
+anchor idl upgrade 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX --filepath target/idl/memo_mint.json --provider.cluster mainnet
 ```
 
-**7. Verify Contract Constants**
+**7. Test Mint Transaction**
+```bash
+cargo run --bin test-memo-mint valid-memo
+# Should succeed and mint the curve amount (1 token while supply is below 20M)
+```
+
+**8. Verify Contract Constants**
 - Program ID: `8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX`
 - Mint address: `memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick`
 - Token decimals: `6`
-- Max supply: `10,000,000,000,000` tokens
-- Tier 1 threshold: `100,000,000` tokens
-- Memo length: `69-800` bytes
+- Max supply: `10,000,000,000,000` tokens (circulating)
+- Curve start: `10,000,000` tokens
+- Memo length: at least `69` bytes (no contract maximum)
 
-**8. Monitor Initial Launch**
+**9. Monitor Initial Launch**
 - Track first 100 mint transactions
-- Verify tier amounts are correct
+- Verify curve amounts are correct
 - Monitor for any failed transactions
 - Check PDA authority remains unchanged
 
@@ -1047,18 +1081,20 @@ All mint transactions MUST follow this exact structure:
 ```
 Transaction Instructions:
   [0] MemoProgram::Memo
-      - Data: 69-800 bytes (any binary format)
+      - Data: at least 69 bytes (any binary format; no contract maximum)
       - Program: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
       - Required: YES
   
-  [1+] MemoMint::process_mint OR MemoMint::process_mint_to
-      - Mints tokens based on current supply tier
+  [1+] MemoMint::process_mint OR MemoMint::process_mint_to (one or more)
+      - Mints tokens based on the emission curve
       - Validates memo at index 0
       - Executes token mint CPI
+      - Up to about 31 mints fit in one transaction (64-entry instruction trace limit)
   
-  [2+] ComputeBudgetProgram::SetComputeUnitLimit (optional)
-      - Sets compute budget for transaction
-      - Can be placed anywhere (processed by Solana runtime before execution)
+  [last] ComputeBudgetProgram::SetComputeUnitLimit (optional)
+      - Sets compute budget for transaction; X1 charges for the requested limit,
+        so simulate first and set the exact value
+      - Must NOT be at index 0
 ```
 
 ### Example: Successful Mint Transaction
@@ -1080,8 +1116,8 @@ memo_mint::process_mint(
     instructions: Sysvar
 )
 
-// Instruction 2+: Compute Budget (optional, can be anywhere)
-ComputeBudgetInstruction::set_compute_unit_limit(200_000)
+// Last instruction: Compute Budget (optional, never at index 0)
+ComputeBudgetInstruction::set_compute_unit_limit(simulated_units)
 ```
 
 ### Common Integration Errors
@@ -1089,50 +1125,55 @@ ComputeBudgetInstruction::set_compute_unit_limit(200_000)
 ❌ **Wrong instruction order** - Memo not at index 0
 ❌ **process_mint at index 0** - Must be at index 1 or later
 ❌ **Memo too short** - Less than 69 bytes
-❌ **Memo too long** - More than 800 bytes
+❌ **Transaction too large** - The memo and instructions together exceed the 1,232-byte transaction size limit
 ❌ **Wrong token program** - Using SPL Token instead of Token2022
+❌ **Compute budget at index 0** - Pushes the memo out of index 0
+❌ **Old IDL for process_mint_to** - Missing the `recipient` argument
 
 ---
 
 ## Appendix D: Economic Model Reference
 
-### Supply Tier Schedule
+### Emission Curve (Revision 2)
 
-| Tier | Supply Range | Mint Amount | Approximate Duration* |
-|------|-------------|-------------|---------------------|
-| 1 | 0 - 100M | 1.0 token | 100M transactions |
-| 2 | 100M - 1B | 0.1 token | 9B transactions |
-| 3 | 1B - 10B | 0.01 token | 90B transactions |
-| 4 | 10B - 100B | 0.001 token | 90B transactions |
-| 5 | 100B - 1T | 0.0001 token | 900B transactions |
-| 6 | 1T - 10T | 0.000001 token | 9T transactions |
+| Supply range | Reward per mint |
+|---|---|
+| 0 – 20M | 1 |
+| 20M – 30M ... 90M – 100M | 0.9 ... 0.2 |
+| 100M – 200M | 0.1 |
+| 200M – 300M ... 900M – 1B | 0.09 ... 0.02 |
+| 1B – 2B | 0.01 |
+| 10B – 20B | 0.001 |
+| 100B – 200B | 0.0001 |
+| 1T – 2T | 0.00001 |
+| 9T – 10T | 0.000002 |
 
-*Assuming single mint per transaction
+Rule: in `[d × 10ⁿ, (d+1) × 10ⁿ)` from 10M on, reward = `decade_base × (11 − d) / 10`.
 
 ### Economic Incentives
 
 **Early Miner Advantage**: 
-- First 100M tokens minted at 1:1 ratio
-- Strong incentive for early participation
-- Rewards early adopters significantly
+- The first 20M tokens are minted at 1 token per mint
+- Rewards then fall one step at every round number
+- Predictable, gradual reward decay with no 10x cliffs
 
-**Gradual Reduction**:
-- 10x reduction per tier
-- Predictable reward decay
-- Prevents late-stage inflation
+**Cost Anchor**:
+- Minting costs the transaction fee, which X1 charges by requested compute units
+- Minting is worthwhile only when the market price exceeds the cost per token, which keeps the price roughly anchored relative to XNT
+- Batching several mints in one transaction lowers the cost per token (the memo is paid once)
 
-**Hard Cap Protection**:
-- Absolute maximum: 10 trillion tokens
-- Enforced at contract level
-- Cannot be changed post-deployment
+**Supply Cap**:
+- Maximum of 10 trillion tokens in circulation, enforced on every mint
+- Burns free room under the cap, so minting can continue indefinitely
+- Changeable only through a program upgrade by the upgrade authority
 
 ---
 
 **Audit Report End**
 
-**Audit Date**: October 27, 2025  
-**Contract Version**: Production Candidate  
-**Final Status**: ✅ APPROVED FOR MAINNET  
+**Audit Date**: October 27, 2025 (original), revised October 13, 2026  
+**Contract Version**: Revision 2 (0.2.0)  
+**Final Status**: ✅ APPROVED FOR MAINNET (Revision 2 pending testnet validation)  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
 

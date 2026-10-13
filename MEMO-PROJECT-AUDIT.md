@@ -24,6 +24,76 @@ The memo-project contract implements a decentralized project registry and leader
 - **Code Quality**: Excellent
 - **Unit Tests**: 69 tests, 100% pass rate
 
+
+---
+
+## Revision Note (October 13, 2026): Global Burn Statistics
+
+memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateProject`, `UpdateProject`, `BurnForProject`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
+
+Clients must append the PDA (`memo_token_client::global_burn_stats_pda()`) to these instructions. Deploy this app only after memo-burn is upgraded and its global stats account is initialized.
+
+## Revision Note (October 13, 2026): No Maximum Memo Length
+
+This contract no longer limits the memo's maximum length, matching memo-mint and memo-burn:
+
+- Only the 69-byte minimum is checked. The transaction size limit (1,232 bytes on X1 today) bounds the memo, so the contract adapts to future transaction-size changes without an upgrade.
+- `MEMO_MAX_LENGTH`, `MAX_PAYLOAD_LENGTH`, `MAX_BORSH_DATA_SIZE` and the related Borsh size constants were removed, together with the decoded-size and payload-size checks. The app's own field limits (names, messages, content, etc.) are unchanged.
+- `MAX_BURN_PER_TX` was renamed to `MAX_BURN_PER_INSTRUCTION` (it limits each burn instruction, not a whole transaction); the `BurnAmountTooLarge` message now says "per burn instruction".
+- The `MemoTooLong` and `PayloadTooLong` errors were removed, so later error codes moved down:
+
+<details><summary>Error code changes</summary>
+
+| Error | Old code | New code |
+|---|---|---|
+| `MemoTooShort` | 6000 | 6000 |
+| `MemoTooLong` | 6001 | removed |
+| `InvalidTokenAccount` | 6002 | 6001 |
+| `UnauthorizedMint` | 6003 | 6002 |
+| `UnauthorizedTokenAccount` | 6004 | 6003 |
+| `UnauthorizedProjectAccess` | 6005 | 6004 |
+| `MemoRequired` | 6006 | 6005 |
+| `InvalidMemoFormat` | 6007 | 6006 |
+| `UnsupportedMemoVersion` | 6008 | 6007 |
+| `UnsupportedProjectDataVersion` | 6009 | 6008 |
+| `InvalidProjectDataFormat` | 6010 | 6009 |
+| `InvalidCategory` | 6011 | 6010 |
+| `InvalidCategoryLength` | 6012 | 6011 |
+| `InvalidOperation` | 6013 | 6012 |
+| `InvalidOperationLength` | 6014 | 6013 |
+| `InvalidUserPubkeyFormat` | 6015 | 6014 |
+| `UserPubkeyMismatch` | 6016 | 6015 |
+| `EmptyProjectName` | 6017 | 6016 |
+| `ProjectNameTooLong` | 6018 | 6017 |
+| `InvalidProjectName` | 6019 | 6018 |
+| `ProjectDescriptionTooLong` | 6020 | 6019 |
+| `InvalidProjectDescription` | 6021 | 6020 |
+| `ProjectImageTooLong` | 6022 | 6021 |
+| `InvalidProjectImage` | 6023 | 6022 |
+| `ProjectWebsiteTooLong` | 6024 | 6023 |
+| `InvalidProjectWebsite` | 6025 | 6024 |
+| `InvalidTag` | 6026 | 6025 |
+| `TooManyTags` | 6027 | 6026 |
+| `BurnAmountTooSmall` | 6028 | 6027 |
+| `BurnAmountTooLarge` | 6029 | 6028 |
+| `InvalidBurnAmount` | 6030 | 6029 |
+| `BurnAmountMismatch` | 6031 | 6030 |
+| `PayloadTooLong` | 6032 | removed |
+| `UnauthorizedAdmin` | 6033 | 6031 |
+| `GlobalProjectCounterAlreadyInitialized` | 6034 | 6032 |
+| `BurnLeaderboardAlreadyInitialized` | 6035 | 6033 |
+| `ProjectCounterOverflow` | 6036 | 6034 |
+| `ProjectIdMismatch` | 6037 | 6035 |
+| `UnsupportedProjectBurnDataVersion` | 6038 | 6036 |
+| `InvalidProjectBurnDataFormat` | 6039 | 6037 |
+| `InvalidBurnerPubkeyFormat` | 6040 | 6038 |
+| `BurnerPubkeyMismatch` | 6041 | 6039 |
+| `BurnMessageTooLong` | 6042 | 6040 |
+
+</details>
+
+Code excerpts in the rest of this report reflect the code at the time of the original audit; where they show `MEMO_MAX_LENGTH`, `MAX_BORSH_DATA_SIZE` or `MAX_PAYLOAD_LENGTH` checks, those checks no longer exist.
+
 ---
 
 ## Contract Overview
@@ -797,7 +867,7 @@ pub struct Project {
 if burn_amount < MIN_PROJECT_CREATION_BURN_AMOUNT {
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
-if burn_amount > MAX_BURN_PER_TX {
+if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 

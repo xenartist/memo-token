@@ -24,6 +24,89 @@ The memo-chat contract implements a decentralized chat group system where users 
 - **Code Quality**: Excellent
 - **Unit Tests**: 85 tests, 100% coverage of testable logic
 
+
+---
+
+## Revision Note (October 13, 2026): Global Burn Statistics
+
+memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateChatGroup`, `BurnTokensForGroup`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
+
+Clients must append the PDA (`memo_token_client::global_burn_stats_pda()`) to these instructions. Deploy this app only after memo-burn is upgraded and its global stats account is initialized.
+
+## Revision Note (October 13, 2026): No Maximum Memo Length
+
+This contract no longer limits the memo's maximum length, matching memo-mint and memo-burn:
+
+- Only the 69-byte minimum is checked. The transaction size limit (1,232 bytes on X1 today) bounds the memo, so the contract adapts to future transaction-size changes without an upgrade.
+- `MEMO_MAX_LENGTH`, `MAX_PAYLOAD_LENGTH`, `MAX_BORSH_DATA_SIZE` and the related Borsh size constants were removed, together with the decoded-size and payload-size checks. The app's own field limits (names, messages, content, etc.) are unchanged.
+- `MAX_BURN_PER_TX` was renamed to `MAX_BURN_PER_INSTRUCTION` (it limits each burn instruction, not a whole transaction); the `BurnAmountTooLarge` message now says "per burn instruction".
+- The `MemoTooLong` and `PayloadTooLong` errors were removed, so later error codes moved down:
+
+<details><summary>Error code changes</summary>
+
+| Error | Old code | New code |
+|---|---|---|
+| `MemoTooShort` | 6000 | 6000 |
+| `MemoTooLong` | 6001 | removed |
+| `InvalidTokenAccount` | 6002 | 6001 |
+| `UnauthorizedMint` | 6003 | 6002 |
+| `UnauthorizedTokenAccount` | 6004 | 6003 |
+| `InvalidGroupName` | 6005 | 6004 |
+| `InvalidGroupDescription` | 6006 | 6005 |
+| `TooManyTags` | 6007 | 6006 |
+| `InvalidTag` | 6008 | 6007 |
+| `MemoTooFrequent` | 6009 | 6008 |
+| `GroupNotFound` | 6010 | 6009 |
+| `MemoRequired` | 6011 | 6010 |
+| `InvalidMemoFormat` | 6012 | 6011 |
+| `UnsupportedMemoVersion` | 6013 | 6012 |
+| `UnsupportedChatGroupDataVersion` | 6014 | 6013 |
+| `InvalidChatGroupDataFormat` | 6015 | 6014 |
+| `GroupIdMismatch` | 6016 | 6015 |
+| `MissingGroupIdField` | 6017 | 6016 |
+| `MissingNameField` | 6018 | 6017 |
+| `InvalidTagsFormat` | 6019 | 6018 |
+| `InvalidGroupIdFormat` | 6020 | 6019 |
+| `BurnAmountTooSmall` | 6021 | 6020 |
+| `InvalidBurnAmount` | 6022 | 6021 |
+| `MissingBurnAmountField` | 6023 | 6022 |
+| `InvalidBurnAmountFormat` | 6024 | 6023 |
+| `BurnAmountMismatch` | 6025 | 6024 |
+| `GroupCounterOverflow` | 6026 | 6025 |
+| `InvalidChatGroupPDA` | 6027 | 6026 |
+| `UnauthorizedAdmin` | 6028 | 6027 |
+| `InvalidGroupImage` | 6029 | 6028 |
+| `InvalidCategory` | 6030 | 6029 |
+| `InvalidCategoryLength` | 6031 | 6030 |
+| `MissingSenderField` | 6032 | 6031 |
+| `InvalidSenderFormat` | 6033 | 6032 |
+| `SenderMismatch` | 6034 | 6033 |
+| `MissingMessageField` | 6035 | 6034 |
+| `EmptyMessage` | 6036 | 6035 |
+| `MessageTooLong` | 6037 | 6036 |
+| `InvalidReceiverFormat` | 6038 | 6037 |
+| `InvalidReplySignatureFormat` | 6039 | 6038 |
+| `MissingOperationField` | 6040 | 6039 |
+| `InvalidOperation` | 6041 | 6040 |
+| `InvalidOperationLength` | 6042 | 6041 |
+| `UserDataTooLong` | 6043 | 6042 |
+| `InvalidMemoInterval` | 6044 | 6043 |
+| `PayloadTooLong` | 6045 | removed |
+| `UnsupportedChatMessageDataVersion` | 6046 | 6044 |
+| `InvalidChatMessageDataFormat` | 6047 | 6045 |
+| `UnsupportedChatGroupBurnDataVersion` | 6048 | 6046 |
+| `InvalidChatGroupBurnDataFormat` | 6049 | 6047 |
+| `InvalidBurnerFormat` | 6050 | 6048 |
+| `BurnerMismatch` | 6051 | 6049 |
+| `BurnMessageTooLong` | 6052 | 6050 |
+| `LeaderboardUpdateFailed` | 6053 | 6051 |
+| `LeaderboardFull` | 6054 | 6052 |
+| `BurnAmountTooLarge` | 6055 | 6053 |
+
+</details>
+
+Code excerpts in the rest of this report reflect the code at the time of the original audit; where they show `MEMO_MAX_LENGTH`, `MAX_BORSH_DATA_SIZE` or `MAX_PAYLOAD_LENGTH` checks, those checks no longer exist.
+
 ---
 
 ## Contract Overview
@@ -490,7 +573,7 @@ if burn_amount < MIN_GROUP_CREATION_BURN_AMOUNT {
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
-if burn_amount > MAX_BURN_PER_TX {
+if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
@@ -505,7 +588,7 @@ if amount < MIN_BURN_AMOUNT {
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
-if amount > MAX_BURN_PER_TX {
+if amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
@@ -719,7 +802,7 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
 - ✅ Memo must be at index 0 (deterministic)
 - ✅ Main instruction must be at index 1+ (prevents confusion)
 - ✅ Memo program ID verified
-- ✅ Length bounds enforced (69-800 bytes)
+- ✅ Minimum length enforced (69 bytes); the transaction size limit bounds the maximum
 
 #### Base64 + Borsh Decoding ✅
 

@@ -555,6 +555,7 @@ fn create_profile(
             AccountMeta::new_readonly(*burn_program_id, false),
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
         ],
     );
     
@@ -644,6 +645,7 @@ fn update_profile(
             AccountMeta::new_readonly(token_2022_id(), false),
             AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
             AccountMeta::new_readonly(*burn_program_id, false),
+            AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
         ],
     );
     

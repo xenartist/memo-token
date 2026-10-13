@@ -28,7 +28,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 
@@ -494,11 +494,7 @@ fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams) -> Result<
     if base64_memo.len() < 69 {
         return Err(format!("Memo too short: {} bytes (minimum: 69)", base64_memo.len()).into());
     }
-    if base64_memo.len() > 800 {
-        return Err(format!("Memo too long: {} bytes (maximum: 800)", base64_memo.len()).into());
-    }
-    
-    println!("✅ Memo validation passed: {} characters (range: 69-800)", base64_memo.len());
+    println!("✅ Memo validation passed: {} characters (minimum: 69)", base64_memo.len());
     println!("Memo preview: {}...", &base64_memo[..base64_memo.len().min(50)]);
     
     Ok(base64_memo)
@@ -542,7 +538,8 @@ fn create_update_profile_instruction(
         AccountMeta::new(*user_global_burn_stats, false),   // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false),  // token_program
         AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
-        AccountMeta::new_readonly(*memo_burn_program_id, false), // memo_burn_program
+        AccountMeta::new_readonly(*memo_burn_program_id, false), // memo_burn_program,
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
     
     Ok(Instruction::new_with_bytes(*program_id, &instruction_data, accounts))

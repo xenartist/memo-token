@@ -15,7 +15,7 @@ mod tests {
     fn test_burn_amount_constants() {
         assert_eq!(MIN_BLOG_BURN_TOKENS, 1);
         assert_eq!(MIN_BLOG_BURN_AMOUNT, 1 * 1_000_000);
-        assert_eq!(MAX_BURN_PER_TX, 1_000_000_000_000 * 1_000_000);
+        assert_eq!(MAX_BURN_PER_INSTRUCTION, 1_000_000_000_000 * 1_000_000);
     }
 
     #[test]
@@ -28,9 +28,6 @@ mod tests {
     #[test]
     fn test_memo_length_constants() {
         assert_eq!(MEMO_MIN_LENGTH, 69);
-        assert_eq!(MEMO_MAX_LENGTH, 800);
-        assert_eq!(MAX_PAYLOAD_LENGTH, 787); // 800 - 13
-        assert_eq!(MAX_BORSH_DATA_SIZE, 800);
     }
 
     #[test]
@@ -556,13 +553,13 @@ mod tests {
         let memo = BurnMemo {
             version: BURN_MEMO_VERSION,
             burn_amount: 1000 * DECIMAL_FACTOR,
-            payload: vec![0u8; MAX_PAYLOAD_LENGTH],
+            payload: vec![0u8; 587],
         };
         
         let serialized = memo.try_to_vec().unwrap();
         
         // Size should be version(1) + burn_amount(8) + vec_len(4) + payload(787)
-        assert_eq!(serialized.len(), 1 + 8 + 4 + MAX_PAYLOAD_LENGTH);
+        assert_eq!(serialized.len(), 1 + 8 + 4 + 587);
     }
 
     // ============================================================================
@@ -723,7 +720,7 @@ mod tests {
     #[test]
     fn test_valid_memo_minimum_length() {
         let memo_data = vec![b'x'; MEMO_MIN_LENGTH];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at minimum length should be valid");
         let (valid, data) = result.unwrap();
         assert!(valid);
@@ -731,55 +728,56 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_memo_maximum_length() {
-        let memo_data = vec![b'x'; MEMO_MAX_LENGTH];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok(), "Memo at maximum length should be valid");
+    fn test_valid_memo_former_maximum_length() {
+        let memo_data = vec![b'x'; 800];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
+        assert!(result.is_ok(), "Memo at the former maximum length should be valid");
         let (valid, data) = result.unwrap();
         assert!(valid);
-        assert_eq!(data.len(), MEMO_MAX_LENGTH);
+        assert_eq!(data.len(), 800);
     }
 
     #[test]
     fn test_valid_memo_mid_length() {
         let memo_data = vec![b'x'; 400];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at mid-range length should be valid");
     }
 
     #[test]
     fn test_memo_too_short() {
         let memo_data = vec![b'x'; MEMO_MIN_LENGTH - 1];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Memo below minimum length should fail");
     }
 
     #[test]
-    fn test_memo_too_long() {
-        let memo_data = vec![b'x'; MEMO_MAX_LENGTH + 1];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "Memo above maximum length should fail");
+    fn test_memo_above_former_maximum_accepted() {
+        // No maximum memo length: the transaction size limit bounds it
+        let memo_data = vec![b'x'; 801];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
+        assert!(result.is_ok(), "Memo above the former maximum should be valid");
     }
 
     #[test]
     fn test_memo_empty() {
         let memo_data = vec![];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Empty memo should fail");
     }
 
     #[test]
     fn test_memo_one_byte_short() {
         let memo_data = vec![b'x'; 68];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Memo one byte short should fail");
     }
 
     #[test]
-    fn test_memo_one_byte_long() {
-        let memo_data = vec![b'x'; 801];
-        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "Memo one byte long should fail");
+    fn test_memo_v1_transaction_size_accepted() {
+        let memo_data = vec![b'x'; 4096];
+        let result = validate_memo_length(&memo_data, MEMO_MIN_LENGTH);
+        assert!(result.is_ok(), "Memo of 4096 bytes should be valid");
     }
 
     // ============================================================================

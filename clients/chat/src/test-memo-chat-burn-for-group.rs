@@ -28,7 +28,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 
@@ -613,7 +613,8 @@ fn burn_tokens_for_group_instruction(
         AccountMeta::new_readonly(
             solana_sdk::sysvar::instructions::id(),
             false
-        ), // instructions
+        ), // instructions,
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
 
     Instruction {

@@ -146,10 +146,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Mint memo data size: {} bytes", burn_memo_data.len());
     println!("Base64 memo size: {} bytes", base64_memo.len());
 
-    if base64_memo.len() > 800 {
-        return Err(format!("Memo too long: {} bytes (max: 800)", base64_memo.len()).into());
-    }
-
     // Get user's token account
     let user_token_account = get_associated_token_address_with_program_id(
         &user.pubkey(),

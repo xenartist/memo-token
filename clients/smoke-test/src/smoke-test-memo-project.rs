@@ -522,7 +522,8 @@ fn create_project(
             AccountMeta::new_readonly(token_2022_id(), false),   // 8. token_program
             AccountMeta::new_readonly(*burn_program_id, false),  // 9. memo_burn_program
             AccountMeta::new_readonly(system_program::id(), false), // 10. system_program
-            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // 11. instructions
+            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // 11. instructions,
+            AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
         ],
     );
     

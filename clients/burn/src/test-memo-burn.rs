@@ -25,7 +25,7 @@ pub struct BurnMemo {
     pub version: u8,
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 
@@ -44,16 +44,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  memo_length   - Custom memo length (only for custom-length test)");
         println!();
         println!("Test types:");
-        println!("  valid-memo    - Valid memo (between 69-800 bytes) - should succeed");
+        println!("  valid-memo    - Valid memo (at least 69 bytes) - should succeed");
         println!("  no-memo       - No memo instruction - should fail");
         println!("  short-memo    - Memo less than 69 bytes - should fail");
-        println!("  long-memo     - Memo more than 800 bytes - should fail");
+        println!("  long-memo     - Memo too large for the transaction - should fail at the 1232-byte size limit");
         println!("  custom-length - Custom memo length (requires memo_length parameter)");
         println!();
         println!("Examples:");
         println!("  cargo run -- 1 valid-memo           # Burn 1 token with valid memo");
         println!("  cargo run -- 2 custom-length 666    # Burn 2 tokens with 666-byte memo");
-        println!("  cargo run -- 10 long-memo           # Burn 10 tokens with long memo (should fail)");
+        println!("  cargo run -- 10 long-memo           # Burn 10 tokens with an oversized memo (should fail at transaction size)");
         return Ok(());
     }
 
@@ -164,7 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccountMeta::new(token_account, false),        // token_account
         AccountMeta::new(user_global_burn_stats_pda, false), // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false), // token_program
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(),false), // instructions sysvar
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(),false), // instructions sysvar,
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
 
     // Create burn instruction
@@ -372,7 +373,8 @@ fn generate_memo_for_test(test_type: &str, burn_amount: u64, custom_length: Opti
             Ok(b"short".to_vec()) // 5 bytes, definitely too short
         },
         "long-memo" => {
-            // Create memo more than 800 bytes (should fail)
+            // Create a memo larger than a transaction can hold (fails at the transaction size limit;
+            // the contract itself has no maximum memo length)
             let large_data = vec![b'x'; 1000]; // Much larger than needed
             let memo = BurnMemo {
                 version: BURN_MEMO_VERSION,
@@ -463,10 +465,8 @@ fn send_and_check_transaction(
                     // Analysis of custom length result
                     if memo_length < 69 {
                         println!("⚠️  Note: Memo < 69 bytes succeeded (unexpected if contract enforces minimum)");
-                    } else if memo_length > 800 {
-                        println!("⚠️  Note: Memo > 800 bytes succeeded (unexpected if contract enforces maximum)");
                     } else {
-                        println!("✅ Memo length within expected range (69-800 bytes)");
+                        println!("✅ Memo is at least 69 bytes (no contract maximum)");
                     }
                 },
                 _ => {
@@ -512,19 +512,10 @@ fn print_custom_length_analysis(memo_length: usize, error_msg: &str) {
         } else {
             println!("⚠️  Unexpected error for short memo: {}", error_msg);
         }
-    } else if memo_length > 800 {
-        if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
-            println!("✅ Expected: Contract correctly rejects memo > 800 bytes");
-        } else if error_msg.contains("UserDataTooLong") {
-            println!("✅ Expected: Contract correctly rejects user data > 788 bytes");
-        } else if error_msg.contains("Program failed to complete") {
-            println!("⚠️  System limit: Memo might exceed system-level limits");
-            println!("   This could be a Solana transaction size limit (~1232 bytes total)");
-        } else {
-            println!("⚠️  Unexpected error for long memo: {}", error_msg);
-        }
+    } else if error_msg.to_lowercase().contains("too large") {
+        println!("✅ Expected: Transaction size limit (1232 bytes) exceeded; the contract has no maximum memo length");
     } else {
-        println!("⚠️  Unexpected failure for memo within valid range (69-800): {}", error_msg);
+        println!("⚠️  Unexpected failure for memo of at least 69 bytes: {}", error_msg);
     }
     
     // General system limit analysis
@@ -551,10 +542,8 @@ fn print_specific_error_for_test(test_type: &str, error_msg: &str) {
             }
         },
         "long-memo" => {
-            if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
-                println!("✅ Correct error: Contract properly rejects memo > 800 bytes");
-            } else if error_msg.contains("UserDataTooLong") {
-                println!("✅ Correct error: Contract properly rejects user data > 788 bytes");
+            if error_msg.to_lowercase().contains("too large") {
+                println!("✅ Correct error: Transaction size limit (1232 bytes) exceeded");
             } else {
                 println!("⚠️  Unexpected error for long-memo test: {}", error_msg);
             }
@@ -572,8 +561,8 @@ fn print_error_guidance(error_msg: &str) {
         println!("💡 Missing Memo: This contract requires a memo instruction.");
     } else if error_msg.contains("Custom(6010)") || error_msg.contains("MemoTooShort") {
         println!("💡 Memo Too Short: Memo must be at least 69 bytes long.");
-    } else if error_msg.contains("Custom(6011)") || error_msg.contains("MemoTooLong") {
-        println!("💡 Memo Too Long: Memo must not exceed 800 bytes.");
+    } else if error_msg.to_lowercase().contains("too large") {
+        println!("💡 Transaction Too Large: memo and instructions together exceed 1232 bytes (the contract has no maximum memo length).");
     } else if error_msg.contains("Custom(6001)") || error_msg.contains("InvalidMemoFormat") {
         println!("💡 Invalid Memo Format: Expected Base64-encoded Borsh-serialized BurnMemo structure");
         println!("   Structure: {{ version: u8, burn_amount: u64, payload: Vec<u8> }}");
@@ -581,12 +570,9 @@ fn print_error_guidance(error_msg: &str) {
     } else if error_msg.contains("Custom(6002)") || error_msg.contains("UnsupportedMemoVersion") {
         println!("💡 Unsupported Version: Memo version mismatch (expected version 1)");
         println!("   Make sure to use the current BurnMemo structure version");
-    } else if error_msg.contains("Custom(6012)") || error_msg.contains("UserDataTooLong") {
-        println!("💡 User Data Too Long: User data must not exceed 787 bytes");
-        println!("   Total memo size = 1 (version) + 8 (burn_amount) + 4 (vec length) + user_data.len()");
-    } else if error_msg.contains("Custom(6005)") || error_msg.contains("BurnAmountMismatch") {
+    } else if error_msg.contains("Custom(6009)") || error_msg.contains("BurnAmountMismatch") {
         println!("💡 Burn Amount Mismatch: burn_amount in memo must match actual burn amount.");
-    } else if error_msg.contains("Custom(6003)") || error_msg.contains("UnauthorizedMint") {
+    } else if error_msg.contains("Custom(6007)") || error_msg.contains("UnauthorizedMint") {
         println!("💡 Wrong Mint: Only authorized mint can be used.");
         println!("   Expected: HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
     } else {

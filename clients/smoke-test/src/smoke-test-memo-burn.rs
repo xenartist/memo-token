@@ -196,7 +196,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AccountMeta::new(token_account, false),                      // token_account
         AccountMeta::new(user_global_burn_stats_pda, false),         // user_global_burn_stats
         AccountMeta::new_readonly(token_2022_id(), false),           // token_program
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions sysvar
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions sysvar,
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
 
     // Create burn instruction

@@ -28,7 +28,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 

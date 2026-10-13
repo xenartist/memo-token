@@ -27,6 +27,69 @@ The memo-forum contract implements a decentralized forum system where users can 
 - **Test Coverage**: 70+ unit tests (comprehensive coverage)
 - **Code Quality**: Excellent
 
+
+---
+
+## Revision Note (October 13, 2026): Global Burn Statistics
+
+memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreatePost`, `BurnForPost`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
+
+Clients must append the PDA (`memo_token_client::global_burn_stats_pda()`) to these instructions. Deploy this app only after memo-burn is upgraded and its global stats account is initialized.
+
+## Revision Note (October 13, 2026): No Maximum Memo Length
+
+This contract no longer limits the memo's maximum length, matching memo-mint and memo-burn:
+
+- Only the 69-byte minimum is checked. The transaction size limit (1,232 bytes on X1 today) bounds the memo, so the contract adapts to future transaction-size changes without an upgrade.
+- `MEMO_MAX_LENGTH`, `MAX_PAYLOAD_LENGTH`, `MAX_BORSH_DATA_SIZE` and the related Borsh size constants were removed, together with the decoded-size and payload-size checks. The app's own field limits (names, messages, content, etc.) are unchanged.
+- `MAX_BURN_PER_TX` was renamed to `MAX_BURN_PER_INSTRUCTION` (it limits each burn instruction, not a whole transaction); the `BurnAmountTooLarge` message now says "per burn instruction".
+- The `MemoTooLong` and `PayloadTooLong` errors were removed, so later error codes moved down:
+
+<details><summary>Error code changes</summary>
+
+| Error | Old code | New code |
+|---|---|---|
+| `MemoTooShort` | 6000 | 6000 |
+| `MemoTooLong` | 6001 | removed |
+| `InvalidTokenAccount` | 6002 | 6001 |
+| `UnauthorizedMint` | 6003 | 6002 |
+| `UnauthorizedTokenAccount` | 6004 | 6003 |
+| `UnauthorizedPostAccess` | 6005 | 6004 |
+| `UnauthorizedAdmin` | 6006 | 6005 |
+| `PostCounterOverflow` | 6007 | 6006 |
+| `MemoRequired` | 6008 | 6007 |
+| `InvalidMemoFormat` | 6009 | 6008 |
+| `InvalidMintMemoFormat` | 6010 | 6009 |
+| `UnsupportedMemoVersion` | 6011 | 6010 |
+| `UnsupportedPostDataVersion` | 6012 | 6011 |
+| `InvalidPostDataFormat` | 6013 | 6012 |
+| `InvalidCategory` | 6014 | 6013 |
+| `InvalidCategoryLength` | 6015 | 6014 |
+| `InvalidOperation` | 6016 | 6015 |
+| `InvalidOperationLength` | 6017 | 6016 |
+| `InvalidCreatorPubkeyFormat` | 6018 | 6017 |
+| `CreatorPubkeyMismatch` | 6019 | 6018 |
+| `InvalidUserPubkeyFormat` | 6020 | 6019 |
+| `UserPubkeyMismatch` | 6021 | 6020 |
+| `PostIdMismatch` | 6022 | 6021 |
+| `InvalidPostTitle` | 6023 | 6022 |
+| `InvalidPostContent` | 6024 | 6023 |
+| `InvalidPostImage` | 6025 | 6024 |
+| `BurnAmountTooSmall` | 6026 | 6025 |
+| `BurnAmountTooLarge` | 6027 | 6026 |
+| `InvalidBurnAmount` | 6028 | 6027 |
+| `BurnAmountMismatch` | 6029 | 6028 |
+| `PayloadTooLong` | 6030 | removed |
+| `UnsupportedPostBurnDataVersion` | 6031 | 6029 |
+| `InvalidPostBurnDataFormat` | 6032 | 6030 |
+| `UnsupportedPostMintDataVersion` | 6033 | 6031 |
+| `InvalidPostMintDataFormat` | 6034 | 6032 |
+| `ReplyMessageTooLong` | 6035 | 6033 |
+
+</details>
+
+Code excerpts in the rest of this report reflect the code at the time of the original audit; where they show `MEMO_MAX_LENGTH`, `MAX_BORSH_DATA_SIZE` or `MAX_PAYLOAD_LENGTH` checks, those checks no longer exist.
+
 ---
 
 ## Contract Overview
@@ -94,7 +157,7 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
 ```
 
 **Transaction Structure Requirement**:
-- Instruction `0`: `MemoProgram::Memo` (69–800 bytes, Base64-encoded Borsh data)
+- Instruction `0`: `MemoProgram::Memo` (at least 69 bytes, Base64-encoded Borsh data; no contract maximum)
 - Instruction `1+`: `memo_forum::create_post`, `memo_forum::burn_for_post`, etc.
 - Compute budget instructions can appear anywhere (processed by runtime)
 
@@ -364,7 +427,7 @@ if burn_amount < MIN_POST_BURN_AMOUNT {
 }
 
 // Maximum burn: 1 trillion tokens
-if burn_amount > MAX_BURN_PER_TX {
+if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
@@ -532,7 +595,7 @@ if post.burned_amount == u64::MAX && old_amount < u64::MAX {
 ```rust
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
 pub const MIN_POST_BURN_TOKENS: u64 = 1;
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 ```
 
 **Verdict**: No integer overflow risks; saturating arithmetic ensures safe behavior at extreme values.
@@ -757,7 +820,7 @@ pub const MIN_POST_BURN_TOKENS: u64 = 1; // Minimum tokens to burn for any post 
 pub const MIN_POST_BURN_AMOUNT: u64 = MIN_POST_BURN_TOKENS * DECIMAL_FACTOR;
 
 // Maximum burn per transaction (consistent with memo-burn)
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 ```
 
 **Documentation Score**: ⭐⭐⭐⭐⭐ (5/5)
@@ -1121,7 +1184,7 @@ The memo-forum contract is ready for mainnet deployment. All critical security p
 DECIMAL_FACTOR = 1,000,000
 MIN_POST_BURN_TOKENS = 1
 MIN_POST_BURN_AMOUNT = 1,000,000
-MAX_BURN_PER_TX = 1,000,000,000,000,000,000
+MAX_BURN_PER_INSTRUCTION = 1,000,000,000,000,000,000
 
 // String Lengths
 MAX_POST_TITLE_LENGTH = 128
@@ -1131,9 +1194,7 @@ MAX_REPLY_MESSAGE_LENGTH = 512
 
 // Memo Constraints
 MEMO_MIN_LENGTH = 69
-MEMO_MAX_LENGTH = 800
-MAX_PAYLOAD_LENGTH = 787
-MAX_BORSH_DATA_SIZE = 800
+(no maximum memo length; MEMO_MAX_LENGTH, MAX_PAYLOAD_LENGTH and MAX_BORSH_DATA_SIZE removed in October 2026)
 
 // Versions
 BURN_MEMO_VERSION = 1
@@ -1156,7 +1217,6 @@ GLOBAL_POST_COUNTER_SPACE = 16 bytes
 
 ```rust
 MemoTooShort              // Memo < 69 bytes
-MemoTooLong               // Memo > 800 bytes
 InvalidTokenAccount       // Token account mint mismatch
 UnauthorizedMint          // Wrong mint address
 UnauthorizedTokenAccount  // Wrong token account owner
@@ -1189,7 +1249,6 @@ BurnAmountTooSmall        // Burn < 1 token
 BurnAmountTooLarge        // Burn > 1T tokens
 InvalidBurnAmount         // Not a multiple of DECIMAL_FACTOR
 BurnAmountMismatch        // Memo amount != instruction amount
-PayloadTooLong            // Payload > 787 bytes
 ReplyMessageTooLong       // Message > 512 chars
 ```
 

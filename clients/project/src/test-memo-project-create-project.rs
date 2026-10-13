@@ -28,7 +28,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 
@@ -233,10 +233,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("Burn memo data size: {} bytes", burn_memo_data.len());
     println!("Base64 memo size: {} bytes", base64_memo.len());
-
-    if base64_memo.len() > 800 {
-        return Err(format!("Memo too long: {} bytes (max: 800)", base64_memo.len()).into());
-    }
 
     // Get user's token account
     let user_token_account = get_associated_token_address_with_program_id(
@@ -461,6 +457,7 @@ fn create_create_project_instruction(
             solana_sdk::sysvar::instructions::id(),
             false
         ),
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

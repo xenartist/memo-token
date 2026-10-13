@@ -46,8 +46,8 @@ pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
 pub const MIN_POST_BURN_TOKENS: u64 = 1; // Minimum tokens to burn for any post operation
 pub const MIN_POST_BURN_AMOUNT: u64 = MIN_POST_BURN_TOKENS * DECIMAL_FACTOR;
 
-// Maximum burn per transaction (consistent with memo-burn)
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+// Maximum burn per burn instruction (consistent with memo-burn)
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 
 // ===== STRING LENGTH CONSTRAINTS =====
 
@@ -59,21 +59,8 @@ pub const MAX_POST_IMAGE_LENGTH: usize = 256;     // Post image (optional)
 // Reply message length for burn_for_post and mint_for_post
 pub const MAX_REPLY_MESSAGE_LENGTH: usize = 512;
 
-// Memo length constraints (consistent with memo-mint and memo-burn)
+// Memo length constraint: minimum only; the maximum is set by the transaction size limit (consistent with memo-mint and memo-burn)
 pub const MEMO_MIN_LENGTH: usize = 69;
-pub const MEMO_MAX_LENGTH: usize = 800;
-
-// Borsh serialization constants (from memo-burn)
-const BORSH_U8_SIZE: usize = 1;         // version (u8)
-const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
-const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
-const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
-
-// maximum payload length = memo maximum length - borsh fixed overhead
-pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
-
-// Maximum allowed Borsh data size after Base64 decoding (security limit)
-pub const MAX_BORSH_DATA_SIZE: usize = MEMO_MAX_LENGTH;
 
 // Current version of BurnMemo structure (consistent with memo-burn)
 pub const BURN_MEMO_VERSION: u8 = 1;
@@ -428,7 +415,7 @@ pub mod memo_forum {
         }
         
         // check burn amount limit
-        if burn_amount > MAX_BURN_PER_TX {
+        if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
         }
         
@@ -463,6 +450,7 @@ pub mod memo_forum {
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.creator_token_account.to_account_info(),
             user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
+            global_burn_stats: ctx.accounts.global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -522,7 +510,7 @@ pub mod memo_forum {
         }
         
         // Check burn amount limit
-        if amount > MAX_BURN_PER_TX {
+        if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
         }
         
@@ -547,6 +535,7 @@ pub mod memo_forum {
             mint: ctx.accounts.mint.to_account_info(),
             token_account: ctx.accounts.user_token_account.to_account_info(),
             user_global_burn_stats: ctx.accounts.user_global_burn_stats.to_account_info(),
+            global_burn_stats: ctx.accounts.global_burn_stats.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
         };
@@ -664,12 +653,6 @@ fn parse_post_creation_borsh_memo(memo_data: &[u8], expected_creator: Pubkey, ex
             ErrorCode::InvalidMemoFormat
         })?;
     
-    // check decoded borsh data size
-    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
-        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
     // Deserialize Borsh data from decoded bytes
@@ -691,13 +674,6 @@ fn parse_post_creation_borsh_memo(memo_data: &[u8], expected_creator: Pubkey, ex
         msg!("Burn amount mismatch: memo {} vs expected {}", 
              burn_memo.burn_amount, expected_amount);
         return Err(ErrorCode::BurnAmountMismatch.into());
-    }
-    
-    // Validate payload length does not exceed maximum allowed value
-    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
-        msg!("Payload too long: {} bytes (max: {})", 
-             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-        return Err(ErrorCode::PayloadTooLong.into());
     }
     
     msg!("Borsh+Base64 memo validation passed: version {}, {} units, payload: {} bytes", 
@@ -734,12 +710,6 @@ fn parse_post_burn_borsh_memo(memo_data: &[u8], expected_amount: u64, expected_u
             ErrorCode::InvalidMemoFormat
         })?;
 
-    // Check decoded borsh data size
-    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
-        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
     // Deserialize Borsh data from decoded bytes
@@ -761,13 +731,6 @@ fn parse_post_burn_borsh_memo(memo_data: &[u8], expected_amount: u64, expected_u
         msg!("Burn amount mismatch: memo {} vs expected {}", 
              burn_memo.burn_amount, expected_amount);
         return Err(ErrorCode::BurnAmountMismatch.into());
-    }
-    
-    // Validate payload length does not exceed maximum allowed value
-    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
-        msg!("Payload too long: {} bytes (max: {})", 
-             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-        return Err(ErrorCode::PayloadTooLong.into());
     }
     
     msg!("Borsh+Base64 burn memo validation passed: version {}, {} units, payload: {} bytes", 
@@ -802,12 +765,6 @@ fn parse_post_mint_borsh_memo(memo_data: &[u8], expected_user: Pubkey, expected_
             ErrorCode::InvalidMemoFormat
         })?;
 
-    // Check decoded borsh data size
-    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
-        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
-        return Err(ErrorCode::InvalidMemoFormat.into());
-    }
-    
     msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
     
     // Deserialize Borsh data from decoded bytes
@@ -828,13 +785,6 @@ fn parse_post_mint_borsh_memo(memo_data: &[u8], expected_user: Pubkey, expected_
     if burn_memo.burn_amount != 0 {
         msg!("Mint operation should have burn_amount=0, got {}", burn_memo.burn_amount);
         return Err(ErrorCode::InvalidMintMemoFormat.into());
-    }
-    
-    // Validate payload length does not exceed maximum allowed value
-    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
-        msg!("Payload too long: {} bytes (max: {})", 
-             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-        return Err(ErrorCode::PayloadTooLong.into());
     }
     
     msg!("Borsh+Base64 mint memo validation passed: version {}, payload: {} bytes", 
@@ -877,7 +827,7 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
                 msg!("Found memo instruction at required index 0");
-                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH)
             } else {
                 msg!("Instruction at index 0 is not a memo (program_id: {})", ix.program_id);
                 Ok((false, vec![]))
@@ -891,7 +841,7 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
 }
 
 /// Validate memo data length and return result
-fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
+fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<(bool, Vec<u8>)> {
     let memo_length = memo_data.len();
     
     // Ensure data is not empty
@@ -906,14 +856,8 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooShort.into());
     }
     
-    // Check maximum length requirement
-    if memo_length > max_length {
-        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
-        return Err(ErrorCode::MemoTooLong.into());
-    }
-    
     // Length is valid, return memo data
-    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
+    msg!("Memo length validation passed: {} bytes (minimum: {})", memo_length, min_length);
     Ok((true, memo_data.to_vec()))
 }
 
@@ -1005,6 +949,15 @@ pub struct CreatePost<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+    
+    /// Global burn statistics account, updated by memo-burn (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"global_burn_stats"],
+        bump = global_burn_stats.bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub global_burn_stats: Account<'info, memo_burn::GlobalBurnStats>,
 }
 
 /// Account structure for burning tokens for a post (ANY USER)
@@ -1053,6 +1006,15 @@ pub struct BurnForPost<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+    
+    /// Global burn statistics account, updated by memo-burn (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"global_burn_stats"],
+        bump = global_burn_stats.bump,
+        seeds::program = memo_burn_program.key()
+    )]
+    pub global_burn_stats: Account<'info, memo_burn::GlobalBurnStats>,
 }
 
 /// Account structure for minting tokens for a post (ANY USER)
@@ -1177,8 +1139,6 @@ pub enum ErrorCode {
     #[msg("Memo too short. Must be at least 69 bytes to meet memo requirements.")]
     MemoTooShort,
     
-    #[msg("Memo too long. Must be at most 800 bytes.")]
-    MemoTooLong,
     
     #[msg("Invalid token account: Account must belong to the correct mint.")]
     InvalidTokenAccount,
@@ -1255,7 +1215,7 @@ pub enum ErrorCode {
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
 
-    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per transaction.")]
+    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
     #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
@@ -1264,8 +1224,6 @@ pub enum ErrorCode {
     #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]
     BurnAmountMismatch,
 
-    #[msg("Payload too long. (maximum 787 bytes).")]
-    PayloadTooLong,
 
     #[msg("Unsupported post burn data version. Please use the correct structure version.")]
     UnsupportedPostBurnDataVersion,

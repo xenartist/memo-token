@@ -21,7 +21,7 @@ use chrono::Utc;
 // Import token-2022 program id
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, validate_mint_amount};
 
 /// Generate exact 69-byte ASCII memo for smoke test
 fn create_69_byte_ascii_memo() -> Vec<u8> {
@@ -361,15 +361,3 @@ fn format_token_amount(raw_amount: u64) -> String {
     format!("{:.6}", tokens)
 }
 
-fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
-    match raw_amount {
-        1_000_000 => (true, "1.0 token (Tier 1: 0-100M supply)".to_string()),
-        100_000 => (true, "0.1 token (Tier 2: 100M-1B supply)".to_string()),
-        10_000 => (true, "0.01 token (Tier 3: 1B-10B supply)".to_string()),
-        1_000 => (true, "0.001 token (Tier 4: 10B-100B supply)".to_string()),
-        100 => (true, "0.0001 token (Tier 5: 100B-1T supply)".to_string()),
-        1 => (true, "0.000001 token (Tier 6: 1T+ supply)".to_string()),
-        0 => (false, "No tokens minted - supply limit reached".to_string()),
-        _ => (false, format!("Unexpected amount: {} lamports", raw_amount)),
-    }
-}

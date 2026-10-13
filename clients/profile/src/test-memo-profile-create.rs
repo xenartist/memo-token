@@ -29,7 +29,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, no contract maximum)
     pub payload: Vec<u8>,
 }
 
@@ -563,7 +563,8 @@ fn create_profile_instruction(
         AccountMeta::new_readonly(token_2022_id(), false),                       // token_program
         AccountMeta::new_readonly(*memo_burn_program, false),                    // memo_burn_program
         AccountMeta::new_readonly(system_program::id(), false),                  // system_program
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false), // instructions,
+        AccountMeta::new(memo_token_client::global_burn_stats_pda(), false), // global_burn_stats
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

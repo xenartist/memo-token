@@ -16,7 +16,7 @@ use serde_json;
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, validate_mint_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Mint Test Client (WITHOUT CU Setting) ===\n");
@@ -67,9 +67,9 @@ fn print_help(program_name: &str) {
     println!("  no-memo         - Test mint without memo (should fail)");
     println!("  short-memo      - Test mint with memo < 69 bytes (should fail)");
     println!("  memo-69         - Test mint with memo exactly 69 bytes (should succeed)");
-    println!("  valid-memo      - Test mint with memo 69-800 bytes (should succeed)");
+    println!("  valid-memo      - Test mint with memo of at least 69 bytes (should succeed)");
     println!("  memo-800        - Test mint with memo exactly 800 bytes (should succeed)");
-    println!("  long-memo       - Test mint with memo > 800 bytes (should fail)");
+    println!("  long-memo       - Test mint with memo too large for the transaction (should fail at the 1232-byte transaction size limit)");
     println!("  custom-length   - Test mint with custom memo length (requires memo_length parameter)");
     println!("\nExamples:");
     println!("  {} valid-memo", program_name);
@@ -114,9 +114,9 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     let expected_result = if actual_length < 69 {
         "FAIL (< 69 bytes)"
     } else if actual_length > 800 {
-        "FAIL (> 800 bytes)"
+        "SUCCESS if the transaction fits in 1232 bytes (no contract maximum)"
     } else {
-        "SUCCESS (69-800 bytes)"
+        "SUCCESS (>= 69 bytes)"
     };
     println!("Expected result: {}", expected_result);
     println!("Using default CU: 400,000 (no explicit setting)");
@@ -165,7 +165,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
             } else if actual_length < 69 {
                 println!("   ✅ EXPECTED FAILURE: Memo < 69 bytes");
             } else if actual_length > 800 {
-                println!("   ✅ EXPECTED FAILURE: Memo > 800 bytes");
+                println!("   ✅ EXPECTED FAILURE if the transaction exceeded 1232 bytes (the contract has no maximum memo length)");
             } else if error_str.contains("SupplyLimitReached") {
                 println!("   ✅ EXPECTED FAILURE: Supply limit reached");
             } else {
@@ -327,7 +327,7 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with VALID memo (69-800 bytes) (expected to succeed)...\n");
+    println!("🧪 Testing mint with VALID memo (at least 69 bytes) (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -339,7 +339,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Get current token balance (raw lamports)
     let balance_before = get_token_balance_raw(&client, &token_account);
     
-    // Create valid memo (between 69-800 bytes)
+    // Create valid memo (at least 69 bytes)
     let message = "This is a valid memo test for the memo-mint contract. ".repeat(2);
     let memo_json = serde_json::json!({
         "message": message,
@@ -349,7 +349,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     });
     let memo_text = memo_json.to_string();
     
-    println!("Memo length: {} bytes (69-800 bytes range)", memo_text.len());
+    println!("Memo length: {} bytes (at least 69 bytes)", memo_text.len());
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
@@ -465,7 +465,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with LONG memo > 800 bytes (expected to fail)...\n");
+    println!("🧪 Testing mint with memo too large for the transaction (expected to fail at the 1232-byte size limit)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -474,7 +474,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure token account exists
     ensure_token_account_exists(&client, &payer, &mint_address, &token_account)?;
     
-    // Create long memo (more than 800 bytes)
+    // Create a memo larger than a transaction can hold
     let long_message = "This is a very long memo test that exceeds the maximum allowed length. ".repeat(15);
     let memo_json = serde_json::json!({
         "message": long_message,
@@ -483,7 +483,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     });
     let memo_text = memo_json.to_string();
     
-    println!("Memo length: {} bytes (> 800 bytes)", memo_text.len());
+    println!("Memo length: {} bytes (more than fits in a 1232-byte transaction)", memo_text.len());
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
@@ -498,12 +498,12 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     match result {
         Ok(_) => {
             println!("❌ UNEXPECTED: Transaction succeeded when it should have failed!");
-            println!("   The contract should reject memos longer than 800 bytes.");
+            println!("   A memo this large should not fit in a 1232-byte transaction.");
         },
         Err(e) => {
             println!("✅ EXPECTED: Transaction failed as expected");
             println!("   Error: {}", e);
-            println!("   This confirms the contract properly validates maximum memo length.");
+            println!("   The transaction size limit bounds the memo length (the contract has no maximum).");
         }
     }
     
@@ -747,16 +747,4 @@ fn format_token_amount(raw_amount: u64) -> String {
     }
 }
 
-fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
-    match raw_amount {
-        1_000_000 => (true, "1.0 token (stage 1: 0-100M supply)".to_string()),
-        100_000 => (true, "0.1 token (stage 2: 100M-1B supply)".to_string()),
-        10_000 => (true, "0.01 token (stage 3: 1B-10B supply)".to_string()),
-        1_000 => (true, "0.001 token (stage 4: 10B-100B supply)".to_string()),
-        100 => (true, "0.0001 token (stage 5: 100B-1T supply)".to_string()),
-        1 => (true, "0.000001 token (stage 6: 1T+ supply)".to_string()),
-        0 => (false, "No tokens minted - supply limit reached".to_string()),
-        _ => (false, format!("Unexpected amount: {} lamports ({:.6} tokens)", raw_amount, raw_amount as f64 / 1_000_000.0)),
-    }
-}
 

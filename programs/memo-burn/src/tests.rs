@@ -2,12 +2,17 @@
 //! 
 //! This test suite provides comprehensive coverage of all core functions:
 //! - validate_memo_amount: Borsh+Base64 memo validation with burn amount verification
-//! - validate_memo_length: Memo length validation (69-800 bytes)
+//! - validate_memo_length: Memo minimum-length validation (69 bytes, no maximum)
+//! - Payload length prefix check (rejects forged Borsh length prefixes before allocation)
 //! - BurnMemo structure: Serialization and deserialization
 //! - Constants: Verify all constant values and relationships
 
 use super::*;
-use base64::{Engine as _, engine::general_purpose};
+use base64::engine::general_purpose;
+
+/// Largest payload that fit under the former 800-byte memo limit (600 decoded bytes - 13-byte header).
+/// Used as a "large payload" reference; the contract no longer enforces a maximum.
+const LARGE_PAYLOAD: usize = 587;
 
 // ============================================================================
 // Tests for validate_memo_amount()
@@ -76,7 +81,7 @@ mod validate_memo_amount_tests {
     #[test]
     fn test_valid_memo_maximum_payload() {
         let burn_amount = 100 * DECIMAL_FACTOR; // 100 tokens
-        let payload = vec![b'x'; MAX_PAYLOAD_LENGTH]; // Maximum allowed payload
+        let payload = vec![b'x'; LARGE_PAYLOAD]; // Maximum allowed payload
         let memo_data = create_valid_memo(burn_amount, payload);
         
         let result = validate_memo_amount(&memo_data, burn_amount);
@@ -86,7 +91,7 @@ mod validate_memo_amount_tests {
     #[test]
     fn test_valid_memo_near_maximum_payload() {
         let burn_amount = 50 * DECIMAL_FACTOR; // 50 tokens
-        let payload = vec![b'x'; MAX_PAYLOAD_LENGTH - 1]; // Just under maximum
+        let payload = vec![b'x'; LARGE_PAYLOAD - 1]; // Just under maximum
         let memo_data = create_valid_memo(burn_amount, payload);
         
         let result = validate_memo_amount(&memo_data, burn_amount);
@@ -288,35 +293,30 @@ mod validate_memo_amount_tests {
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_payload_too_long_by_one() {
+    fn test_payload_above_former_limit_accepted() {
+        // No maximum payload length: the transaction size limit bounds it
         let burn_amount = 10 * DECIMAL_FACTOR;
-        let payload = vec![b'x'; MAX_PAYLOAD_LENGTH + 1]; // One byte over
+        let payload = vec![b'x'; LARGE_PAYLOAD + 1];
         let memo_data = create_valid_memo(burn_amount, payload);
-        
-        let result = validate_memo_amount(&memo_data, burn_amount);
-        assert!(result.is_err(), "Payload exceeding maximum by 1 should fail");
-        let err_str = result.unwrap_err().to_string();
-        assert!(err_str.contains("PayloadTooLong") || err_str.contains("Payload too long") || err_str.contains("InvalidMemoFormat"));
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_ok());
     }
 
     #[test]
-    fn test_payload_too_long_by_many() {
+    fn test_payload_v1_transaction_size_accepted() {
+        // A payload that would only fit in a 4096-byte v1 transaction
         let burn_amount = 10 * DECIMAL_FACTOR;
-        let payload = vec![b'x'; MAX_PAYLOAD_LENGTH + 100]; // 100 bytes over
+        let payload = vec![b'x'; 2500];
         let memo_data = create_valid_memo(burn_amount, payload);
-        
-        let result = validate_memo_amount(&memo_data, burn_amount);
-        assert!(result.is_err(), "Payload exceeding maximum by 100 should fail");
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_ok());
     }
 
     #[test]
     fn test_payload_extremely_long() {
+        // Far beyond any transaction size; validation itself still succeeds
         let burn_amount = 10 * DECIMAL_FACTOR;
-        let payload = vec![b'x'; 10000]; // Extremely long
+        let payload = vec![b'x'; 10000];
         let memo_data = create_valid_memo(burn_amount, payload);
-        
-        let result = validate_memo_amount(&memo_data, burn_amount);
-        assert!(result.is_err(), "Extremely long payload should fail");
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_ok());
     }
 
     // ------------------------------------------------------------------------
@@ -324,32 +324,53 @@ mod validate_memo_amount_tests {
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_decoded_data_at_max_size() {
+    fn test_decoded_data_at_former_max_size() {
         let burn_amount = 10 * DECIMAL_FACTOR;
-        // Create payload that results in MAX_BORSH_DATA_SIZE after Borsh serialization
-        let payload_size = MAX_BORSH_DATA_SIZE - BORSH_FIXED_OVERHEAD;
-        let payload = vec![b'x'; payload_size];
+        // 800-byte memo, which decodes to 600 bytes (the former maximum)
+        let payload = vec![b'x'; LARGE_PAYLOAD];
         let memo_data = create_valid_memo(burn_amount, payload);
+        assert_eq!(memo_data.len(), 800);
         
-        // Decode to verify size
         let base64_str = std::str::from_utf8(&memo_data).unwrap();
         let decoded_data = general_purpose::STANDARD.decode(base64_str).unwrap();
-        assert_eq!(decoded_data.len(), MAX_BORSH_DATA_SIZE, "Should be exactly at max size");
+        assert_eq!(decoded_data.len(), 600);
         
-        let result = validate_memo_amount(&memo_data, burn_amount);
-        assert!(result.is_ok(), "Data at exactly max size should succeed");
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_ok());
     }
 
     #[test]
-    fn test_decoded_data_exceeds_max_size() {
+    fn test_forged_payload_length_prefix_rejected() {
+        // Valid memo whose payload length prefix claims 4 GiB: must fail cleanly, not abort on allocation
         let burn_amount = 10 * DECIMAL_FACTOR;
-        // Create payload that exceeds MAX_BORSH_DATA_SIZE
-        let payload_size = MAX_BORSH_DATA_SIZE - BORSH_FIXED_OVERHEAD + 1;
-        let payload = vec![b'x'; payload_size];
+        let mut raw = borsh::to_vec(&BurnMemo { version: BURN_MEMO_VERSION, burn_amount, payload: vec![b'x'; 60] }).unwrap();
+        raw[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+        let memo_data = general_purpose::STANDARD.encode(&raw).into_bytes();
+        let err = validate_memo_amount(&memo_data, burn_amount).unwrap_err();
+        assert!(err.to_string().contains("InvalidMemoFormat"));
+    }
+
+    #[test]
+    fn test_payload_length_prefix_too_small_rejected() {
+        // Prefix shorter than the bytes present (trailing data) is rejected
+        let burn_amount = 10 * DECIMAL_FACTOR;
+        let mut raw = borsh::to_vec(&BurnMemo { version: BURN_MEMO_VERSION, burn_amount, payload: vec![b'x'; 60] }).unwrap();
+        raw[9..13].copy_from_slice(&59u32.to_le_bytes());
+        let memo_data = general_purpose::STANDARD.encode(&raw).into_bytes();
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_err());
+    }
+
+    #[test]
+    fn test_decoded_data_shorter_than_header_rejected() {
+        let memo_data = general_purpose::STANDARD.encode([1u8; 12]).into_bytes();
+        assert!(validate_memo_amount(&memo_data, DECIMAL_FACTOR).is_err());
+    }
+
+    #[test]
+    fn test_decoded_data_above_former_max_size_accepted() {
+        let burn_amount = 10 * DECIMAL_FACTOR;
+        let payload = vec![b'x'; LARGE_PAYLOAD + 1]; // decodes to 601 bytes
         let memo_data = create_valid_memo(burn_amount, payload);
-        
-        let result = validate_memo_amount(&memo_data, burn_amount);
-        assert!(result.is_err(), "Data exceeding max size should fail");
+        assert!(validate_memo_amount(&memo_data, burn_amount).is_ok());
     }
 
     // ------------------------------------------------------------------------
@@ -358,7 +379,7 @@ mod validate_memo_amount_tests {
 
     #[test]
     fn test_maximum_burn_amount() {
-        let burn_amount = MAX_BURN_PER_TX; // Maximum allowed burn
+        let burn_amount = MAX_BURN_PER_INSTRUCTION; // Maximum allowed burn
         let payload = b"Maximum burn test".to_vec();
         let memo_data = create_valid_memo(burn_amount, payload);
         
@@ -453,41 +474,37 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_at_minimum_length() {
         let memo = vec![b'x'; MEMO_MIN_LENGTH]; // Exactly 69 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at minimum length (69) should succeed");
-        let (valid, data) = result.unwrap();
-        assert!(valid);
-        assert_eq!(data.len(), MEMO_MIN_LENGTH);
+        assert!(result.unwrap());
     }
 
     #[test]
-    fn test_memo_at_maximum_length() {
-        let memo = vec![b'x'; MEMO_MAX_LENGTH]; // Exactly 800 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+    fn test_memo_at_former_maximum_length() {
+        let memo = vec![b'x'; 800]; // the former maximum
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at maximum length (800) should succeed");
-        let (valid, data) = result.unwrap();
-        assert!(valid);
-        assert_eq!(data.len(), MEMO_MAX_LENGTH);
+        assert!(result.unwrap());
     }
 
     #[test]
     fn test_memo_just_above_minimum() {
         let memo = vec![b'x'; MEMO_MIN_LENGTH + 1]; // 70 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at 70 bytes should succeed");
     }
 
     #[test]
-    fn test_memo_just_below_maximum() {
-        let memo = vec![b'x'; MEMO_MAX_LENGTH - 1]; // 799 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+    fn test_memo_799_bytes() {
+        let memo = vec![b'x'; 799];
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at 799 bytes should succeed");
     }
 
     #[test]
     fn test_memo_mid_range() {
         let memo = vec![b'x'; 400]; // Middle of range
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo at 400 bytes should succeed");
     }
 
@@ -497,7 +514,7 @@ mod validate_memo_length_tests {
         
         for length in valid_lengths {
             let memo = vec![b'x'; length];
-            let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+            let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
             assert!(result.is_ok(), "Memo at {} bytes should succeed", length);
         }
     }
@@ -509,7 +526,7 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_empty() {
         let memo = vec![];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Empty memo should fail");
         let err_str = result.unwrap_err().to_string();
         assert!(err_str.contains("MemoTooShort") || err_str.contains("Memo too short"));
@@ -518,14 +535,14 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_one_byte() {
         let memo = vec![b'x'; 1];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "1-byte memo should fail");
     }
 
     #[test]
     fn test_memo_just_below_minimum() {
         let memo = vec![b'x'; MEMO_MIN_LENGTH - 1]; // 68 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Memo at 68 bytes should fail");
     }
 
@@ -535,40 +552,27 @@ mod validate_memo_length_tests {
         
         for length in short_lengths {
             let memo = vec![b'x'; length];
-            let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+            let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
             assert!(result.is_err(), "Memo at {} bytes should fail (too short)", length);
         }
     }
 
     // ------------------------------------------------------------------------
-    // Too Long Tests
+    // Long Memo Tests (no contract maximum; the transaction size limit applies)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_memo_just_above_maximum() {
-        let memo = vec![b'x'; MEMO_MAX_LENGTH + 1]; // 801 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "Memo at 801 bytes should fail");
-        let err_str = result.unwrap_err().to_string();
-        assert!(err_str.contains("MemoTooLong") || err_str.contains("Memo too long"));
+    fn test_memo_801_bytes_accepted() {
+        let memo = vec![b'x'; 801]; // rejected before the maximum was removed
+        assert!(validate_memo_length(&memo, MEMO_MIN_LENGTH).unwrap());
     }
 
     #[test]
-    fn test_memo_various_long_lengths() {
-        let long_lengths = vec![801, 850, 900, 1000, 1500, 2000];
-        
-        for length in long_lengths {
+    fn test_memo_various_long_lengths_accepted() {
+        for length in [801, 850, 900, 1000, 1500, 2000, 4096] {
             let memo = vec![b'x'; length];
-            let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-            assert!(result.is_err(), "Memo at {} bytes should fail (too long)", length);
+            assert!(validate_memo_length(&memo, MEMO_MIN_LENGTH).unwrap(), "Memo at {} bytes should be accepted", length);
         }
-    }
-
-    #[test]
-    fn test_memo_extremely_long() {
-        let memo = vec![b'x'; 10000];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "Extremely long memo should fail");
     }
 
     // ------------------------------------------------------------------------
@@ -580,7 +584,7 @@ mod validate_memo_length_tests {
         // Create exactly 69 bytes (69 'x' characters)
         let memo = vec![b'x'; 69];
         assert_eq!(memo.len(), 69, "Memo should be exactly 69 bytes");
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "ASCII text memo should succeed");
     }
 
@@ -588,7 +592,7 @@ mod validate_memo_length_tests {
     fn test_memo_utf8_text() {
         let mut memo = "Hello 世界 🔥 ".repeat(10).into_bytes();
         memo.truncate(100); // Make it valid length
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "UTF-8 text memo should succeed");
     }
 
@@ -599,74 +603,43 @@ mod validate_memo_length_tests {
         let base64_encoded = general_purpose::STANDARD.encode(&data);
         let memo = base64_encoded.into_bytes();
         assert!(memo.len() >= MEMO_MIN_LENGTH, "Base64 memo should be at least 69 bytes, got {}", memo.len());
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Base64 encoded memo should succeed");
     }
 
     #[test]
     fn test_memo_binary_data() {
         let memo = (0..100).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Binary data memo should succeed");
     }
 
     #[test]
     fn test_memo_all_zeros() {
         let memo = vec![0u8; 100];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "All-zeros memo should succeed");
     }
 
     #[test]
     fn test_memo_all_ones() {
         let memo = vec![1u8; 100];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "All-ones memo should succeed");
     }
 
     #[test]
     fn test_memo_all_255() {
         let memo = vec![255u8; 100];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "All-255 memo should succeed");
     }
 
     #[test]
     fn test_memo_mixed_binary() {
         let memo = vec![0, 1, 2, 3, 255, 254, 253, 128, 127, 64].repeat(10);
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Mixed binary memo should succeed");
-    }
-
-    // ------------------------------------------------------------------------
-    // Data Integrity Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_memo_data_returned_correctly() {
-        let original_memo = vec![b'A'; 100];
-        let result = validate_memo_length(&original_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok());
-        let (_, returned_data) = result.unwrap();
-        assert_eq!(returned_data, original_memo, "Returned data should match original");
-    }
-
-    #[test]
-    fn test_memo_data_not_modified() {
-        let original_memo = b"This is a test memo with special characters: !@#$%^&*() and numbers 123456789".to_vec();
-        let result = validate_memo_length(&original_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok());
-        let (_, returned_data) = result.unwrap();
-        assert_eq!(returned_data, original_memo, "Data should not be modified");
-    }
-
-    #[test]
-    fn test_memo_binary_data_preserved() {
-        let original_memo = vec![0, 1, 255, 128, 64, 32, 16, 8, 4, 2, 1].repeat(10);
-        let result = validate_memo_length(&original_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok());
-        let (_, returned_data) = result.unwrap();
-        assert_eq!(returned_data, original_memo, "Binary data should be preserved");
     }
 }
 
@@ -727,14 +700,14 @@ mod burn_memo_structure_tests {
         let memo = BurnMemo {
             version: 1,
             burn_amount: 1_000_000_000,
-            payload: vec![b'x'; MAX_PAYLOAD_LENGTH],
+            payload: vec![b'x'; LARGE_PAYLOAD],
         };
 
         let serialized = borsh::to_vec(&memo).unwrap();
-        assert!(serialized.len() <= MAX_BORSH_DATA_SIZE, "Serialized size should not exceed max");
+        assert_eq!(serialized.len(), BORSH_FIXED_OVERHEAD + LARGE_PAYLOAD);
         
         let deserialized: BurnMemo = BurnMemo::try_from_slice(&serialized).unwrap();
-        assert_eq!(deserialized.payload.len(), MAX_PAYLOAD_LENGTH);
+        assert_eq!(deserialized.payload.len(), LARGE_PAYLOAD);
     }
 
     #[test]
@@ -854,7 +827,7 @@ mod constants_tests {
 
     #[test]
     fn test_max_burn_per_tx() {
-        assert_eq!(MAX_BURN_PER_TX, 1_000_000_000_000 * DECIMAL_FACTOR, 
+        assert_eq!(MAX_BURN_PER_INSTRUCTION, 1_000_000_000_000 * DECIMAL_FACTOR, 
             "Maximum burn should be 1 trillion tokens");
     }
 
@@ -866,8 +839,6 @@ mod constants_tests {
     #[test]
     fn test_memo_length_constants() {
         assert_eq!(MEMO_MIN_LENGTH, 69, "Minimum memo length should be 69 bytes");
-        assert_eq!(MEMO_MAX_LENGTH, 800, "Maximum memo length should be 800 bytes");
-        assert!(MEMO_MIN_LENGTH < MEMO_MAX_LENGTH, "Min should be less than max");
     }
 
     #[test]
@@ -879,32 +850,28 @@ mod constants_tests {
     }
 
     #[test]
-    fn test_max_payload_length() {
-        assert_eq!(MAX_PAYLOAD_LENGTH, MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD);
-        assert_eq!(MAX_PAYLOAD_LENGTH, 787, "Max payload should be 800 - 13 = 787");
-    }
-
-    #[test]
-    fn test_max_borsh_data_size() {
-        assert_eq!(MAX_BORSH_DATA_SIZE, MEMO_MAX_LENGTH);
-        assert_eq!(MAX_BORSH_DATA_SIZE, 800);
+    fn test_large_payload_fits_in_800_byte_memo() {
+        // Reference: a 587-byte payload encodes to exactly 800 Base64 bytes
+        let memo = BurnMemo { version: BURN_MEMO_VERSION, burn_amount: DECIMAL_FACTOR, payload: vec![b'x'; LARGE_PAYLOAD] };
+        let encoded = general_purpose::STANDARD.encode(borsh::to_vec(&memo).unwrap());
+        assert_eq!(encoded.len(), 800);
     }
 
     #[test]
     fn test_max_user_global_burn_amount() {
         assert_eq!(MAX_USER_GLOBAL_BURN_AMOUNT, 18_000_000_000_000 * DECIMAL_FACTOR);
-        assert!(MAX_USER_GLOBAL_BURN_AMOUNT > MAX_BURN_PER_TX, 
+        assert!(MAX_USER_GLOBAL_BURN_AMOUNT > MAX_BURN_PER_INSTRUCTION, 
             "Max global burn should be greater than max per tx");
     }
 
     #[test]
     fn test_constants_no_overflow() {
         // Verify that constants don't cause overflow
-        let _ = MAX_BURN_PER_TX; // Should not panic
+        let _ = MAX_BURN_PER_INSTRUCTION; // Should not panic
         let _ = MAX_USER_GLOBAL_BURN_AMOUNT; // Should not panic
         
         // Verify arithmetic operations
-        let test_add = MAX_BURN_PER_TX.checked_add(DECIMAL_FACTOR);
+        let test_add = MAX_BURN_PER_INSTRUCTION.checked_add(DECIMAL_FACTOR);
         assert!(test_add.is_some(), "Should not overflow");
     }
 
@@ -919,9 +886,7 @@ mod constants_tests {
         // Verify logical relationships between constants
         assert!(MEMO_MIN_LENGTH > BORSH_FIXED_OVERHEAD, 
             "Min memo length should be greater than Borsh overhead");
-        assert!(MAX_PAYLOAD_LENGTH < MEMO_MAX_LENGTH, 
-            "Max payload should be less than max memo");
-        assert!(MIN_BURN_TOKENS * DECIMAL_FACTOR <= MAX_BURN_PER_TX, 
+        assert!(MIN_BURN_TOKENS * DECIMAL_FACTOR <= MAX_BURN_PER_INSTRUCTION, 
             "Min burn should be less than or equal to max burn");
     }
 }
@@ -960,7 +925,7 @@ mod integration_tests {
             "Base64 memo should be at least {} bytes, got {}", MEMO_MIN_LENGTH, memo_bytes.len());
         
         // Validate length
-        let length_result = validate_memo_length(&memo_bytes, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let length_result = validate_memo_length(&memo_bytes, MEMO_MIN_LENGTH);
         assert!(length_result.is_ok(), "Length validation should pass");
         
         // Validate amount
@@ -1007,7 +972,7 @@ mod integration_tests {
             let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
             let memo_bytes = base64_encoded.into_bytes();
             
-            if memo_bytes.len() >= MEMO_MIN_LENGTH && memo_bytes.len() <= MEMO_MAX_LENGTH {
+            if memo_bytes.len() >= MEMO_MIN_LENGTH {
                 let result = validate_memo_amount(&memo_bytes, burn_amount);
                 assert!(result.is_ok(), "Scenario with {} tokens should succeed", burn_amount / DECIMAL_FACTOR);
             }
@@ -1017,7 +982,7 @@ mod integration_tests {
     #[test]
     fn test_payload_size_calculation() {
         // Verify that payload size calculation is correct
-        for payload_size in [0, 10, 50, 100, 200, 500, MAX_PAYLOAD_LENGTH] {
+        for payload_size in [0, 10, 50, 100, 200, 500, LARGE_PAYLOAD] {
             let burn_amount = 10 * DECIMAL_FACTOR;
             let payload = vec![b'x'; payload_size];
             
@@ -1073,22 +1038,20 @@ mod test_coverage_summary {
     // - Invalid format (not Base64, not UTF-8, not Borsh)
     // - Version mismatches (0, 2, 255)
     // - Burn amount mismatches (higher, lower, off-by-one, zero)
-    // - Payload length violations (too long by 1, by many, extremely long)
-    // - Decoded data size tests (at max, exceeding max)
+    // - Long payloads accepted (no maximum; the transaction size limit applies)
+    // - Payload length prefix checks (forged, too small, shorter than header)
     // - Edge cases (maximum burn, special characters, binary data)
     
     // validate_memo_length: 35+ tests
-    // - Valid lengths (minimum, maximum, mid-range, various)
+    // - Valid lengths (minimum, mid-range, long memos with no maximum)
     // - Too short (empty, 1 byte, just below minimum, various)
-    // - Too long (just above maximum, various, extremely long)
     // - Content types (ASCII, UTF-8, Base64, binary, zeros, ones, 255s)
-    // - Data integrity (returned correctly, not modified, preserved)
     
     // BurnMemo structure: 8+ tests
     // - Serialization/deserialization
     // - Empty payload
     // - Large payload
-    // - Maximum payload
+    // - Large payload (587 bytes, fits an 800-byte memo)
     // - Borsh size calculation
     // - Various burn amounts
     // - Binary payload
@@ -1117,3 +1080,71 @@ mod test_coverage_summary {
     // Error paths: All tested
 }
 
+
+// ============================================================================
+// Tests for GlobalBurnStats
+// ============================================================================
+
+#[cfg(test)]
+mod global_burn_stats_tests {
+    use super::*;
+
+    fn empty_stats() -> GlobalBurnStats {
+        GlobalBurnStats { total_burned: 0, burn_count: 0, last_burn_time: 0, bump: 255, reserved: [0u8; 64] }
+    }
+
+    #[test]
+    fn test_global_burn_stats_space() {
+        // discriminator + u128 + u64 + i64 + u8 + 64 reserved
+        assert_eq!(GlobalBurnStats::SPACE, 8 + 16 + 8 + 8 + 1 + 64);
+        let serialized = borsh::to_vec(&empty_stats()).unwrap();
+        assert_eq!(serialized.len() + 8, GlobalBurnStats::SPACE, "SPACE must match the serialized size plus discriminator");
+    }
+
+    #[test]
+    fn test_record_burn_accumulates() {
+        let mut stats = empty_stats();
+        stats.record_burn(5 * DECIMAL_FACTOR, 100);
+        stats.record_burn(7 * DECIMAL_FACTOR, 200);
+        assert_eq!(stats.total_burned, 12 * DECIMAL_FACTOR as u128);
+        assert_eq!(stats.burn_count, 2);
+        assert_eq!(stats.last_burn_time, 200);
+    }
+
+    #[test]
+    fn test_total_burned_beyond_u64_range() {
+        // u128 keeps counting past what a u64 could hold
+        let mut stats = empty_stats();
+        stats.total_burned = u64::MAX as u128;
+        stats.record_burn(MAX_BURN_PER_INSTRUCTION, 1);
+        assert_eq!(stats.total_burned, u64::MAX as u128 + MAX_BURN_PER_INSTRUCTION as u128);
+    }
+
+    #[test]
+    fn test_total_burned_saturates_at_max() {
+        let mut stats = empty_stats();
+        stats.total_burned = u128::MAX - 1;
+        stats.record_burn(MAX_BURN_PER_INSTRUCTION, 1);
+        assert_eq!(stats.total_burned, u128::MAX, "total_burned must stop at u128::MAX");
+        stats.record_burn(DECIMAL_FACTOR, 2);
+        assert_eq!(stats.total_burned, u128::MAX, "total_burned must stay at u128::MAX");
+    }
+
+    #[test]
+    fn test_burn_count_saturates_at_max() {
+        let mut stats = empty_stats();
+        stats.burn_count = u64::MAX;
+        stats.record_burn(DECIMAL_FACTOR, 1);
+        assert_eq!(stats.burn_count, u64::MAX, "burn_count must stop at u64::MAX");
+        assert_eq!(stats.total_burned, DECIMAL_FACTOR as u128, "total_burned still updates when burn_count is capped");
+    }
+
+    #[test]
+    fn test_admin_pubkey_matches_other_programs() {
+        // Same admin as memo-chat / memo-project / memo-forum for the build's network
+        #[cfg(not(feature = "mainnet"))]
+        assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
+        #[cfg(feature = "mainnet")]
+        assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
+    }
+}

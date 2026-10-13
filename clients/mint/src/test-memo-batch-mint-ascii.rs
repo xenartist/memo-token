@@ -48,9 +48,6 @@ fn create_random_valid_ascii_memo() -> Result<Vec<u8>, Box<dyn std::error::Error
     if memo_bytes.len() < 69 {
         return Err("Generated memo too short".into());
     }
-    if memo_bytes.len() > 800 {
-        return Err("Generated memo too long".into());
-    }
     
     Ok(memo_bytes)
 }
@@ -94,7 +91,7 @@ fn create_exact_length_ascii_memo(target_length: usize) -> Result<Vec<u8>, Box<d
 const EXPECTED_CATEGORY: &str = "mint";
 const EXPECTED_OPERATION: &str = "batch_mint";
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, validate_mint_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Memo Token batch mint test client (PURE ASCII STRING FORMAT) ===\n");
@@ -308,18 +305,6 @@ fn format_token_amount(raw_amount: u64) -> String {
     }
 }
 
-fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
-    match raw_amount {
-        1_000_000 => (true, "1.0 token (stage 1: 0-100M supply)".to_string()),
-        100_000 => (true, "0.1 token (stage 2: 100M-1B supply)".to_string()),
-        10_000 => (true, "0.01 token (stage 3: 1B-10B supply)".to_string()),
-        1_000 => (true, "0.001 token (stage 4: 10B-100B supply)".to_string()),
-        100 => (true, "0.0001 token (stage 5: 100B-1T supply)".to_string()),
-        1 => (true, "0.000001 token (stage 6: 1T+ supply)".to_string()),
-        0 => (false, "No tokens minted - supply limit reached".to_string()),
-        _ => (false, format!("Unexpected amount: {} lamports ({:.6} tokens)", raw_amount, raw_amount as f64 / 1_000_000.0)),
-    }
-}
 
 fn create_rpc_client() -> RpcClient {
     let rpc_url = get_rpc_url();

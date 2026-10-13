@@ -22,21 +22,27 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1sJsBY6od7CfQ58XooRALwn
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
-// Memo length constraints
+// Authorized admin pubkey (only used to initialize the global burn statistics account)
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
+
+// Memo length constraint: minimum only; the maximum is set by the transaction size limit
 pub const MEMO_MIN_LENGTH: usize = 69;
-pub const MEMO_MAX_LENGTH: usize = 800;
 
 // Borsh serialization fixed overhead calculation
 const BORSH_U8_SIZE: usize = 1;         // version (u8)
 const BORSH_U64_SIZE: usize = 8;        // burn_amount (u64)
-const BORSH_VEC_LENGTH_SIZE: usize = 4; // user_data.len() (u32)
+const BORSH_VEC_LENGTH_SIZE: usize = 4; // payload.len() (u32)
 const BORSH_FIXED_OVERHEAD: usize = BORSH_U8_SIZE + BORSH_U64_SIZE + BORSH_VEC_LENGTH_SIZE;
 
-// maximum payload length = memo maximum length - borsh fixed overhead
-pub const MAX_PAYLOAD_LENGTH: usize = MEMO_MAX_LENGTH - BORSH_FIXED_OVERHEAD; // 800 - 13 = 787
+// Offset of the payload length prefix inside the Borsh data (after version and burn_amount)
+const BORSH_PAYLOAD_LEN_OFFSET: usize = BORSH_U8_SIZE + BORSH_U64_SIZE;
 
-// Maximum allowed Borsh data size after Base64 decoding (security limit)
-pub const MAX_BORSH_DATA_SIZE: usize = MEMO_MAX_LENGTH;
+// No maximum memo or payload length: the transaction size limit bounds both
+// (a memo decodes to 3/4 of its length, and the payload is that minus the 13-byte header)
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
@@ -44,8 +50,9 @@ pub const DECIMAL_FACTOR: u64 = 1_000_000;
 // Minimum burn requirement (1 token)  
 pub const MIN_BURN_TOKENS: u64 = 1;
 
-// Maximum burn per transaction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+// Maximum burn per process_burn instruction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
+// A transaction may contain several burn instructions, so this is not a per-transaction total
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 
 // Current version of BurnMemo structure
 pub const BURN_MEMO_VERSION: u8 = 1;
@@ -63,7 +70,7 @@ pub const MAX_USER_GLOBAL_BURN_AMOUNT: u64 = 18_000_000_000_000 * DECIMAL_FACTOR
 pub struct UserGlobalBurnStats {
     pub user: Pubkey,           // User's public key
     pub total_burned: u64,      // Total amount burned by this user (in units)
-    pub burn_count: u64,        // Number of burn transactions
+    pub burn_count: u64,        // Number of burn instructions
     pub last_burn_time: i64,    // Timestamp of last burn
     pub bump: u8,               // PDA bump
 }
@@ -77,6 +84,37 @@ impl UserGlobalBurnStats {
         1;   // bump (u8)
 }
 
+/// Global burn statistics across all users (one account, seeds = [b"global_burn_stats"])
+/// Counts every burn made through memo-burn, including burns from programs calling it via CPI.
+/// Both counters saturate at their type's maximum instead of overflowing.
+#[account]
+pub struct GlobalBurnStats {
+    pub total_burned: u128,     // Total amount burned by all users (in units)
+    pub burn_count: u64,        // Number of burn instructions
+    pub last_burn_time: i64,    // Timestamp of last burn
+    pub bump: u8,               // PDA bump
+    pub reserved: [u8; 64],     // Reserved for future fields (no realloc needed)
+}
+
+impl GlobalBurnStats {
+    pub const SPACE: usize = 8 + // discriminator
+        16 + // total_burned (u128)
+        8 +  // burn_count (u64)
+        8 +  // last_burn_time (i64)
+        1 +  // bump (u8)
+        64;  // reserved
+
+    /// Record one burn; counters stop at their maximum instead of overflowing
+    pub fn record_burn(&mut self, amount: u64, timestamp: i64) {
+        self.total_burned = self.total_burned.saturating_add(amount as u128);
+        self.burn_count = self.burn_count.saturating_add(1);
+        self.last_burn_time = timestamp;
+    }
+}
+
+/// Memo layout expected by process_burn (Base64-encoded Borsh of this struct).
+/// The program reads only the 13-byte header (version, burn_amount, payload length);
+/// the struct is public for clients and calling programs that build the memo.
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct BurnMemo {
     /// version of the BurnMemo structure (for future compatibility)
@@ -85,7 +123,7 @@ pub struct BurnMemo {
     /// burn amount (must match actual burn amount)
     pub burn_amount: u64,
     
-    /// application payload (variable length, max 787 bytes)
+    /// application payload (variable length, bounded only by the transaction size)
     pub payload: Vec<u8>,
 }
 
@@ -106,6 +144,19 @@ pub mod memo_burn {
         Ok(())
     }
 
+    /// Initialize the global burn statistics account (admin only, once, right after deployment)
+    pub fn initialize_global_burn_stats(ctx: Context<InitializeGlobalBurnStats>) -> Result<()> {
+        let global_burn_stats = &mut ctx.accounts.global_burn_stats;
+        global_burn_stats.total_burned = 0;
+        global_burn_stats.burn_count = 0;
+        global_burn_stats.last_burn_time = 0;
+        global_burn_stats.bump = ctx.bumps.global_burn_stats;
+        global_burn_stats.reserved = [0u8; 64];
+        
+        msg!("Initialized global burn statistics");
+        Ok(())
+    }
+
     /// Process burn operation with Borsh memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
         // Check burn amount is at least 1 token and is a multiple of DECIMAL_FACTOR (decimal=6)
@@ -114,7 +165,7 @@ pub mod memo_burn {
         }
         
         // Check burn amount upper limit (prevent excessive burns)
-        if amount > MAX_BURN_PER_TX {
+        if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
         }
         
@@ -124,15 +175,13 @@ pub mod memo_burn {
         }
 
         // Check memo instruction with length validation
-        let (memo_found, memo_data) = check_memo_instruction(ctx.accounts.instructions.as_ref())?;
-        if !memo_found {
-            return Err(ErrorCode::MemoRequired.into());
-        }
+        let memo_data = match check_memo_instruction(ctx.accounts.instructions.as_ref())? {
+            Some(data) => data,
+            None => return Err(ErrorCode::MemoRequired.into()),
+        };
 
         // Validate Borsh memo contains correct amount matching the burn amount
         validate_memo_amount(&memo_data, amount)?;
-
-        let token_count = amount / DECIMAL_FACTOR;
 
         token_2022::burn(
             CpiContext::new(
@@ -164,15 +213,15 @@ pub mod memo_burn {
         user_burn_stats.burn_count = user_burn_stats.burn_count.saturating_add(1);
         
         // Update last burn time
-        user_burn_stats.last_burn_time = Clock::get()?.unix_timestamp;
+        let timestamp = Clock::get()?.unix_timestamp;
+        user_burn_stats.last_burn_time = timestamp;
         
-        msg!("Updated user global burn stats: total_burned={} units ({} tokens), burn_count={}", 
-             user_burn_stats.total_burned, 
-             user_burn_stats.total_burned / DECIMAL_FACTOR,
-             user_burn_stats.burn_count);
-
-        msg!("Successfully burned {} tokens ({} units) with Borsh+Base64 memo validation", 
-             token_count, amount);
+        // Update global burn statistics
+        ctx.accounts.global_burn_stats.record_burn(amount, timestamp);
+        
+        // Log successful burn (integer units, 1 token = 1,000,000 units)
+        msg!("Burned {} units from {}, user total burned: {} units, burn count: {}",
+             amount, ctx.accounts.user.key(), user_burn_stats.total_burned, user_burn_stats.burn_count);
         
         Ok(())
     }
@@ -193,59 +242,48 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
             ErrorCode::InvalidMemoFormat
         })?;
     
-    // check decoded borsh data size
-    if decoded_data.len() > MAX_BORSH_DATA_SIZE {
-        msg!("Decoded data too large: {} bytes (max: {})", decoded_data.len(), MAX_BORSH_DATA_SIZE);
+    // check decoded borsh data holds at least the fixed header
+    if decoded_data.len() < BORSH_FIXED_OVERHEAD {
+        msg!("Decoded data too short: {} bytes (minimum: {})", decoded_data.len(), BORSH_FIXED_OVERHEAD);
         return Err(ErrorCode::InvalidMemoFormat.into());
     }
     
-    msg!("Base64 decoded: {} bytes -> {} bytes", memo_data.len(), decoded_data.len());
+    // Check the payload length prefix against the bytes actually present
+    // (a forged prefix must be rejected cleanly; Borsh would allocate the declared length)
+    let mut len_bytes = [0u8; 4];
+    len_bytes.copy_from_slice(&decoded_data[BORSH_PAYLOAD_LEN_OFFSET..BORSH_FIXED_OVERHEAD]);
+    let declared_payload_len = u32::from_le_bytes(len_bytes) as usize;
+    if declared_payload_len != decoded_data.len() - BORSH_FIXED_OVERHEAD {
+        msg!("Payload length prefix {} does not match {} payload bytes", declared_payload_len, decoded_data.len() - BORSH_FIXED_OVERHEAD);
+        return Err(ErrorCode::InvalidMemoFormat.into());
+    }
 
-    // Then deserialize Borsh data from decoded bytes
-    let burn_memo = BurnMemo::try_from_slice(&decoded_data)
-        .map_err(|_| {
-            msg!("Invalid Borsh format after Base64 decoding");
-            ErrorCode::InvalidMemoFormat
-        })?;
+    // Read the fixed Borsh header directly: version (u8) and burn_amount (u64, little-endian).
+    // The payload is not needed on-chain, so it is not copied; with the length prefix checked
+    // above, this accepts exactly the memos that BurnMemo::try_from_slice would accept.
+    let version = decoded_data[0];
+    let mut amount_bytes = [0u8; 8];
+    amount_bytes.copy_from_slice(&decoded_data[BORSH_U8_SIZE..BORSH_PAYLOAD_LEN_OFFSET]);
+    let burn_amount = u64::from_le_bytes(amount_bytes);
     
     // validate version compatibility
-    if burn_memo.version != BURN_MEMO_VERSION {
-        msg!("Unsupported memo version: {} (expected: {})", 
-             burn_memo.version, BURN_MEMO_VERSION);
+    if version != BURN_MEMO_VERSION {
+        msg!("Unsupported memo version: {} (expected: {})", version, BURN_MEMO_VERSION);
         return Err(ErrorCode::UnsupportedMemoVersion.into());
     }
     
     // validate burn amount matches
-    if burn_memo.burn_amount != expected_amount {
-        msg!("Burn amount mismatch: memo {} vs expected {}", 
-             burn_memo.burn_amount, expected_amount);
+    if burn_amount != expected_amount {
+        msg!("Burn amount mismatch: memo {} vs expected {}", burn_amount, expected_amount);
         return Err(ErrorCode::BurnAmountMismatch.into());
-    }
-    
-    // validate payload length does not exceed maximum allowed value
-    if burn_memo.payload.len() > MAX_PAYLOAD_LENGTH {
-        msg!("Payload too long: {} bytes (max: {})", 
-             burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-        return Err(ErrorCode::PayloadTooLong.into());
-    }
-    
-    msg!("Borsh+Base64 memo validation passed: version {}, {} units, payload: {} bytes (max: {})", 
-         burn_memo.version, expected_amount, burn_memo.payload.len(), MAX_PAYLOAD_LENGTH);
-    
-    // record payload preview
-    if !burn_memo.payload.is_empty() {
-        if let Ok(preview) = std::str::from_utf8(&burn_memo.payload[..burn_memo.payload.len().min(32)]) {
-            msg!("Payload preview: {}...", preview);
-        } else {
-            msg!("Payload: [binary data, {} bytes]", burn_memo.payload.len());
-        }
     }
     
     Ok(())
 }
 
-/// Validate memo data length and return result
-fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
+/// Validate memo data length; Ok(true) when the memo is at least `min_length` bytes
+/// There is no maximum: the transaction size limit bounds the memo length
+fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
     let memo_length = memo_data.len();
     
     // Ensure data is not empty
@@ -260,15 +298,7 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooShort.into());
     }
     
-    // Check maximum length requirement
-    if memo_length > max_length {
-        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
-        return Err(ErrorCode::MemoTooLong.into());
-    }
-    
-    // Length is valid, return memo data
-    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
-    Ok((true, memo_data.to_vec()))
+    Ok(true)
 }
 
 /// Check for memo instruction at REQUIRED index 0
@@ -277,9 +307,11 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-burn::process_burn (other instructions)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
-fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 makes the burn fail.
+///
+/// Returns the memo data when a valid memo is at index 0, otherwise None.
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<Option<Vec<u8>>> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
@@ -287,23 +319,23 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
     // to leave index 0 available for memo
     if current_index < 1 {
         msg!("process_burn must be at index 1 or later, but current instruction is at index {}", current_index);
-        return Ok((false, vec![]));
+        return Ok(None);
     }
     
     // Check that index 0 contains the memo instruction
     match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(0, instructions) {
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
-                msg!("Found memo instruction at required index 0");
-                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH)?;
+                Ok(Some(ix.data))
             } else {
                 msg!("Instruction at index 0 is not a memo (program_id: {})", ix.program_id);
-                Ok((false, vec![]))
+                Ok(None)
             }
         },
         Err(e) => {
             msg!("Failed to load instruction at required index 0: {:?}", e);
-            Ok((false, vec![]))
+            Ok(None)
         }
     }
 }
@@ -322,6 +354,27 @@ pub struct InitializeUserGlobalBurnStats<'info> {
         bump
     )]
     pub user_global_burn_stats: Account<'info, UserGlobalBurnStats>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+/// Account structure for initializing global burn statistics (admin only)
+#[derive(Accounts)]
+pub struct InitializeGlobalBurnStats<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
+    )]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = GlobalBurnStats::SPACE,
+        seeds = [b"global_burn_stats"],
+        bump
+    )]
+    pub global_burn_stats: Account<'info, GlobalBurnStats>,
     
     pub system_program: Program<'info, System>,
 }
@@ -348,7 +401,7 @@ pub struct ProcessBurn<'info> {
     #[account(
         mut,
         seeds = [b"user_global_burn_stats", user.key().as_ref()],
-        bump,
+        bump = user_global_burn_stats.bump,
         constraint = user_global_burn_stats.user == user.key() @ ErrorCode::UnauthorizedUser
     )]
     pub user_global_burn_stats: Account<'info, UserGlobalBurnStats>,
@@ -358,6 +411,14 @@ pub struct ProcessBurn<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+    
+    /// Global burn statistics account (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"global_burn_stats"],
+        bump = global_burn_stats.bump
+    )]
+    pub global_burn_stats: Account<'info, GlobalBurnStats>,
 }
 
 #[error_code]
@@ -374,7 +435,7 @@ pub enum ErrorCode {
     #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
     BurnAmountTooSmall,
 
-    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per transaction.")]
+    #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
     #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
@@ -395,14 +456,11 @@ pub enum ErrorCode {
     #[msg("Memo too short (minimum 69 bytes).")]
     MemoTooShort,
 
-    #[msg("Memo too long (maximum 800 bytes).")]
-    MemoTooLong,
-    
-    #[msg("Payload too long. (maximum 787 bytes).")]
-    PayloadTooLong,
-
     #[msg("Unauthorized user. User mismatch in global burn statistics account.")]
     UnauthorizedUser,
+
+    #[msg("Unauthorized admin. Only the authorized admin can initialize global burn statistics.")]
+    UnauthorizedAdmin,
 }
 
 // ============================================================================

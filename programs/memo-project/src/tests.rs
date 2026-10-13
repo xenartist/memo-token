@@ -19,7 +19,7 @@ mod tests {
         assert_eq!(MIN_PROJECT_BURN_AMOUNT, 420 * 1_000_000);
         assert_eq!(MIN_PROJECT_UPDATE_BURN_TOKENS, 42069);
         assert_eq!(MIN_PROJECT_UPDATE_BURN_AMOUNT, 42069 * 1_000_000);
-        assert_eq!(MAX_BURN_PER_TX, 1_000_000_000_000 * 1_000_000);
+        assert_eq!(MAX_BURN_PER_INSTRUCTION, 1_000_000_000_000 * 1_000_000);
     }
 
     #[test]
@@ -35,9 +35,6 @@ mod tests {
     #[test]
     fn test_memo_length_constants() {
         assert_eq!(MEMO_MIN_LENGTH, 69);
-        assert_eq!(MEMO_MAX_LENGTH, 800);
-        assert_eq!(MAX_PAYLOAD_LENGTH, 787); // 800 - 13
-        assert_eq!(MAX_BORSH_DATA_SIZE, 800);
     }
 
     #[test]
@@ -806,13 +803,13 @@ mod tests {
         let memo = BurnMemo {
             version: BURN_MEMO_VERSION,
             burn_amount: 1000 * DECIMAL_FACTOR,
-            payload: vec![0u8; MAX_PAYLOAD_LENGTH],
+            payload: vec![0u8; 587],
         };
         
         let serialized = memo.try_to_vec().unwrap();
         
         // Size should be version(1) + burn_amount(8) + vec_len(4) + payload(787)
-        assert_eq!(serialized.len(), 1 + 8 + 4 + MAX_PAYLOAD_LENGTH);
+        assert_eq!(serialized.len(), 1 + 8 + 4 + 587);
     }
 
     // ============================================================================

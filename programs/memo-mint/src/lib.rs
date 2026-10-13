@@ -26,21 +26,16 @@ const _: () = {
     // ensure max supply calculation won't overflow
     assert!(MAX_SUPPLY_TOKENS <= u64::MAX / DECIMAL_FACTOR, "MAX_SUPPLY_TOKENS too large");
     
-    // ensure tier thresholds are in the correct order
-    assert!(TIER_1_THRESHOLD_LAMPORTS < TIER_2_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_2_THRESHOLD_LAMPORTS < TIER_3_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_3_THRESHOLD_LAMPORTS < TIER_4_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_4_THRESHOLD_LAMPORTS < TIER_5_THRESHOLD_LAMPORTS, "Tier thresholds out of order");
-    assert!(TIER_5_THRESHOLD_LAMPORTS <= MAX_SUPPLY_LAMPORTS, "Final tier exceeds max supply");
-    
-    // ensure mint amounts are reasonable
-    assert!(TIER_1_MINT_AMOUNT > 0, "Mint amounts must be positive");
-    assert!(TIER_6_MINT_AMOUNT > 0, "Minimum mint amount must be positive");
+    // ensure the emission curve ends exactly at the max supply
+    assert!(CURVE_START_LAMPORTS * 10u64.pow(CURVE_DECADES) == MAX_SUPPLY_LAMPORTS, "Curve must end at max supply");
+
+    // ensure every step in every decade is a whole number of lamports and the smallest reward is >= 1 lamport
+    assert!(BASE_MINT_AMOUNT % 10u64.pow(CURVE_DECADES) == 0, "Base mint amount must be divisible across all decades");
+    assert!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES) >= 1, "Minimum mint amount must be positive");
 };
 
-// Memo length constraints
+// Memo length constraint: minimum only; the maximum is set by the transaction size limit
 pub const MEMO_MIN_LENGTH: usize = 69;
-pub const MEMO_MAX_LENGTH: usize = 800;
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
@@ -49,20 +44,19 @@ pub const DECIMAL_FACTOR: u64 = 1_000_000;
 pub const MAX_SUPPLY_TOKENS: u64 = 10_000_000_000_000;
 pub const MAX_SUPPLY_LAMPORTS: u64 = MAX_SUPPLY_TOKENS * DECIMAL_FACTOR;
 
-// Supply tier thresholds (in lamports for direct comparison)
-pub const TIER_1_THRESHOLD_LAMPORTS: u64 = 100_000_000 * DECIMAL_FACTOR;        // 100M tokens
-pub const TIER_2_THRESHOLD_LAMPORTS: u64 = 1_000_000_000 * DECIMAL_FACTOR;      // 1B tokens  
-pub const TIER_3_THRESHOLD_LAMPORTS: u64 = 10_000_000_000 * DECIMAL_FACTOR;     // 10B tokens
-pub const TIER_4_THRESHOLD_LAMPORTS: u64 = 100_000_000_000 * DECIMAL_FACTOR;    // 100B tokens
-pub const TIER_5_THRESHOLD_LAMPORTS: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;  // 1T tokens
-
-// Mint amounts per tier (in lamports)
-pub const TIER_1_MINT_AMOUNT: u64 = 1 * DECIMAL_FACTOR;      // 1 token
-pub const TIER_2_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 10;     // 0.1 token
-pub const TIER_3_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 100;    // 0.01 token
-pub const TIER_4_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 1_000;  // 0.001 token
-pub const TIER_5_MINT_AMOUNT: u64 = DECIMAL_FACTOR / 10_000; // 0.0001 token
-pub const TIER_6_MINT_AMOUNT: u64 = 1;                       // 0.000001 token (1 lamport)
+// Emission curve (in lamports for direct comparison)
+//
+// Below CURVE_START every mint pays BASE_MINT_AMOUNT (1 token).
+// From CURVE_START on, supply is split into decades [start * 10^n, start * 10^(n+1)).
+// Inside a decade, supply in [d * 10^k, (d+1) * 10^k) (d = leading digit 1..9) pays
+//     decade_base * (11 - d) / 10,   decade_base = BASE_MINT_AMOUNT / 10^n
+// so the reward drops by a tenth of the decade base at every round number:
+//     10M: 1, 20M: 0.9, ..., 90M: 0.2, 100M: 0.1, 200M: 0.09, ..., 1B: 0.01, ...
+// and would reach exactly 1 lamport at MAX_SUPPLY (10T).
+pub const CURVE_START_TOKENS: u64 = 10_000_000;                         // 10M tokens
+pub const CURVE_START_LAMPORTS: u64 = CURVE_START_TOKENS * DECIMAL_FACTOR;
+pub const CURVE_DECADES: u32 = 6;                                       // 10M -> 10T
+pub const BASE_MINT_AMOUNT: u64 = 1 * DECIMAL_FACTOR;                   // 1 token
 
 #[program]
 pub mod memo_mint {
@@ -78,14 +72,17 @@ pub mod memo_mint {
             &ctx.accounts.mint_authority,
             &ctx.accounts.token_account,
             &ctx.accounts.token_program,
-            ctx.program_id,
             ctx.bumps.mint_authority,
         )
     }
 
     /// Process token minting with dynamic amount based on total supply
-    /// Mints to a specified recipient's token account
-    pub fn process_mint_to(ctx: Context<ProcessMintTo>) -> Result<()> {
+    /// Mints to `recipient`'s token account, so anyone can mint for someone else;
+    /// `recipient` is checked against recipient_token_account.owner in ProcessMintTo
+    pub fn process_mint_to(ctx: Context<ProcessMintTo>, recipient: Pubkey) -> Result<()> {
+        // Keep the IDL argument name `recipient`; the value is only used by the account constraint
+        let _ = recipient;
+
         // Use shared mint logic
         execute_mint_operation(
             &ctx.accounts.instructions,
@@ -93,7 +90,6 @@ pub mod memo_mint {
             &ctx.accounts.mint_authority,
             &ctx.accounts.recipient_token_account,
             &ctx.accounts.token_program,
-            ctx.program_id,
             ctx.bumps.mint_authority,
         )
     }
@@ -106,29 +102,16 @@ fn execute_mint_operation<'info>(
     mint_authority: &AccountInfo<'info>,
     token_account: &InterfaceAccount<'info, TokenAccount>,
     token_program: &Program<'info, Token2022>,
-    program_id: &Pubkey,
     mint_authority_bump: u8,
 ) -> Result<()> {
     // Check for memo instruction with length constraints
-    let (memo_found, memo_data) = check_memo_instruction(instructions)?;
-    if !memo_found {
+    if !check_memo_instruction(instructions)? {
         msg!("No memo instruction found");
         return Err(ErrorCode::MemoRequired.into());
     }
     
-    // Validate PDA matches provided account
-    let (expected_mint_authority, expected_bump) = Pubkey::find_program_address(
-        &[b"mint_authority"],
-        program_id
-    );
-    
-    if expected_mint_authority != mint_authority.key() {
-        return Err(ErrorCode::InvalidMintAuthority.into());
-    }
-    
-    if expected_bump != mint_authority_bump {
-        return Err(ErrorCode::InvalidMintAuthority.into());
-    }
+    // mint_authority address and canonical bump are already verified by the
+    // `seeds = [b"mint_authority"], bump` constraint in the Accounts struct
     
     // Get current supply and calculate dynamic mint amount
     let current_supply = mint.supply;
@@ -148,12 +131,8 @@ fn execute_mint_operation<'info>(
         amount
     )?;
     
-    // Log successful mint operation
-    let token_count = calculate_token_count_safe(amount)?;
-    let current_tokens = calculate_token_count_safe(current_supply)?;
-    let recipient = token_account.owner;
-    msg!("Successfully minted {} tokens ({} units) to {}, current supply: {} tokens, memo length: {} bytes", 
-         token_count, amount, recipient, current_tokens, memo_data.len());
+    // Log successful mint operation (integer units, 1 token = 1,000,000 units)
+    msg!("Minted {} units to {}, supply before mint: {} units", amount, token_account.owner, current_supply);
     
     Ok(())
 }
@@ -164,9 +143,9 @@ fn execute_mint_operation<'info>(
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-mint::process_mint or memo-mint::process_mint_to (other instructions)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
-fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 makes the mint fail.
+fn check_memo_instruction(instructions: &AccountInfo) -> Result<bool> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
     
@@ -174,28 +153,28 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
     // to leave index 0 available for memo
     if current_index < 1 {
         msg!("process_mint must be at index 1 or later, but current instruction is at index {}", current_index);
-        return Ok((false, vec![]));
+        return Ok(false);
     }
     
     // Check that index 0 contains the memo instruction
     match anchor_lang::solana_program::sysvar::instructions::load_instruction_at_checked(0, instructions) {
         Ok(ix) => {
             if ix.program_id == MEMO_PROGRAM_ID {
-                msg!("Found memo instruction at required index 0");
-                validate_memo_length(&ix.data, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH)
+                validate_memo_length(&ix.data, MEMO_MIN_LENGTH)
             } else {
                 msg!("Instruction at index 0 is not a memo (program_id: {})", ix.program_id);
-                Ok((false, vec![]))
+                Ok(false)
             }
         },
         Err(e) => {
             msg!("Failed to load instruction at required index 0: {:?}", e);
-            Ok((false, vec![]))
+            Ok(false)
         }
     }
 }
-/// Validate memo data length and return result
-fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) -> Result<(bool, Vec<u8>)> {
+/// Validate memo data length; Ok(true) when the memo is at least `min_length` bytes
+/// There is no maximum: the transaction size limit bounds the memo length
+fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
     let memo_length = memo_data.len();
     
     // Ensure data is not empty
@@ -210,15 +189,7 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize, max_length: usize) 
         return Err(ErrorCode::MemoTooShort.into());
     }
     
-    // Check maximum length requirement
-    if memo_length > max_length {
-        msg!("Memo too long: {} bytes (maximum: {})", memo_length, max_length);
-        return Err(ErrorCode::MemoTooLong.into());
-    }
-    
-    // Length is valid, return memo data
-    msg!("Memo length validation passed: {} bytes (range: {}-{})", memo_length, min_length, max_length);
-    Ok((true, memo_data.to_vec()))
+    Ok(true)
 }
 
 /// Calculate dynamic mint amount based on current supply with hard cap
@@ -228,17 +199,25 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
         return Err(ErrorCode::SupplyLimitReached.into());
     }
     
-    // Mint amount based on current supply tiers (comparing lamports directly)
-    let amount = match current_supply {
-        0..=TIER_1_THRESHOLD_LAMPORTS => TIER_1_MINT_AMOUNT,           // 0-100M tokens: 1 token
-        _ if current_supply <= TIER_2_THRESHOLD_LAMPORTS => TIER_2_MINT_AMOUNT, // 100M-1B tokens: 0.1 token  
-        _ if current_supply <= TIER_3_THRESHOLD_LAMPORTS => TIER_3_MINT_AMOUNT, // 1B-10B tokens: 0.01 token
-        _ if current_supply <= TIER_4_THRESHOLD_LAMPORTS => TIER_4_MINT_AMOUNT, // 10B-100B tokens: 0.001 token
-        _ if current_supply <= TIER_5_THRESHOLD_LAMPORTS => TIER_5_MINT_AMOUNT, // 100B-1T tokens: 0.0001 token
-        _ => TIER_6_MINT_AMOUNT, // 1T+ tokens: 0.000001 token (1 lamport)
+    // Mint amount based on the emission curve (comparing lamports directly)
+    let amount = if current_supply < CURVE_START_LAMPORTS {
+        BASE_MINT_AMOUNT
+    } else {
+        // Find the decade: magnitude <= current_supply < magnitude * 10
+        // (at most CURVE_DECADES - 1 iterations; magnitude * 10 <= current_supply < MAX_SUPPLY, so no overflow)
+        let mut magnitude = CURVE_START_LAMPORTS;
+        let mut decade_base = BASE_MINT_AMOUNT;
+        while current_supply / 10 >= magnitude {
+            magnitude *= 10;
+            decade_base /= 10;
+        }
+
+        // Leading digit, always 1..=9 here
+        let digit = current_supply / magnitude;
+        decade_base * (11 - digit) / 10
     };
     
-    // 🔥 use checked_add to prevent overflow
+    // use checked_add to prevent overflow
     let new_supply = current_supply.checked_add(amount)
         .ok_or(ErrorCode::ArithmeticOverflow)?;
     
@@ -249,24 +228,6 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
     
     Ok(amount)
 }
-
-/// safe token count calculation helper function
-fn calculate_token_count_safe(lamports: u64) -> Result<f64> {
-    // prevent division by zero (compile-time constant, but good practice)
-    if DECIMAL_FACTOR == 0 {
-        return Err(ErrorCode::ArithmeticOverflow.into());
-    }
-    
-    // ensure conversion is safe (although for f64 u64 range is safe)
-    let result = lamports as f64 / DECIMAL_FACTOR as f64;
-    
-    // check if result is valid (prevent NaN or infinity in extreme cases)
-    if !result.is_finite() {
-        return Err(ErrorCode::ArithmeticOverflow.into());
-    }
-    
-    Ok(result)
-} 
 
 /// Account structure for token minting instruction (original version)
 #[derive(Accounts)]
@@ -341,14 +302,8 @@ pub enum ErrorCode {
     #[msg("Transaction must include a memo instruction.")]
     MemoRequired,
 
-    #[msg("Invalid memo format. Memo contains null bytes.")]
-    InvalidMemoFormat,
-    
     #[msg("Memo too short. Must be at least 69 bytes.")]
     MemoTooShort,
-    
-    #[msg("Memo too long. Must be at most 800 bytes.")]
-    MemoTooLong,
     
     #[msg("Invalid token account: Account must belong to the correct mint.")]
     InvalidTokenAccount,
@@ -356,11 +311,8 @@ pub enum ErrorCode {
     #[msg("Unauthorized mint: Only the specified mint address can be used.")]
     UnauthorizedMint,
 
-    #[msg("Unauthorized token account: User must own the token account.")]
+    #[msg("Unauthorized token account: Token account must be owned by the minting user or the declared recipient.")]
     UnauthorizedTokenAccount,
-
-    #[msg("Invalid mint authority: PDA does not match expected mint authority.")]
-    InvalidMintAuthority,
 
     #[msg("Supply limit reached. Maximum supply is 10 trillion tokens.")]
     SupplyLimitReached,

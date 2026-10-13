@@ -252,9 +252,9 @@ verify_configuration() {
             print_success "${MINT_AUTHORITY_PUBKEY}"
         fi
         
-        # 6. Verify admin authority (only for memo_chat, memo_project, and memo_forum)
+        # 6. Verify admin authority (only for memo_burn, memo_chat, memo_project, and memo_forum)
         # Note: memo_blog no longer requires admin authority (global counter removed)
-        if [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ] || [ "${program}" = "memo_forum" ]; then
+        if [ "${program}" = "memo_burn" ] || [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ] || [ "${program}" = "memo_forum" ]; then
             local code_admin_authority=$(extract_authority_from_code "${program}" "ADMIN" "${ENV}")
             echo -n "  Admin Authority: "
             if [ -z "${code_admin_authority}" ]; then
@@ -334,7 +334,16 @@ deploy_to_env() {
                 exit 1
             fi
         done
-        SELECTED_PROGRAMS=("${VALIDATED_PROGRAMS[@]}")
+        # Deploy in canonical order (memo_burn before the apps that CPI into it)
+        SELECTED_PROGRAMS=()
+        for canonical in "${ALL_PROGRAMS[@]}"; do
+            for prog in "${VALIDATED_PROGRAMS[@]}"; do
+                if [ "$prog" = "$canonical" ]; then
+                    SELECTED_PROGRAMS+=("$canonical")
+                    break
+                fi
+            done
+        done
         print_info "Deploying selected programs: ${SELECTED_PROGRAMS[*]}"
     fi
     
@@ -412,6 +421,19 @@ deploy_to_env() {
             --program-keypair "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
         
         print_success "${program} deployed: ${program_id}"
+
+        # memo-burn requires the global burn stats account; every burn fails until it exists.
+        # The client is idempotent: it does nothing if the account is already initialized.
+        if [ "${program}" = "memo_burn" ]; then
+            print_info "Initializing memo-burn global burn stats..."
+            if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
+                    --bin admin-init-global-burn-stats -- "${program_id}"; then
+                print_error "Global burn stats initialization failed. Burns will fail until it succeeds."
+                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-global-burn-stats -- ${program_id}"
+                exit 1
+            fi
+            print_success "Global burn stats ready"
+        fi
         
         # Determine explorer URL based on actual deployment cluster (not ENV)
         if [[ "${CLUSTER}" =~ "mainnet" ]]; then

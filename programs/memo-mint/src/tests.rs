@@ -1,9 +1,8 @@
 //! Unit tests for memo-mint contract
 //! 
 //! This test suite provides comprehensive coverage of all core functions:
-//! - calculate_dynamic_mint_amount: Dynamic tier-based minting logic
-//! - validate_memo_length: Memo validation with length constraints
-//! - calculate_token_count_safe: Safe floating-point token display calculations
+//! - calculate_dynamic_mint_amount: Round-number emission curve (10M, 20M, ... 100M, 200M, ...)
+//! - validate_memo_length: Memo minimum-length validation (no maximum)
 
 use super::*;
 
@@ -15,290 +14,190 @@ use super::*;
 mod calculate_dynamic_mint_amount_tests {
     use super::*;
 
-    // ------------------------------------------------------------------------
-    // TIER 1: 0 - 100M tokens (1.0 token per mint)
-    // ------------------------------------------------------------------------
+    const M: u64 = DECIMAL_FACTOR; // 1 token in lamports
 
-    #[test]
-    fn test_tier_1_at_zero_supply() {
-        let amount = calculate_dynamic_mint_amount(0).unwrap();
-        assert_eq!(
-            amount, TIER_1_MINT_AMOUNT,
-            "At 0 supply, should mint 1 token (Tier 1)"
-        );
-    }
-
-    #[test]
-    fn test_tier_1_at_mid_range() {
-        let mid_tier_1 = 50_000_000 * DECIMAL_FACTOR; // 50M tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_1).unwrap();
-        assert_eq!(
-            amount, TIER_1_MINT_AMOUNT,
-            "At 50M tokens (mid Tier 1), should mint 1 token"
-        );
-    }
-
-    #[test]
-    fn test_tier_1_just_before_boundary() {
-        let just_before = TIER_1_THRESHOLD_LAMPORTS - 1;
-        let amount = calculate_dynamic_mint_amount(just_before).unwrap();
-        assert_eq!(
-            amount, TIER_1_MINT_AMOUNT,
-            "Just before 100M threshold, should mint 1 token"
-        );
-    }
-
-    #[test]
-    fn test_tier_1_exactly_at_boundary() {
-        // Critical test: At exactly 100M tokens
-        let amount = calculate_dynamic_mint_amount(TIER_1_THRESHOLD_LAMPORTS).unwrap();
-        assert_eq!(
-            amount, TIER_1_MINT_AMOUNT,
-            "At exactly 100M tokens, should still mint 1 token (inclusive boundary)"
-        );
+    /// Expected reward at a supply given in whole tokens, computed independently
+    /// from the curve definition: below 10M -> 1 token; otherwise in the decade
+    /// [10M * 10^n, 10M * 10^(n+1)) with leading digit d -> (1 / 10^n) * (11 - d) / 10.
+    fn expected_reward(supply_tokens: u64) -> u64 {
+        if supply_tokens < CURVE_START_TOKENS {
+            return BASE_MINT_AMOUNT;
+        }
+        let mut magnitude = CURVE_START_TOKENS;
+        let mut n = 0u32;
+        while supply_tokens >= magnitude * 10 {
+            magnitude *= 10;
+            n += 1;
+        }
+        let d = supply_tokens / magnitude;
+        BASE_MINT_AMOUNT / 10u64.pow(n) * (11 - d) / 10
     }
 
     // ------------------------------------------------------------------------
-    // TIER 2: 100M - 1B tokens (0.1 token per mint)
+    // Below the curve start: 0 - 10M tokens (1.0 token per mint)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_tier_2_just_after_tier_1() {
-        let just_after = TIER_1_THRESHOLD_LAMPORTS + 1;
-        let amount = calculate_dynamic_mint_amount(just_after).unwrap();
-        assert_eq!(
-            amount, TIER_2_MINT_AMOUNT,
-            "After 100M + 1 lamport, should mint 0.1 token (Tier 2)"
-        );
+    fn test_zero_supply_mints_one_token() {
+        assert_eq!(calculate_dynamic_mint_amount(0).unwrap(), M);
     }
 
     #[test]
-    fn test_tier_2_at_mid_range() {
-        let mid_tier_2 = 500_000_000 * DECIMAL_FACTOR; // 500M tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_2).unwrap();
-        assert_eq!(
-            amount, TIER_2_MINT_AMOUNT,
-            "At 500M tokens (mid Tier 2), should mint 0.1 token"
-        );
+    fn test_current_mainnet_supply_mints_one_token() {
+        // Mainnet supply on 2026-10-13: 8,730,756 MEMO
+        assert_eq!(calculate_dynamic_mint_amount(8_730_756 * M).unwrap(), M);
     }
 
     #[test]
-    fn test_tier_2_just_before_boundary() {
-        let just_before = TIER_2_THRESHOLD_LAMPORTS - 1;
-        let amount = calculate_dynamic_mint_amount(just_before).unwrap();
-        assert_eq!(
-            amount, TIER_2_MINT_AMOUNT,
-            "Just before 1B threshold, should mint 0.1 token"
-        );
-    }
-
-    #[test]
-    fn test_tier_2_exactly_at_boundary() {
-        let amount = calculate_dynamic_mint_amount(TIER_2_THRESHOLD_LAMPORTS).unwrap();
-        assert_eq!(
-            amount, TIER_2_MINT_AMOUNT,
-            "At exactly 1B tokens, should still mint 0.1 token (inclusive boundary)"
-        );
+    fn test_one_lamport_below_curve_start_mints_one_token() {
+        assert_eq!(calculate_dynamic_mint_amount(CURVE_START_LAMPORTS - 1).unwrap(), M);
     }
 
     // ------------------------------------------------------------------------
-    // TIER 3: 1B - 10B tokens (0.01 token per mint)
+    // First decade: 10M - 100M tokens (1.0 -> 0.2, one tenth less per 10M)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_tier_3_just_after_tier_2() {
-        let just_after = TIER_2_THRESHOLD_LAMPORTS + 1;
-        let amount = calculate_dynamic_mint_amount(just_after).unwrap();
-        assert_eq!(
-            amount, TIER_3_MINT_AMOUNT,
-            "After 1B + 1 lamport, should mint 0.01 token (Tier 3)"
-        );
+    fn test_first_decade_round_numbers() {
+        let cases: [(u64, u64); 9] = [
+            (10_000_000, 1_000_000), // 10M: 1.0
+            (20_000_000, 900_000),   // 20M: 0.9
+            (30_000_000, 800_000),   // 30M: 0.8
+            (40_000_000, 700_000),   // 40M: 0.7
+            (50_000_000, 600_000),   // 50M: 0.6
+            (60_000_000, 500_000),   // 60M: 0.5
+            (70_000_000, 400_000),   // 70M: 0.4
+            (80_000_000, 300_000),   // 80M: 0.3
+            (90_000_000, 200_000),   // 90M: 0.2
+        ];
+        for (supply_tokens, expected) in cases {
+            assert_eq!(
+                calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
+                expected,
+                "Wrong reward at {} tokens",
+                supply_tokens
+            );
+        }
     }
 
     #[test]
-    fn test_tier_3_at_mid_range() {
-        let mid_tier_3 = 5_000_000_000 * DECIMAL_FACTOR; // 5B tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_3).unwrap();
-        assert_eq!(
-            amount, TIER_3_MINT_AMOUNT,
-            "At 5B tokens (mid Tier 3), should mint 0.01 token"
-        );
+    fn test_reward_constant_inside_a_step() {
+        // Anywhere in [20M, 30M) pays 0.9
+        for supply in [20_000_000 * M, 25_000_000 * M, 30_000_000 * M - 1] {
+            assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), 900_000);
+        }
     }
 
     #[test]
-    fn test_tier_3_exactly_at_boundary() {
-        let amount = calculate_dynamic_mint_amount(TIER_3_THRESHOLD_LAMPORTS).unwrap();
-        assert_eq!(
-            amount, TIER_3_MINT_AMOUNT,
-            "At exactly 10B tokens, should still mint 0.01 token (inclusive boundary)"
-        );
-    }
-
-    // ------------------------------------------------------------------------
-    // TIER 4: 10B - 100B tokens (0.001 token per mint)
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_tier_4_just_after_tier_3() {
-        let just_after = TIER_3_THRESHOLD_LAMPORTS + 1;
-        let amount = calculate_dynamic_mint_amount(just_after).unwrap();
-        assert_eq!(
-            amount, TIER_4_MINT_AMOUNT,
-            "After 10B + 1 lamport, should mint 0.001 token (Tier 4)"
-        );
+    fn test_step_changes_exactly_at_round_number() {
+        assert_eq!(calculate_dynamic_mint_amount(20_000_000 * M - 1).unwrap(), 1_000_000);
+        assert_eq!(calculate_dynamic_mint_amount(20_000_000 * M).unwrap(), 900_000);
     }
 
     #[test]
-    fn test_tier_4_at_mid_range() {
-        let mid_tier_4 = 50_000_000_000 * DECIMAL_FACTOR; // 50B tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_4).unwrap();
-        assert_eq!(
-            amount, TIER_4_MINT_AMOUNT,
-            "At 50B tokens (mid Tier 4), should mint 0.001 token"
-        );
-    }
-
-    #[test]
-    fn test_tier_4_exactly_at_boundary() {
-        let amount = calculate_dynamic_mint_amount(TIER_4_THRESHOLD_LAMPORTS).unwrap();
-        assert_eq!(
-            amount, TIER_4_MINT_AMOUNT,
-            "At exactly 100B tokens, should still mint 0.001 token (inclusive boundary)"
-        );
+    fn test_just_below_100m_pays_0_2() {
+        assert_eq!(calculate_dynamic_mint_amount(100_000_000 * M - 1).unwrap(), 200_000);
     }
 
     // ------------------------------------------------------------------------
-    // TIER 5: 100B - 1T tokens (0.0001 token per mint)
+    // Decade starts: 10M -> 1, 100M -> 0.1, 1B -> 0.01, ... (10x per decade)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_tier_5_just_after_tier_4() {
-        let just_after = TIER_4_THRESHOLD_LAMPORTS + 1;
-        let amount = calculate_dynamic_mint_amount(just_after).unwrap();
-        assert_eq!(
-            amount, TIER_5_MINT_AMOUNT,
-            "After 100B + 1 lamport, should mint 0.0001 token (Tier 5)"
-        );
+    fn test_decade_starts_are_powers_of_ten() {
+        let cases: [(u64, u64); 6] = [
+            (10_000_000, 1_000_000),     // 10M: 1
+            (100_000_000, 100_000),      // 100M: 0.1
+            (1_000_000_000, 10_000),     // 1B: 0.01
+            (10_000_000_000, 1_000),     // 10B: 0.001
+            (100_000_000_000, 100),      // 100B: 0.0001
+            (1_000_000_000_000, 10),     // 1T: 0.00001
+        ];
+        for (supply_tokens, expected) in cases {
+            assert_eq!(
+                calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
+                expected,
+                "Wrong reward at decade start {} tokens",
+                supply_tokens
+            );
+        }
     }
 
     #[test]
-    fn test_tier_5_at_mid_range() {
-        let mid_tier_5 = 500_000_000_000 * DECIMAL_FACTOR; // 500B tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_5).unwrap();
-        assert_eq!(
-            amount, TIER_5_MINT_AMOUNT,
-            "At 500B tokens (mid Tier 5), should mint 0.0001 token"
-        );
+    fn test_second_decade_round_numbers() {
+        assert_eq!(calculate_dynamic_mint_amount(200_000_000 * M).unwrap(), 90_000); // 200M: 0.09
+        assert_eq!(calculate_dynamic_mint_amount(500_000_000 * M).unwrap(), 60_000); // 500M: 0.06
+        assert_eq!(calculate_dynamic_mint_amount(900_000_000 * M).unwrap(), 20_000); // 900M: 0.02
+        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000 * M - 1).unwrap(), 20_000);
     }
 
     #[test]
-    fn test_tier_5_exactly_at_boundary() {
-        let amount = calculate_dynamic_mint_amount(TIER_5_THRESHOLD_LAMPORTS).unwrap();
-        assert_eq!(
-            amount, TIER_5_MINT_AMOUNT,
-            "At exactly 1T tokens, should still mint 0.0001 token (inclusive boundary)"
-        );
-    }
-
-    // ------------------------------------------------------------------------
-    // TIER 6: 1T - 10T tokens (0.000001 token = 1 lamport per mint)
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_tier_6_just_after_tier_5() {
-        let just_after = TIER_5_THRESHOLD_LAMPORTS + 1;
-        let amount = calculate_dynamic_mint_amount(just_after).unwrap();
-        assert_eq!(
-            amount, TIER_6_MINT_AMOUNT,
-            "After 1T + 1 lamport, should mint 0.000001 token (Tier 6)"
-        );
-    }
-
-    #[test]
-    fn test_tier_6_at_mid_range() {
-        let mid_tier_6 = 5_000_000_000_000 * DECIMAL_FACTOR; // 5T tokens
-        let amount = calculate_dynamic_mint_amount(mid_tier_6).unwrap();
-        assert_eq!(
-            amount, TIER_6_MINT_AMOUNT,
-            "At 5T tokens (mid Tier 6), should mint 0.000001 token"
-        );
-    }
-
-    #[test]
-    fn test_tier_6_near_max_supply() {
-        let near_max = MAX_SUPPLY_LAMPORTS - 1000;
-        let amount = calculate_dynamic_mint_amount(near_max).unwrap();
-        assert_eq!(
-            amount, TIER_6_MINT_AMOUNT,
-            "Near max supply, should still mint 0.000001 token"
-        );
+    fn test_last_decade_round_numbers() {
+        // 1T - 10T: 10 lamports down to 2 lamports
+        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000_000 * M).unwrap(), 10);
+        assert_eq!(calculate_dynamic_mint_amount(5_000_000_000_000 * M).unwrap(), 6);
+        assert_eq!(calculate_dynamic_mint_amount(9_000_000_000_000 * M).unwrap(), 2);
     }
 
     // ------------------------------------------------------------------------
-    // All Tier Transitions (Sequential Test)
+    // Whole-curve properties
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_all_tier_transitions_sequential() {
-        // Tier 1 -> Tier 2 transition
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_1_THRESHOLD_LAMPORTS).unwrap(),
-            TIER_1_MINT_AMOUNT,
-            "Tier 1 boundary: inclusive"
-        );
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_1_THRESHOLD_LAMPORTS + 1).unwrap(),
-            TIER_2_MINT_AMOUNT,
-            "Tier 1 -> 2 transition"
-        );
+    fn test_every_round_number_matches_definition() {
+        // All 54 round numbers d * 10^k from 10M to 9T, plus one lamport below each
+        let mut magnitude = CURVE_START_TOKENS;
+        for _ in 0..CURVE_DECADES {
+            for d in 1..=9u64 {
+                let supply_tokens = d * magnitude;
+                assert_eq!(
+                    calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
+                    expected_reward(supply_tokens),
+                    "Mismatch at {} tokens",
+                    supply_tokens
+                );
+                let below = calculate_dynamic_mint_amount(supply_tokens * M - 1).unwrap();
+                assert_eq!(below, expected_reward(supply_tokens - 1), "Mismatch just below {} tokens", supply_tokens);
+            }
+            magnitude *= 10;
+        }
+    }
 
-        // Tier 2 -> Tier 3 transition
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_2_THRESHOLD_LAMPORTS).unwrap(),
-            TIER_2_MINT_AMOUNT,
-            "Tier 2 boundary: inclusive"
-        );
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_2_THRESHOLD_LAMPORTS + 1).unwrap(),
-            TIER_3_MINT_AMOUNT,
-            "Tier 2 -> 3 transition"
-        );
+    #[test]
+    fn test_reward_never_increases_with_supply() {
+        let mut previous = u64::MAX;
+        let mut magnitude = CURVE_START_TOKENS;
+        for _ in 0..CURVE_DECADES {
+            for d in 1..=9u64 {
+                let supply = d * magnitude * M;
+                for s in [supply - 1, supply, supply + 1] {
+                    let amount = calculate_dynamic_mint_amount(s).unwrap();
+                    assert!(amount <= previous, "Reward increased at supply {}", s);
+                    previous = amount;
+                }
+            }
+            magnitude *= 10;
+        }
+    }
 
-        // Tier 3 -> Tier 4 transition
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_3_THRESHOLD_LAMPORTS).unwrap(),
-            TIER_3_MINT_AMOUNT,
-            "Tier 3 boundary: inclusive"
-        );
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_3_THRESHOLD_LAMPORTS + 1).unwrap(),
-            TIER_4_MINT_AMOUNT,
-            "Tier 3 -> 4 transition"
-        );
+    #[test]
+    fn test_reward_is_always_at_least_one_lamport() {
+        let mut magnitude = CURVE_START_TOKENS;
+        for _ in 0..CURVE_DECADES {
+            for d in 1..=9u64 {
+                assert!(calculate_dynamic_mint_amount(d * magnitude * M).unwrap() >= 1);
+            }
+            magnitude *= 10;
+        }
+    }
 
-        // Tier 4 -> Tier 5 transition
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_4_THRESHOLD_LAMPORTS).unwrap(),
-            TIER_4_MINT_AMOUNT,
-            "Tier 4 boundary: inclusive"
-        );
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_4_THRESHOLD_LAMPORTS + 1).unwrap(),
-            TIER_5_MINT_AMOUNT,
-            "Tier 4 -> 5 transition"
-        );
-
-        // Tier 5 -> Tier 6 transition
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_5_THRESHOLD_LAMPORTS).unwrap(),
-            TIER_5_MINT_AMOUNT,
-            "Tier 5 boundary: inclusive"
-        );
-        assert_eq!(
-            calculate_dynamic_mint_amount(TIER_5_THRESHOLD_LAMPORTS + 1).unwrap(),
-            TIER_6_MINT_AMOUNT,
-            "Tier 5 -> 6 transition"
-        );
+    #[test]
+    fn test_curve_constants() {
+        assert_eq!(CURVE_START_LAMPORTS, 10_000_000 * DECIMAL_FACTOR);
+        assert_eq!(BASE_MINT_AMOUNT, 1_000_000);
+        assert_eq!(CURVE_START_LAMPORTS * 10u64.pow(CURVE_DECADES), MAX_SUPPLY_LAMPORTS);
+        // The curve would reach exactly 1 lamport at max supply
+        assert_eq!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES), 1);
     }
 
     // ------------------------------------------------------------------------
@@ -312,7 +211,7 @@ mod calculate_dynamic_mint_amount_tests {
             result.is_err(),
             "At exactly max supply, should fail with SupplyLimitReached"
         );
-        
+
         // Verify it's the correct error type
         match result {
             Err(e) => {
@@ -329,32 +228,22 @@ mod calculate_dynamic_mint_amount_tests {
     #[test]
     fn test_max_supply_above_limit() {
         let above_max = MAX_SUPPLY_LAMPORTS + 1_000_000;
-        let result = calculate_dynamic_mint_amount(above_max);
-        assert!(
-            result.is_err(),
-            "Above max supply, should fail with SupplyLimitReached"
-        );
+        assert!(calculate_dynamic_mint_amount(above_max).is_err());
     }
 
     #[test]
-    fn test_max_supply_one_lamport_below() {
-        let just_below = MAX_SUPPLY_LAMPORTS - 1;
-        let amount = calculate_dynamic_mint_amount(just_below).unwrap();
-        assert_eq!(
-            amount, TIER_6_MINT_AMOUNT,
-            "One lamport below max should succeed with minimum mint"
-        );
+    fn test_last_mint_fills_supply_exactly() {
+        // In the last step the reward is 2 lamports, so supply = max - 2 can still mint
+        let amount = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 2).unwrap();
+        assert_eq!(amount, 2);
+        assert_eq!(MAX_SUPPLY_LAMPORTS - 2 + amount, MAX_SUPPLY_LAMPORTS);
     }
 
     #[test]
     fn test_max_supply_would_exceed_after_mint() {
-        // Supply that would exceed max after adding mint amount
-        let supply = MAX_SUPPLY_LAMPORTS - TIER_6_MINT_AMOUNT + 1;
-        let result = calculate_dynamic_mint_amount(supply);
-        assert!(
-            result.is_err(),
-            "Should fail if minting would exceed max supply"
-        );
+        // One lamport below max: the 2-lamport reward would overshoot the cap
+        let result = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 1);
+        assert!(result.is_err(), "Should fail if minting would exceed max supply");
     }
 
     // ------------------------------------------------------------------------
@@ -363,90 +252,12 @@ mod calculate_dynamic_mint_amount_tests {
 
     #[test]
     fn test_overflow_protection_near_u64_max() {
-        let near_max = u64::MAX - 100;
-        let result = calculate_dynamic_mint_amount(near_max);
-        assert!(
-            result.is_err(),
-            "Near u64::MAX should be rejected (above max supply)"
-        );
+        assert!(calculate_dynamic_mint_amount(u64::MAX - 100).is_err());
     }
 
     #[test]
     fn test_overflow_protection_at_u64_max() {
-        let result = calculate_dynamic_mint_amount(u64::MAX);
-        assert!(
-            result.is_err(),
-            "At u64::MAX should be rejected"
-        );
-    }
-
-    // ------------------------------------------------------------------------
-    // Boundary Case: New Supply Calculation
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_new_supply_calculation_tier_1() {
-        let current = 99_999_999 * DECIMAL_FACTOR;
-        let amount = calculate_dynamic_mint_amount(current).unwrap();
-        assert_eq!(amount, TIER_1_MINT_AMOUNT);
-        
-        // Verify new supply would be within limits
-        let new_supply = current + amount;
-        assert!(new_supply <= MAX_SUPPLY_LAMPORTS);
-    }
-
-    #[test]
-    fn test_new_supply_calculation_tier_6() {
-        let current = MAX_SUPPLY_LAMPORTS - TIER_6_MINT_AMOUNT - 1;
-        let amount = calculate_dynamic_mint_amount(current).unwrap();
-        assert_eq!(amount, TIER_6_MINT_AMOUNT);
-        
-        let new_supply = current + amount;
-        assert!(new_supply <= MAX_SUPPLY_LAMPORTS);
-    }
-
-    // ------------------------------------------------------------------------
-    // Edge Case: Supply Arithmetic
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_checked_add_overflow_prevention() {
-        // This tests the checked_add logic
-        // Supply at max - should fail on first check
-        let result = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS);
-        assert!(result.is_err());
-        
-        // Supply just below max but would overflow after adding minimum tier amount
-        // At max supply - 1, we're in tier 6, so mint amount is 1 lamport
-        // Let's test supply that will exceed after minting
-        let supply_that_exceeds = MAX_SUPPLY_LAMPORTS - TIER_6_MINT_AMOUNT + 1;
-        let result = calculate_dynamic_mint_amount(supply_that_exceeds);
-        assert!(result.is_err(), "Should fail when new_supply > MAX_SUPPLY_LAMPORTS");
-    }
-
-    // ------------------------------------------------------------------------
-    // Comprehensive Tier Coverage
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_tier_amounts_are_correct() {
-        // Verify tier amounts match expected values
-        assert_eq!(TIER_1_MINT_AMOUNT, 1_000_000, "Tier 1: 1 token");
-        assert_eq!(TIER_2_MINT_AMOUNT, 100_000, "Tier 2: 0.1 token");
-        assert_eq!(TIER_3_MINT_AMOUNT, 10_000, "Tier 3: 0.01 token");
-        assert_eq!(TIER_4_MINT_AMOUNT, 1_000, "Tier 4: 0.001 token");
-        assert_eq!(TIER_5_MINT_AMOUNT, 100, "Tier 5: 0.0001 token");
-        assert_eq!(TIER_6_MINT_AMOUNT, 1, "Tier 6: 0.000001 token");
-    }
-
-    #[test]
-    fn test_tier_thresholds_are_correct() {
-        // Verify thresholds match expected values
-        assert_eq!(TIER_1_THRESHOLD_LAMPORTS, 100_000_000 * DECIMAL_FACTOR, "Tier 1: 100M");
-        assert_eq!(TIER_2_THRESHOLD_LAMPORTS, 1_000_000_000 * DECIMAL_FACTOR, "Tier 2: 1B");
-        assert_eq!(TIER_3_THRESHOLD_LAMPORTS, 10_000_000_000 * DECIMAL_FACTOR, "Tier 3: 10B");
-        assert_eq!(TIER_4_THRESHOLD_LAMPORTS, 100_000_000_000 * DECIMAL_FACTOR, "Tier 4: 100B");
-        assert_eq!(TIER_5_THRESHOLD_LAMPORTS, 1_000_000_000_000 * DECIMAL_FACTOR, "Tier 5: 1T");
+        assert!(calculate_dynamic_mint_amount(u64::MAX).is_err());
     }
 }
 
@@ -465,7 +276,7 @@ mod validate_memo_length_tests {
     #[test]
     fn test_empty_memo_rejected() {
         let empty = vec![];
-        let result = validate_memo_length(&empty, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&empty, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "Empty memo should be rejected");
     }
 
@@ -476,21 +287,21 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_one_byte_too_short() {
         let short_memo = vec![b'x'; 68]; // 68 bytes (need 69)
-        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "68 bytes should be rejected (minimum is 69)");
     }
 
     #[test]
     fn test_memo_significantly_too_short() {
         let short_memo = vec![b'x'; 50]; // 50 bytes
-        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "50 bytes should be rejected");
     }
 
     #[test]
     fn test_memo_one_byte_only() {
         let short_memo = vec![b'x'; 1];
-        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&short_memo, MEMO_MIN_LENGTH);
         assert!(result.is_err(), "1 byte should be rejected");
     }
 
@@ -501,22 +312,19 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_exactly_minimum_length() {
         let min_valid = vec![b'x'; 69]; // Exactly 69 bytes
-        let result = validate_memo_length(&min_valid, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&min_valid, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "69 bytes (minimum) should be accepted");
         
-        let (_found, data) = result.unwrap();
-        assert!(true, "Should return found=true");
-        assert_eq!(data.len(), 69, "Should return correct data length");
+        assert!(result.unwrap(), "Should return true for a valid length");
     }
 
     #[test]
     fn test_memo_minimum_plus_one() {
         let memo = vec![b'x'; 70]; // 70 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "70 bytes should be accepted");
         
-        let (_found, data) = result.unwrap();
-        assert_eq!(data.len(), 70);
+        assert!(result.unwrap());
     }
 
     // ------------------------------------------------------------------------
@@ -526,69 +334,44 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_100_bytes() {
         let memo = vec![b'x'; 100];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "100 bytes should be accepted");
     }
 
     #[test]
     fn test_memo_200_bytes() {
         let memo = vec![b'x'; 200];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "200 bytes should be accepted");
     }
 
     #[test]
     fn test_memo_500_bytes() {
         let memo = vec![b'x'; 500];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "500 bytes should be accepted");
     }
 
     // ------------------------------------------------------------------------
-    // Maximum Valid Length Tests
+    // Long Memo Tests (no contract maximum; the transaction size limit applies)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_memo_exactly_maximum_length() {
-        let max_valid = vec![b'x'; 800]; // Exactly 800 bytes
-        let result = validate_memo_length(&max_valid, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok(), "800 bytes (maximum) should be accepted");
-        
-        let (found, data) = result.unwrap();
-        assert!(found, "Should return found=true");
-        assert_eq!(data.len(), 800, "Should return correct data length");
+    fn test_memo_800_bytes_accepted() {
+        let memo = vec![b'x'; 800]; // the former maximum
+        assert!(validate_memo_length(&memo, MEMO_MIN_LENGTH).unwrap());
     }
 
     #[test]
-    fn test_memo_maximum_minus_one() {
-        let memo = vec![b'x'; 799]; // 799 bytes
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok(), "799 bytes should be accepted");
-    }
-
-    // ------------------------------------------------------------------------
-    // Above Maximum Length Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_memo_one_byte_too_long() {
-        let long_memo = vec![b'x'; 801]; // 801 bytes (max is 800)
-        let result = validate_memo_length(&long_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "801 bytes should be rejected (maximum is 800)");
+    fn test_memo_801_bytes_accepted() {
+        let memo = vec![b'x'; 801]; // rejected before the maximum was removed
+        assert!(validate_memo_length(&memo, MEMO_MIN_LENGTH).unwrap());
     }
 
     #[test]
-    fn test_memo_significantly_too_long() {
-        let long_memo = vec![b'x'; 1000]; // 1000 bytes
-        let result = validate_memo_length(&long_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "1000 bytes should be rejected");
-    }
-
-    #[test]
-    fn test_memo_extremely_long() {
-        let long_memo = vec![b'x'; 10000]; // 10KB
-        let result = validate_memo_length(&long_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_err(), "10KB should be rejected");
+    fn test_memo_4096_bytes_accepted() {
+        let memo = vec![b'x'; 4096]; // size of a v1 transaction
+        assert!(validate_memo_length(&memo, MEMO_MIN_LENGTH).unwrap());
     }
 
     // ------------------------------------------------------------------------
@@ -598,14 +381,14 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_with_null_bytes() {
         let memo_with_nulls = vec![0u8; 69];
-        let result = validate_memo_length(&memo_with_nulls, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo_with_nulls, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo with null bytes should be accepted (content-agnostic)");
     }
 
     #[test]
     fn test_memo_with_all_255() {
         let memo = vec![255u8; 69];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo with 0xFF bytes should be accepted");
     }
 
@@ -615,37 +398,8 @@ mod validate_memo_length_tests {
         for i in 0..69 {
             memo.push((i % 256) as u8);
         }
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Memo with mixed binary data should be accepted");
-    }
-
-    // ------------------------------------------------------------------------
-    // Return Value Verification Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_memo_returns_correct_data() {
-        let original = vec![b'T'; 100]; // Simple 100-byte test data
-        assert!(original.len() >= MEMO_MIN_LENGTH && original.len() <= MEMO_MAX_LENGTH);
-        
-        let result = validate_memo_length(&original, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok());
-        
-        let (_found, returned_data) = result.unwrap();
-        assert_eq!(returned_data, original, "Returned data should match input");
-    }
-
-    #[test]
-    fn test_memo_data_integrity() {
-        let test_data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let mut memo = test_data.repeat(7); // 70 bytes
-        memo.truncate(69);
-        
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
-        assert!(result.is_ok());
-        
-        let (_, returned) = result.unwrap();
-        assert_eq!(returned, memo, "Data integrity should be preserved");
     }
 
     // ------------------------------------------------------------------------
@@ -655,8 +409,6 @@ mod validate_memo_length_tests {
     #[test]
     fn test_memo_length_constants() {
         assert_eq!(MEMO_MIN_LENGTH, 69, "Minimum memo length should be 69");
-        assert_eq!(MEMO_MAX_LENGTH, 800, "Maximum memo length should be 800");
-        assert!(MEMO_MIN_LENGTH < MEMO_MAX_LENGTH, "Min should be less than max");
     }
 
     #[test]
@@ -665,7 +417,7 @@ mod validate_memo_length_tests {
         // Don't assert exact length - just verify it's valid
         assert!(ascii_memo.len() >= MEMO_MIN_LENGTH, "Should be at least 69 bytes");
         
-        let result = validate_memo_length(&ascii_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&ascii_memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "ASCII text memo should be accepted");
     }
 
@@ -676,7 +428,7 @@ mod validate_memo_length_tests {
         let utf8_memo = utf8_text.as_bytes().to_vec();
         assert_eq!(utf8_memo.len(), 69);
         
-        let result = validate_memo_length(&utf8_memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&utf8_memo, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "UTF-8 text memo should be accepted");
     }
 
@@ -686,260 +438,8 @@ mod validate_memo_length_tests {
         let base64_like = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=====".as_bytes().to_vec();
         assert!(base64_like.len() >= MEMO_MIN_LENGTH, "Base64 string should be at least 69 bytes");
         
-        let result = validate_memo_length(&base64_like, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let result = validate_memo_length(&base64_like, MEMO_MIN_LENGTH);
         assert!(result.is_ok(), "Base64-like data should be accepted");
-    }
-}
-
-// ============================================================================
-// Tests for calculate_token_count_safe()
-// ============================================================================
-
-#[cfg(test)]
-mod calculate_token_count_safe_tests {
-    use super::*;
-
-    // ------------------------------------------------------------------------
-    // Basic Conversion Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_one_token() {
-        let result = calculate_token_count_safe(DECIMAL_FACTOR).unwrap();
-        assert_eq!(result, 1.0, "1,000,000 lamports should equal 1.0 token");
-    }
-
-    #[test]
-    fn test_zero_tokens() {
-        let result = calculate_token_count_safe(0).unwrap();
-        assert_eq!(result, 0.0, "0 lamports should equal 0.0 tokens");
-    }
-
-    #[test]
-    fn test_one_lamport() {
-        let result = calculate_token_count_safe(1).unwrap();
-        assert_eq!(result, 0.000001, "1 lamport should equal 0.000001 token");
-    }
-
-    // ------------------------------------------------------------------------
-    // Tier Amount Conversions
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_tier_1_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_1_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 1.0, "Tier 1 mint amount should be 1.0 token");
-    }
-
-    #[test]
-    fn test_tier_2_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_2_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 0.1, "Tier 2 mint amount should be 0.1 token");
-    }
-
-    #[test]
-    fn test_tier_3_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_3_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 0.01, "Tier 3 mint amount should be 0.01 token");
-    }
-
-    #[test]
-    fn test_tier_4_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_4_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 0.001, "Tier 4 mint amount should be 0.001 token");
-    }
-
-    #[test]
-    fn test_tier_5_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_5_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 0.0001, "Tier 5 mint amount should be 0.0001 token");
-    }
-
-    #[test]
-    fn test_tier_6_amount_conversion() {
-        let result = calculate_token_count_safe(TIER_6_MINT_AMOUNT).unwrap();
-        assert_eq!(result, 0.000001, "Tier 6 mint amount should be 0.000001 token");
-    }
-
-    // ------------------------------------------------------------------------
-    // Large Number Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_100_million_tokens() {
-        let lamports = 100_000_000 * DECIMAL_FACTOR;
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 100_000_000.0, "Should convert 100M tokens correctly");
-    }
-
-    #[test]
-    fn test_1_billion_tokens() {
-        let lamports = 1_000_000_000 * DECIMAL_FACTOR;
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 1_000_000_000.0, "Should convert 1B tokens correctly");
-    }
-
-    #[test]
-    fn test_1_trillion_tokens() {
-        let lamports = 1_000_000_000_000 * DECIMAL_FACTOR;
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 1_000_000_000_000.0, "Should convert 1T tokens correctly");
-    }
-
-    #[test]
-    fn test_max_supply_tokens() {
-        let result = calculate_token_count_safe(MAX_SUPPLY_LAMPORTS).unwrap();
-        assert_eq!(result, 10_000_000_000_000.0, "Should convert max supply (10T tokens) correctly");
-    }
-
-    // ------------------------------------------------------------------------
-    // Fractional Token Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_half_token() {
-        let lamports = DECIMAL_FACTOR / 2; // 0.5 tokens
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 0.5, "500,000 lamports should equal 0.5 token");
-    }
-
-    #[test]
-    fn test_quarter_token() {
-        let lamports = DECIMAL_FACTOR / 4; // 0.25 tokens
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 0.25, "250,000 lamports should equal 0.25 token");
-    }
-
-    #[test]
-    fn test_arbitrary_fraction() {
-        let lamports = 123456; // 0.123456 tokens
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert_eq!(result, 0.123456, "Should handle arbitrary fractions");
-    }
-
-    // ------------------------------------------------------------------------
-    // Finite Check Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_result_is_finite() {
-        let lamports = 1_000_000;
-        let result = calculate_token_count_safe(lamports).unwrap();
-        assert!(result.is_finite(), "Result should be finite");
-        assert!(!result.is_nan(), "Result should not be NaN");
-        assert!(!result.is_infinite(), "Result should not be infinite");
-    }
-
-    #[test]
-    fn test_u64_max_is_finite() {
-        // u64::MAX should still produce a finite result
-        let result = calculate_token_count_safe(u64::MAX).unwrap();
-        assert!(result.is_finite(), "Even u64::MAX should produce finite result");
-    }
-
-    // ------------------------------------------------------------------------
-    // Precision Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_precision_1_token() {
-        let result = calculate_token_count_safe(1_000_000).unwrap();
-        assert_eq!(result, 1.0);
-    }
-
-    #[test]
-    fn test_precision_0_1_token() {
-        let result = calculate_token_count_safe(100_000).unwrap();
-        assert_eq!(result, 0.1);
-    }
-
-    #[test]
-    fn test_precision_0_01_token() {
-        let result = calculate_token_count_safe(10_000).unwrap();
-        assert_eq!(result, 0.01);
-    }
-
-    #[test]
-    fn test_precision_0_001_token() {
-        let result = calculate_token_count_safe(1_000).unwrap();
-        assert_eq!(result, 0.001);
-    }
-
-    #[test]
-    fn test_precision_0_0001_token() {
-        let result = calculate_token_count_safe(100).unwrap();
-        assert_eq!(result, 0.0001);
-    }
-
-    #[test]
-    fn test_precision_0_00001_token() {
-        let result = calculate_token_count_safe(10).unwrap();
-        assert_eq!(result, 0.00001);
-    }
-
-    #[test]
-    fn test_precision_minimum_unit() {
-        let result = calculate_token_count_safe(1).unwrap();
-        assert_eq!(result, 0.000001);
-    }
-
-    // ------------------------------------------------------------------------
-    // Decimal Factor Tests
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_decimal_factor_constant() {
-        assert_eq!(DECIMAL_FACTOR, 1_000_000, "Decimal factor should be 1,000,000 (6 decimals)");
-    }
-
-    #[test]
-    fn test_decimal_factor_not_zero() {
-        // This test verifies the safety check in the function
-        assert_ne!(DECIMAL_FACTOR, 0, "Decimal factor must not be zero");
-    }
-
-    // ------------------------------------------------------------------------
-    // Edge Cases
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_very_small_amount() {
-        let result = calculate_token_count_safe(5).unwrap();
-        assert_eq!(result, 0.000005, "Should handle very small amounts");
-    }
-
-    #[test]
-    fn test_odd_number() {
-        let result = calculate_token_count_safe(777777).unwrap();
-        assert_eq!(result, 0.777777, "Should handle odd numbers correctly");
-    }
-
-    // ------------------------------------------------------------------------
-    // Display Use Case Tests (Real-world scenarios)
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_display_after_tier_1_mint() {
-        // User mints in Tier 1, gets 1 token
-        let minted = TIER_1_MINT_AMOUNT;
-        let result = calculate_token_count_safe(minted).unwrap();
-        assert_eq!(result, 1.0, "Display should show 1.0 token after Tier 1 mint");
-    }
-
-    #[test]
-    fn test_display_cumulative_tier_2_mints() {
-        // User mints 10 times in Tier 2 (10 * 0.1 = 1.0)
-        let cumulative = TIER_2_MINT_AMOUNT * 10;
-        let result = calculate_token_count_safe(cumulative).unwrap();
-        assert_eq!(result, 1.0, "10 Tier 2 mints should total 1.0 token");
-    }
-
-    #[test]
-    fn test_display_mixed_tier_mints() {
-        // Mixed: 1 (Tier 1) + 1 (Tier 2 * 10) + 1 (Tier 3 * 100) = 3 tokens
-        let mixed = TIER_1_MINT_AMOUNT + (TIER_2_MINT_AMOUNT * 10) + (TIER_3_MINT_AMOUNT * 100);
-        let result = calculate_token_count_safe(mixed).unwrap();
-        assert_eq!(result, 3.0, "Mixed tier mints should calculate correctly");
     }
 }
 
@@ -952,38 +452,35 @@ mod integration_tests {
     use super::*;
 
     #[test]
-    fn test_mint_amount_display_consistency_tier_1() {
-        let supply = 0;
-        let mint_amount = calculate_dynamic_mint_amount(supply).unwrap();
-        let display_amount = calculate_token_count_safe(mint_amount).unwrap();
-        assert_eq!(display_amount, 1.0, "Tier 1 mint should display as 1.0");
+    fn test_process_mint_to_wire_format_carries_recipient() {
+        // 8-byte discriminator + 32-byte recipient, same layout hand-built clients already send
+        use anchor_lang::{Discriminator, InstructionData};
+        let recipient = Pubkey::new_unique();
+        let data = crate::instruction::ProcessMintTo { recipient }.data();
+        assert_eq!(data.len(), 8 + 32);
+        assert_eq!(&data[..8], crate::instruction::ProcessMintTo::DISCRIMINATOR);
+        assert_eq!(&data[8..], recipient.as_ref());
     }
 
     #[test]
-    fn test_mint_amount_display_consistency_tier_2() {
-        let supply = TIER_1_THRESHOLD_LAMPORTS + 1;
-        let mint_amount = calculate_dynamic_mint_amount(supply).unwrap();
-        let display_amount = calculate_token_count_safe(mint_amount).unwrap();
-        assert_eq!(display_amount, 0.1, "Tier 2 mint should display as 0.1");
-    }
-
-    #[test]
-    fn test_mint_amount_display_consistency_all_tiers() {
+    fn test_mint_amount_round_numbers_in_units() {
         let test_cases = vec![
-            (0, 1.0),
-            (TIER_1_THRESHOLD_LAMPORTS + 1, 0.1),
-            (TIER_2_THRESHOLD_LAMPORTS + 1, 0.01),
-            (TIER_3_THRESHOLD_LAMPORTS + 1, 0.001),
-            (TIER_4_THRESHOLD_LAMPORTS + 1, 0.0001),
-            (TIER_5_THRESHOLD_LAMPORTS + 1, 0.000001),
+            (0, 1_000_000),
+            (20_000_000 * DECIMAL_FACTOR, 900_000),
+            (90_000_000 * DECIMAL_FACTOR, 200_000),
+            (100_000_000 * DECIMAL_FACTOR, 100_000),
+            (200_000_000 * DECIMAL_FACTOR, 90_000),
+            (1_000_000_000 * DECIMAL_FACTOR, 10_000),
+            (10_000_000_000 * DECIMAL_FACTOR, 1_000),
+            (100_000_000_000 * DECIMAL_FACTOR, 100),
+            (1_000_000_000_000 * DECIMAL_FACTOR, 10),
         ];
 
-        for (supply, expected_display) in test_cases {
-            let mint_amount = calculate_dynamic_mint_amount(supply).unwrap();
-            let display_amount = calculate_token_count_safe(mint_amount).unwrap();
+        for (supply, expected) in test_cases {
             assert_eq!(
-                display_amount, expected_display,
-                "Display amount should match tier at supply {}",
+                calculate_dynamic_mint_amount(supply).unwrap(),
+                expected,
+                "Mint amount should match curve at supply {}",
                 supply
             );
         }
@@ -993,38 +490,33 @@ mod integration_tests {
     fn test_memo_and_mint_amount_realistic_scenario() {
         // Simulate realistic user flow
         let memo = vec![b'x'; 100]; // 100 byte memo
-        let memo_result = validate_memo_length(&memo, MEMO_MIN_LENGTH, MEMO_MAX_LENGTH);
+        let memo_result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(memo_result.is_ok(), "Valid memo should pass");
 
         let supply = 50_000_000 * DECIMAL_FACTOR; // 50M tokens
         let mint_amount = calculate_dynamic_mint_amount(supply).unwrap();
-        assert_eq!(mint_amount, TIER_1_MINT_AMOUNT);
-
-        let display = calculate_token_count_safe(mint_amount).unwrap();
-        assert_eq!(display, 1.0);
+        assert_eq!(mint_amount, 600_000); // 0.6 token
     }
 
     #[test]
     fn test_constants_consistency() {
         // Verify that all constants are properly related
         assert_eq!(MAX_SUPPLY_LAMPORTS, MAX_SUPPLY_TOKENS * DECIMAL_FACTOR);
-        assert_eq!(TIER_1_MINT_AMOUNT, 1 * DECIMAL_FACTOR);
-        assert_eq!(TIER_2_MINT_AMOUNT, DECIMAL_FACTOR / 10);
-        assert_eq!(TIER_3_MINT_AMOUNT, DECIMAL_FACTOR / 100);
-        assert_eq!(TIER_4_MINT_AMOUNT, DECIMAL_FACTOR / 1_000);
-        assert_eq!(TIER_5_MINT_AMOUNT, DECIMAL_FACTOR / 10_000);
-        assert_eq!(TIER_6_MINT_AMOUNT, 1);
+        assert_eq!(BASE_MINT_AMOUNT, 1 * DECIMAL_FACTOR);
+        assert_eq!(CURVE_START_LAMPORTS, CURVE_START_TOKENS * DECIMAL_FACTOR);
     }
 
     #[test]
-    fn test_tier_progression_mathematical_relationship() {
-        // Each tier is 10x smaller than previous (except last one which is 100x)
-        assert_eq!(TIER_1_MINT_AMOUNT / 10, TIER_2_MINT_AMOUNT);
-        assert_eq!(TIER_2_MINT_AMOUNT / 10, TIER_3_MINT_AMOUNT);
-        assert_eq!(TIER_3_MINT_AMOUNT / 10, TIER_4_MINT_AMOUNT);
-        assert_eq!(TIER_4_MINT_AMOUNT / 10, TIER_5_MINT_AMOUNT);
-        // Tier 6 is 100 lamports, tier 5 is 100 lamports, so tier 5 / 100 = 1
-        assert_eq!(TIER_5_MINT_AMOUNT / 100, TIER_6_MINT_AMOUNT);
+    fn test_curve_decade_relationship() {
+        // Each decade start pays 10x less than the previous one
+        let mut supply_tokens = CURVE_START_TOKENS;
+        let mut previous = calculate_dynamic_mint_amount(supply_tokens * DECIMAL_FACTOR).unwrap();
+        for _ in 1..CURVE_DECADES {
+            supply_tokens *= 10;
+            let amount = calculate_dynamic_mint_amount(supply_tokens * DECIMAL_FACTOR).unwrap();
+            assert_eq!(previous / 10, amount);
+            previous = amount;
+        }
     }
 }
 
@@ -1036,9 +528,9 @@ mod integration_tests {
 mod test_coverage_summary {
     // This module serves as documentation for test coverage
     
-    // calculate_dynamic_mint_amount: 40+ tests
-    // - All 6 tiers (beginning, middle, end, boundary)
-    // - All tier transitions
+    // calculate_dynamic_mint_amount
+    // - Below curve start, every round number (54) and one lamport below each
+    // - Decade starts, monotonicity, minimum reward
     // - Max supply edge cases
     // - Overflow protection
     // - Arithmetic safety
@@ -1053,15 +545,6 @@ mod test_coverage_summary {
     // - Binary data handling
     // - Data integrity
     // - Different content types (ASCII, UTF-8, Base64)
-    
-    // calculate_token_count_safe: 30+ tests
-    // - All tier amounts
-    // - Large numbers
-    // - Fractional tokens
-    // - Precision tests
-    // - Finite check
-    // - Edge cases
-    // - Real-world display scenarios
     
     // Integration tests: 7+ tests
     // - Cross-function consistency

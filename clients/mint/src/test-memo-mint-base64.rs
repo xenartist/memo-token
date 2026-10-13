@@ -369,10 +369,6 @@ fn create_and_simulate_raw_string(
         println!("  ❌ Error: Memo too short ({} bytes, minimum 69)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
-    if memo_bytes.len() > 800 {
-        println!("  ❌ Error: Memo too long ({} bytes, maximum 800)", memo_bytes.len());
-        return Ok((memo_bytes, 0));
-    }
     
     println!("  ✅ Length validation passed");
     
@@ -409,10 +405,6 @@ fn create_and_simulate_base64(
         println!("  ❌ Error: Base64 memo too short ({} bytes, minimum 69)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
-    if memo_bytes.len() > 800 {
-        println!("  ❌ Error: Base64 memo too long ({} bytes, maximum 800)", memo_bytes.len());
-        return Ok((memo_bytes, 0));
-    }
     
     println!("  ✅ Length validation passed");
     
@@ -447,10 +439,6 @@ fn create_and_simulate_base58(
     // Check memo length constraints
     if memo_bytes.len() < 69 {
         println!("  ❌ Error: Base58 memo too short ({} bytes, minimum 69)", memo_bytes.len());
-        return Ok((memo_bytes, 0));
-    }
-    if memo_bytes.len() > 800 {
-        println!("  ❌ Error: Base58 memo too long ({} bytes, maximum 800)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
     
@@ -495,10 +483,6 @@ fn create_and_simulate_borsh_base64(
         println!("  ❌ Error: Borsh+Base64 memo too short ({} bytes, minimum 69)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
-    if memo_bytes.len() > 800 {
-        println!("  ❌ Error: Borsh+Base64 memo too long ({} bytes, maximum 800)", memo_bytes.len());
-        return Ok((memo_bytes, 0));
-    }
     
     println!("  ✅ Length validation passed");
     
@@ -539,10 +523,6 @@ fn create_and_simulate_borsh_base58(
     // Check memo length constraints
     if memo_bytes.len() < 69 {
         println!("  ❌ Error: Borsh+Base58 memo too short ({} bytes, minimum 69)", memo_bytes.len());
-        return Ok((memo_bytes, 0));
-    }
-    if memo_bytes.len() > 800 {
-        println!("  ❌ Error: Borsh+Base58 memo too long ({} bytes, maximum 800)", memo_bytes.len());
         return Ok((memo_bytes, 0));
     }
     

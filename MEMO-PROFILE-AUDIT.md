@@ -34,6 +34,57 @@ During this audit, the following improvements were implemented:
 2. ✅ **Validation Logic Simplified**: Removed redundant length checks for category/operation strings
 3. ✅ **Comprehensive Unit Tests Added**: 65 tests covering all core functionality with 100% pass rate
 
+
+---
+
+## Revision Note (October 13, 2026): Global Burn Statistics
+
+memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateProfile`, `UpdateProfile`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
+
+Clients must append the PDA (`memo_token_client::global_burn_stats_pda()`) to these instructions. Deploy this app only after memo-burn is upgraded and its global stats account is initialized.
+
+## Revision Note (October 13, 2026): No Maximum Memo Length
+
+This contract no longer limits the memo's maximum length, matching memo-mint and memo-burn:
+
+- Only the 69-byte minimum is checked. The transaction size limit (1,232 bytes on X1 today) bounds the memo, so the contract adapts to future transaction-size changes without an upgrade.
+- `MEMO_MAX_LENGTH`, `MAX_PAYLOAD_LENGTH`, `MAX_BORSH_DATA_SIZE` and the related Borsh size constants were removed, together with the decoded-size and payload-size checks. The app's own field limits (names, messages, content, etc.) are unchanged.
+- `MAX_BURN_PER_TX` was renamed to `MAX_BURN_PER_INSTRUCTION` (it limits each burn instruction, not a whole transaction); the `BurnAmountTooLarge` message now says "per burn instruction".
+- The `MemoTooLong` and `PayloadTooLong` errors were removed, so later error codes moved down:
+
+<details><summary>Error code changes</summary>
+
+| Error | Old code | New code |
+|---|---|---|
+| `MemoTooShort` | 6000 | 6000 |
+| `MemoTooLong` | 6001 | removed |
+| `InvalidTokenAccount` | 6002 | 6001 |
+| `UnauthorizedMint` | 6003 | 6002 |
+| `UnauthorizedTokenAccount` | 6004 | 6003 |
+| `UnauthorizedProfileAccess` | 6005 | 6004 |
+| `MemoRequired` | 6006 | 6005 |
+| `InvalidMemoFormat` | 6007 | 6006 |
+| `UnsupportedMemoVersion` | 6008 | 6007 |
+| `UnsupportedProfileDataVersion` | 6009 | 6008 |
+| `InvalidProfileDataFormat` | 6010 | 6009 |
+| `InvalidCategory` | 6011 | 6010 |
+| `InvalidOperation` | 6012 | 6011 |
+| `InvalidUserPubkeyFormat` | 6013 | 6012 |
+| `UserPubkeyMismatch` | 6014 | 6013 |
+| `EmptyUsername` | 6015 | 6014 |
+| `UsernameTooLong` | 6016 | 6015 |
+| `ProfileImageTooLong` | 6017 | 6016 |
+| `AboutMeTooLong` | 6018 | 6017 |
+| `BurnAmountTooSmall` | 6019 | 6018 |
+| `BurnAmountTooLarge` | 6020 | 6019 |
+| `InvalidBurnAmount` | 6021 | 6020 |
+| `BurnAmountMismatch` | 6022 | 6021 |
+| `PayloadTooLong` | 6023 | removed |
+
+</details>
+
+Code excerpts in the rest of this report reflect the code at the time of the original audit; where they show `MEMO_MAX_LENGTH`, `MAX_BORSH_DATA_SIZE` or `MAX_PAYLOAD_LENGTH` checks, those checks no longer exist.
+
 ---
 
 ## Contract Overview
@@ -94,7 +145,7 @@ pub fn create_profile(
 ```
 
 **Transaction Structure Requirement**:
-- Instruction `0`: `MemoProgram::Memo` (69–800 bytes, Base64-encoded Borsh data)
+- Instruction `0`: `MemoProgram::Memo` (at least 69 bytes, Base64-encoded Borsh data; no contract maximum)
 - Instruction `1+`: `memo_profile::create_profile` or `memo_profile::update_profile`
 - Compute budget instructions can appear anywhere (processed by runtime)
 
@@ -230,7 +281,7 @@ if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
 }
 
 // Check burn amount limit
-if burn_amount > MAX_BURN_PER_TX {
+if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
@@ -517,7 +568,7 @@ if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
 }
 
 // Check burn amount limit
-if burn_amount > MAX_BURN_PER_TX {
+if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
@@ -668,7 +719,7 @@ pub user_token_account: InterfaceAccount<'info, TokenAccount>,
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
 pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420;
 pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 ```
 
 **No Arithmetic Operations**:
@@ -766,7 +817,7 @@ pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420; // Minimum tokens to burn
 pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
 
 // Maximum burn per transaction (consistent with memo-burn)
-pub const MAX_BURN_PER_TX: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 
 // burn amount
 pub const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
@@ -1134,7 +1185,7 @@ MIN_PROFILE_CREATION_BURN_TOKENS = 420
 MIN_PROFILE_CREATION_BURN_AMOUNT = 420,000,000
 MIN_PROFILE_UPDATE_BURN_TOKENS = 420
 MIN_PROFILE_UPDATE_BURN_AMOUNT = 420,000,000
-MAX_BURN_PER_TX = 1,000,000,000,000,000,000
+MAX_BURN_PER_INSTRUCTION = 1,000,000,000,000,000,000
 
 // String Lengths
 MAX_USERNAME_LENGTH = 32
@@ -1143,9 +1194,7 @@ MAX_ABOUT_ME_LENGTH = 128
 
 // Memo Constraints
 MEMO_MIN_LENGTH = 69
-MEMO_MAX_LENGTH = 800
-MAX_PAYLOAD_LENGTH = 787
-MAX_BORSH_DATA_SIZE = 800
+(no maximum memo length; MEMO_MAX_LENGTH, MAX_PAYLOAD_LENGTH and MAX_BORSH_DATA_SIZE removed in October 2026)
 
 // Versions
 BURN_MEMO_VERSION = 1
@@ -1165,7 +1214,6 @@ PROFILE_MAX_SPACE = 614 bytes (includes 128-byte safety buffer)
 
 ```rust
 MemoTooShort              // Memo < 69 bytes
-MemoTooLong               // Memo > 800 bytes
 InvalidTokenAccount       // Token account mint mismatch
 UnauthorizedMint          // Wrong mint address
 UnauthorizedTokenAccount  // Wrong token account owner
@@ -1187,7 +1235,6 @@ BurnAmountTooSmall        // Burn < 420 tokens
 BurnAmountTooLarge        // Burn > 1T tokens
 InvalidBurnAmount         // Not a multiple of DECIMAL_FACTOR
 BurnAmountMismatch        // Memo amount != instruction amount
-PayloadTooLong            // Payload > 787 bytes
 ```
 
 ### C. Test Coverage Matrix
