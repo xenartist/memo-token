@@ -166,6 +166,7 @@ fn execute_mint_operation(
             AccountMeta::new(*token_account, false),
             AccountMeta::new_readonly(token_2022_id(), false),
             AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
         ],
     );
     
@@ -838,6 +839,7 @@ fn mint_for_post(
             AccountMeta::new_readonly(token_2022_id(), false),
             AccountMeta::new_readonly(*mint_program_id, false),
             AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
         ],
     );
     

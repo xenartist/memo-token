@@ -9,7 +9,8 @@
 //! - the SPL Memo instruction must be at index 0 and at least 69 bytes; there is no maximum
 //! - process_mint / process_mint_to must be at index 1 or later
 //! - ComputeBudget instructions also take an index, so they go after the memo
-//! - one memo may back several mints in the same transaction (batching is allowed)
+//! - only one mint per transaction: a second mint in the same transaction (another top-level
+//!   instruction or a CPI) fails with OneMintPerTransaction; MintState is the last account
 //!
 //! Requires the payer's MEMO token account (Token-2022 ATA) to exist.
 
@@ -27,7 +28,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use sha2::{Sha256, Digest};
 use spl_token_2022::id as token_2022_id;
 
-use memo_token_client::{get_rpc_url, get_wallet_path, get_program_id, get_token_mint, expected_mint_amount};
+use memo_token_client::{get_rpc_url, get_wallet_path, get_program_id, get_token_mint, expected_mint_amount, mint_state_pda};
 
 const MEMO_MIN_LENGTH: usize = 69;
 const INSTRUCTIONS_SYSVAR: Pubkey = solana_sdk::sysvar::instructions::ID;
@@ -52,6 +53,7 @@ struct Ctx {
     mint: Pubkey,
     mint_authority: Pubkey,
     token_account: Pubkey,
+    mint_state: Pubkey,
     // an existing MEMO token account owned by someone else, if one can be found
     other_token_account: Option<Pubkey>,
 }
@@ -72,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let category = args[1].as_str();
     let valid = ["memo-attacks", "instruction-attacks", "pda-attacks", "mint-authority-attacks",
-                 "account-attacks", "dos-attacks", "mint-to-attacks", "all"];
+                 "account-attacks", "dos-attacks", "mint-to-attacks", "mint-state-attacks", "all"];
     if !valid.contains(&category) {
         println!("❌ Unknown test type: {}", category);
         print_usage();
@@ -122,6 +124,7 @@ fn print_usage() {
     println!("  account-attacks        - Wrong programs, sysvar, account order, extra accounts and data");
     println!("  dos-attacks            - Compute, instruction trace and transaction size limits");
     println!("  mint-to-attacks        - process_mint_to recipient checks");
+    println!("  mint-state-attacks     - Missing or substituted MintState account");
     println!("  all                    - Run every case");
 }
 
@@ -133,6 +136,7 @@ fn load_context() -> Result<Ctx, Box<dyn std::error::Error>> {
     let mint = get_token_mint("memo_token")?;
     let (mint_authority, _) = Pubkey::find_program_address(&[b"mint_authority"], &program_id);
     let token_account = get_associated_token_address_with_program_id(&payer.pubkey(), &mint, &token_2022_id());
+    let mint_state = mint_state_pda();
 
     if client.get_account(&token_account).is_err() {
         return Err(format!(
@@ -160,7 +164,12 @@ fn load_context() -> Result<Ctx, Box<dyn std::error::Error>> {
         None => println!("Other user's token account: none found (those cases will be skipped)"),
     }
 
-    Ok(Ctx { client, payer, program_id, mint, mint_authority, token_account, other_token_account })
+    if client.get_account(&mint_state).is_err() {
+        return Err(format!("MintState {} does not exist. Run admin-init-mint-state first.", mint_state).into());
+    }
+    println!("MintState: {}", mint_state);
+
+    Ok(Ctx { client, payer, program_id, mint, mint_authority, token_account, mint_state, other_token_account })
 }
 
 fn run_case(ctx: &Ctx, case: &Case) -> Outcome {
@@ -291,6 +300,7 @@ fn mint_accounts(ctx: &Ctx) -> Vec<AccountMeta> {
         AccountMeta::new(ctx.token_account, false),                 // token_account
         AccountMeta::new_readonly(token_2022_id(), false),          // token_program
         AccountMeta::new_readonly(INSTRUCTIONS_SYSVAR, false),      // instructions sysvar
+        AccountMeta::new(ctx.mint_state, false),                    // mint_state
     ]
 }
 
@@ -319,6 +329,7 @@ fn mint_to_ix(ctx: &Ctx, recipient: Pubkey, recipient_token_account: Pubkey) -> 
         AccountMeta::new(recipient_token_account, false),           // recipient_token_account
         AccountMeta::new_readonly(token_2022_id(), false),          // token_program
         AccountMeta::new_readonly(INSTRUCTIONS_SYSVAR, false),      // instructions sysvar
+        AccountMeta::new(ctx.mint_state, false),                    // mint_state
     ])
 }
 
@@ -349,8 +360,8 @@ fn all_cases() -> Vec<Case> {
             build: |c| (vec![memo_len("short ", 68), mint_ix(c)], vec![]) },
         Case { category: "memo-attacks", name: "69-byte memo (minimum)", expect: Expect::Accept,
             build: |c| (vec![memo_len("minimum ", 69), mint_ix(c)], vec![]) },
-        Case { category: "memo-attacks", name: "800-byte memo (no contract maximum)", expect: Expect::Accept,
-            build: |c| (vec![memo_len("long ", 800), mint_ix(c), cu_limit(1_400_000)], vec![]) },
+        Case { category: "memo-attacks", name: "780-byte memo (no contract maximum; largest that fits with a ComputeBudget instruction)", expect: Expect::Accept,
+            build: |c| (vec![memo_len("long ", 780), mint_ix(c), cu_limit(1_400_000)], vec![]) },
         Case { category: "memo-attacks", name: "Memo larger than a transaction", expect: Expect::Reject(&["too large", "TooLarge"]),
             build: |c| (vec![memo_len("huge ", 2_000), mint_ix(c)], vec![]) },
         Case { category: "memo-attacks", name: "Memo content with control characters and Unicode (not parsed)", expect: Expect::Accept,
@@ -377,15 +388,38 @@ fn all_cases() -> Vec<Case> {
             build: |c| (vec![valid_memo("cb-last"), mint_ix(c), cu_limit(200_000)], vec![]) },
         Case { category: "instruction-attacks", name: "Unrelated instruction between memo and mint", expect: Expect::Accept,
             build: |c| (vec![valid_memo("interleaved"), noop_transfer(c), mint_ix(c)], vec![]) },
-        Case { category: "instruction-attacks", name: "One memo, 3 mints (batching is allowed)", expect: Expect::Accept,
+        Case { category: "instruction-attacks", name: "One memo, 3 mints", expect: Expect::Reject(&["OneMintPerTransaction"]),
             build: |c| (vec![valid_memo("batch3"), mint_ix(c), mint_ix(c), mint_ix(c), cu_limit(1_400_000)], vec![]) },
-        Case { category: "instruction-attacks", name: "One memo, 31 mints (instruction trace maximum)", expect: Expect::Accept,
+        Case { category: "instruction-attacks", name: "One memo, 31 mints", expect: Expect::Reject(&["OneMintPerTransaction"]),
             build: |c| {
                 let mut ixs = vec![valid_memo("batch31")];
                 ixs.extend((0..31).map(|_| mint_ix(c)));
                 ixs.push(cu_limit(1_400_000));
                 (ixs, vec![])
             } },
+
+        Case { category: "instruction-attacks", name: "process_mint then process_mint_to in one transaction", expect: Expect::Reject(&["OneMintPerTransaction"]),
+            build: |c| (vec![valid_memo("mixed"), mint_ix(c), mint_to_ix(c, c.payer.pubkey(), c.token_account)], vec![]) },
+        Case { category: "instruction-attacks", name: "Two memos, two mints (only index 0 counts)", expect: Expect::Reject(&["OneMintPerTransaction"]),
+            build: |c| (vec![valid_memo("memo-a"), valid_memo("memo-b"), mint_ix(c), mint_ix(c)], vec![]) },
+        Case { category: "instruction-attacks", name: "memo, mint, memo, mint", expect: Expect::Reject(&["OneMintPerTransaction"]),
+            build: |c| (vec![valid_memo("first"), mint_ix(c), valid_memo("second"), mint_ix(c)], vec![]) },
+        Case { category: "instruction-attacks", name: "Mint, unrelated instructions, mint", expect: Expect::Reject(&["OneMintPerTransaction"]),
+            build: |c| (vec![valid_memo("spaced"), mint_ix(c), noop_transfer(c), cu_limit(400_000), noop_transfer(c), mint_ix(c)], vec![]) },
+
+        // --- MintState account ---
+        Case { category: "mint-state-attacks", name: "Old account list without mint_state", expect: Expect::Reject(&["AccountNotEnoughKeys"]),
+            build: |c| {
+                let mut accounts = mint_accounts(c);
+                accounts.pop();
+                (vec![valid_memo("no-state"), mint_ix_with(c, accounts)], vec![])
+            } },
+        Case { category: "mint-state-attacks", name: "Random account as mint_state", expect: Expect::Reject(&["AccountNotInitialized"]),
+            build: |c| (vec![valid_memo("random-state"), mint_ix_replacing(c, 6, AccountMeta::new(Pubkey::new_unique(), false))], vec![]) },
+        Case { category: "mint-state-attacks", name: "Mint account (other owner) as mint_state", expect: Expect::Reject(&["AccountOwnedByWrongProgram"]),
+            build: |c| (vec![valid_memo("mint-as-state"), mint_ix_replacing(c, 6, AccountMeta::new(c.mint, false))], vec![]) },
+        Case { category: "mint-state-attacks", name: "mint_state passed read-only", expect: Expect::Reject(&["ConstraintMut"]),
+            build: |c| (vec![valid_memo("readonly-state"), mint_ix_replacing(c, 6, AccountMeta::new_readonly(c.mint_state, false))], vec![]) },
 
         // --- PDA ---
         Case { category: "pda-attacks", name: "Random address as mint authority", expect: Expect::Reject(&["ConstraintSeeds"]),
@@ -468,8 +502,8 @@ fn all_cases() -> Vec<Case> {
 
         // --- resource limits ---
         Case { category: "dos-attacks", name: "Compute limit too low (whole transaction fails, nothing minted)", expect: Expect::Reject(&["ComputationalBudgetExceeded", "exceeded CUs meter"]),
-            build: |c| (vec![memo_len("long ", 800), mint_ix(c), cu_limit(1_000)], vec![]) },
-        Case { category: "dos-attacks", name: "One memo, 32 mints (instruction trace limit)", expect: Expect::Reject(&["MaxInstructionTraceLengthExceeded"]),
+            build: |c| (vec![memo_len("long ", 780), mint_ix(c), cu_limit(1_000)], vec![]) },
+        Case { category: "dos-attacks", name: "One memo, 32 mints", expect: Expect::Reject(&["OneMintPerTransaction", "MaxInstructionTraceLengthExceeded"]),
             build: |c| {
                 let mut ixs = vec![valid_memo("batch32")];
                 ixs.extend((0..32).map(|_| mint_ix(c)));
@@ -495,6 +529,11 @@ fn all_cases() -> Vec<Case> {
             } },
         Case { category: "mint-to-attacks", name: "mint_to without a memo", expect: Expect::Reject(&["MemoRequired"]),
             build: |c| (vec![mint_to_ix(c, c.payer.pubkey(), c.token_account)], vec![]) },
+        Case { category: "mint-to-attacks", name: "mint_to two different recipients in one transaction", expect: Expect::Reject(&["OneMintPerTransaction"]),
+            build: |c| match c.other_token_account.and_then(|a| token_account_owner(c, &a).map(|o| (a, o))) {
+                Some((account, owner)) => (vec![valid_memo("two-recipients"), mint_to_ix(c, c.payer.pubkey(), c.token_account), mint_to_ix(c, owner, account)], vec![]),
+                None => (vec![], vec![]),
+            } },
     ]
 }
 

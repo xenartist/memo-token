@@ -12,7 +12,10 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Keypair locations
 AUTHORITY_KEYPAIR_DIR="${HOME}/.config/solana/memo-token/authority"
-PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
+# Program keypairs live outside target/ (which `anchor clean` / `cargo clean` delete), one directory
+# per environment. target/deploy/<program>-keypair.json is only a symlink to them, for `anchor build`.
+PROGRAM_KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token/programs"
+TARGET_DEPLOY_DIR="${PROJECT_ROOT}/target/deploy"
 
 # Color codes
 RED='\033[0;31m'
@@ -68,6 +71,55 @@ is_valid_program() {
         if [ "$valid_program" = "$program" ]; then
             return 0
         fi
+    done
+    return 1
+}
+
+# Program keypair path for an environment (testnet/mainnet)
+program_keypair_path() {
+    local program=$(get_program_name_underscore "$1")
+    echo "${PROGRAM_KEYPAIR_BASE_DIR}/$2/${program}-keypair.json"
+}
+
+# Link the stored program keypair into target/deploy so `anchor build` finds it
+# (otherwise anchor generates a random keypair there). No-op if the keypair is not stored.
+link_program_keypair() {
+    local program=$(get_program_name_underscore "$1")
+    local keypair_file=$(program_keypair_path "${program}" "$2")
+    if [ -f "${keypair_file}" ]; then
+        mkdir -p "${TARGET_DEPLOY_DIR}"
+        ln -sfn "${keypair_file}" "${TARGET_DEPLOY_DIR}/${program}-keypair.json"
+    fi
+}
+
+# On-chain state of a program: prints "deployed <upgrade authority>", "absent", or "error <message>"
+get_program_state() {
+    local program_id=$1
+    local cluster=$2
+    local output
+    if output=$(solana program show "${program_id}" -u "${cluster}" 2>&1); then
+        echo "deployed $(echo "${output}" | awk '/^Authority:/{print $2}')"
+    elif echo "${output}" | grep -q "Unable to find the account"; then
+        echo "absent"
+    else
+        echo "error $(echo "${output}" | head -n 1)"
+    fi
+}
+
+# Upgrade the on-chain IDL, or create it if missing. The IDL instructions run inside the program,
+# which cannot be invoked in the slot it was upgraded in ("Program is not deployed"), so retry with a delay.
+sync_idl() {
+    local program_id=$1
+    local idl_file=$2
+    local cluster=$3
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        sleep 3
+        if anchor idl upgrade "${program_id}" --filepath "${idl_file}" --provider.cluster "${cluster}" >/dev/null 2>&1 \
+            || anchor idl init "${program_id}" --filepath "${idl_file}" --provider.cluster "${cluster}" >/dev/null 2>&1; then
+            return 0
+        fi
+        print_info "IDL update not possible yet (attempt ${attempt}/5), retrying..."
     done
     return 1
 }
@@ -144,16 +196,9 @@ verify_configuration() {
     local PROGRAMS=("$@")
     
     print_info "Verifying ${ENV} configuration..."
-    print_info "Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
+    print_info "Program keypairs: ${PROGRAM_KEYPAIR_BASE_DIR}/${ENV} (needed only for first deploys)"
     print_info "Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
     echo ""
-    
-    # Verify directories exist
-    if [ ! -d "${PROGRAM_KEYPAIR_DIR}" ]; then
-        print_error "Program keypair directory not found: ${PROGRAM_KEYPAIR_DIR}"
-        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
-        exit 1
-    fi
     
     if [ ! -d "${AUTHORITY_KEYPAIR_DIR}" ]; then
         print_error "Authority keypair directory not found: ${AUTHORITY_KEYPAIR_DIR}"
@@ -197,38 +242,65 @@ verify_configuration() {
         local program_dash=$(get_program_name_dash "${program}")
         echo "Checking ${program}..."
         
-        # 1. Verify program keypair exists
-        local keypair_file="${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
-        if [ ! -f "${keypair_file}" ]; then
-            print_error "  ✗ Program keypair not found: ${keypair_file}"
-            print_info "  Run: ./scripts/setup-keypairs.sh ${ENV}"
-            exit 1
-        fi
-        
-        # 2. Get program ID from keypair
-        local program_id=$(solana-keygen pubkey "${keypair_file}")
-        
-        # 3. Get program ID from source code
+        # 1. Program ID from source code (the source of truth)
         local code_program_id=$(extract_program_id_from_code "${program}" "${ENV}")
+        local keypair_file=$(program_keypair_path "${program}" "${ENV}")
         
-        # 4. Compare program IDs
         echo -n "  Program ID: "
         if [ -z "${code_program_id}" ]; then
             print_warning "Could not extract from code"
-            echo "    Keypair: ${program_id}"
-            echo "    Code: Unable to parse"
             mismatch_details="${mismatch_details}\n${program}: Could not verify program ID in code"
             all_match=false
-        elif [ "${program_id}" != "${code_program_id}" ]; then
-            print_error "MISMATCH"
-            echo "    Keypair:  ${program_id}"
-            echo "    Code:     ${code_program_id}"
-            mismatch_details="${mismatch_details}\n${program} Program ID:"
-            mismatch_details="${mismatch_details}\n  Expected: ${program_id}"
-            mismatch_details="${mismatch_details}\n  In Code:  ${code_program_id}"
-            all_match=false
         else
-            print_success "${program_id}"
+            echo "${code_program_id}"
+            
+            # 2. If the program keypair is stored, it must match the code
+            if [ -f "${keypair_file}" ]; then
+                local keypair_program_id=$(solana-keygen pubkey "${keypair_file}")
+                echo -n "  Program keypair: "
+                if [ "${keypair_program_id}" != "${code_program_id}" ]; then
+                    print_error "MISMATCH"
+                    echo "    Keypair:  ${keypair_program_id} (${keypair_file})"
+                    echo "    Code:     ${code_program_id}"
+                    mismatch_details="${mismatch_details}\n${program} Program ID:"
+                    mismatch_details="${mismatch_details}\n  Keypair: ${keypair_program_id}"
+                    mismatch_details="${mismatch_details}\n  In Code: ${code_program_id}"
+                    all_match=false
+                else
+                    print_success "matches"
+                fi
+            fi
+            
+            # 3. Deployed programs are upgraded by program ID with the upgrade authority;
+            #    only a first deploy needs the program keypair
+            local state=$(get_program_state "${code_program_id}" "${CLUSTER}")
+            echo -n "  On-chain: "
+            case "${state}" in
+                deployed\ *)
+                    local onchain_authority="${state#deployed }"
+                    if [ "${onchain_authority}" = "${ADMIN_AUTHORITY_PUBKEY}" ]; then
+                        print_success "deployed, upgrade authority matches (upgrade by program ID)"
+                    else
+                        print_error "deployed, but upgrade authority is ${onchain_authority:-none (immutable)}"
+                        mismatch_details="${mismatch_details}\n${program}: on-chain upgrade authority ${onchain_authority:-none} is not ${ADMIN_AUTHORITY_PUBKEY}"
+                        all_match=false
+                    fi
+                    ;;
+                absent)
+                    if [ -f "${keypair_file}" ]; then
+                        print_success "not deployed yet (first deploy with ${keypair_file})"
+                    else
+                        print_error "not deployed yet, and no program keypair at ${keypair_file}"
+                        mismatch_details="${mismatch_details}\n${program}: first deploy needs ${keypair_file} (run ./scripts/setup-keypairs.sh ${ENV})"
+                        all_match=false
+                    fi
+                    ;;
+                *)
+                    print_error "could not query ${CLUSTER}: ${state#error }"
+                    mismatch_details="${mismatch_details}\n${program}: could not query on-chain state"
+                    all_match=false
+                    ;;
+            esac
         fi
         
         # 5. Verify mint authority (all programs have this)
@@ -252,9 +324,9 @@ verify_configuration() {
             print_success "${MINT_AUTHORITY_PUBKEY}"
         fi
         
-        # 6. Verify admin authority (only for memo_burn, memo_chat, memo_project, and memo_forum)
+        # 6. Verify admin authority (only for memo_mint, memo_burn, memo_chat, memo_project, and memo_forum)
         # Note: memo_blog no longer requires admin authority (global counter removed)
-        if [ "${program}" = "memo_burn" ] || [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ] || [ "${program}" = "memo_forum" ]; then
+        if [ "${program}" = "memo_mint" ] || [ "${program}" = "memo_burn" ] || [ "${program}" = "memo_chat" ] || [ "${program}" = "memo_project" ] || [ "${program}" = "memo_forum" ]; then
             local code_admin_authority=$(extract_authority_from_code "${program}" "ADMIN" "${ENV}")
             echo -n "  Admin Authority: "
             if [ -z "${code_admin_authority}" ]; then
@@ -386,6 +458,9 @@ deploy_to_env() {
     # Step 2: Build
     echo ""
     print_info "Step 2: Building programs..."
+    for program in "${SELECTED_PROGRAMS[@]}"; do
+        link_program_keypair "${program}" "${ENV}"
+    done
     if [ -n "${FEATURE_FLAG}" ]; then
         print_info "Building with feature: ${FEATURE_FLAG}"
         for program in "${SELECTED_PROGRAMS[@]}"; do
@@ -413,23 +488,61 @@ deploy_to_env() {
         echo ""
         print_info "Deploying ${program}..."
         
-        local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
+        local program_id=$(extract_program_id_from_code "${program}" "${ENV}")
+        local state=$(get_program_state "${program_id}" "${CLUSTER}")
         
-        anchor deploy \
-            --provider.cluster "${CLUSTER}" \
-            --program-name "${program}" \
-            --program-keypair "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
-        
-        print_success "${program} deployed: ${program_id}"
+        case "${state}" in
+            deployed\ *)
+                # Upgrade by program ID: needs only the upgrade authority (the Anchor.toml wallet)
+                anchor upgrade "${TARGET_DEPLOY_DIR}/${program}.so" \
+                    --program-id "${program_id}" \
+                    --provider.cluster "${CLUSTER}"
+                print_success "${program} upgraded: ${program_id}"
+                
+                # Keep the on-chain IDL in sync (create it if it does not exist yet)
+                local idl_file="${PROJECT_ROOT}/target/idl/${program}.json"
+                if sync_idl "${program_id}" "${idl_file}" "${CLUSTER}"; then
+                    print_success "${program} IDL updated"
+                else
+                    print_warning "${program} IDL update failed; the program is upgraded. Retry:"
+                    echo "   anchor idl upgrade ${program_id} --filepath target/idl/${program}.json --provider.cluster ${CLUSTER}"
+                fi
+                ;;
+            absent)
+                # First deploy: the program keypair creates the program at its address (uploads the IDL too)
+                anchor deploy \
+                    --provider.cluster "${CLUSTER}" \
+                    --program-name "${program}" \
+                    --program-keypair "$(program_keypair_path "${program}" "${ENV}")"
+                print_success "${program} deployed: ${program_id}"
+                ;;
+            *)
+                print_error "Could not query ${program} on ${CLUSTER}: ${state#error }"
+                exit 1
+                ;;
+        esac
+
+        # memo-mint requires the mint state account (one mint per transaction); every mint fails until it exists.
+        # The client is idempotent: it does nothing if the account is already initialized.
+        if [ "${program}" = "memo_mint" ]; then
+            print_info "Initializing memo-mint mint state..."
+            if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
+                    --bin admin-init-mint-state -- "${program_id}" "${CLUSTER}"; then
+                print_error "Mint state initialization failed. Mints will fail until it succeeds."
+                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-mint-state -- ${program_id} ${CLUSTER}"
+                exit 1
+            fi
+            print_success "Mint state ready"
+        fi
 
         # memo-burn requires the global burn stats account; every burn fails until it exists.
         # The client is idempotent: it does nothing if the account is already initialized.
         if [ "${program}" = "memo_burn" ]; then
             print_info "Initializing memo-burn global burn stats..."
             if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
-                    --bin admin-init-global-burn-stats -- "${program_id}"; then
+                    --bin admin-init-global-burn-stats -- "${program_id}" "${CLUSTER}"; then
                 print_error "Global burn stats initialization failed. Burns will fail until it succeeds."
-                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-global-burn-stats -- ${program_id}"
+                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-global-burn-stats -- ${program_id} ${CLUSTER}"
                 exit 1
             fi
             print_success "Global burn stats ready"
@@ -451,7 +564,7 @@ deploy_to_env() {
     echo ""
     print_info "Deployed Program IDs ($(to_upper "${ENV}")):"
     for program in "${SELECTED_PROGRAMS[@]}"; do
-        local program_id=$(solana-keygen pubkey "${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json")
+        local program_id=$(extract_program_id_from_code "${program}" "${ENV}")
         echo "  ${program} = \"${program_id}\""
     done
     echo ""

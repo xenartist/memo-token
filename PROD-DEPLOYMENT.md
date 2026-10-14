@@ -8,16 +8,25 @@ This document describes how to deploy the MEMO Token project to the production e
 **Project Architecture (Based on Physical Environment Isolation):**
 
 Production Machine
-├── target/deploy/
+├── ~/.config/solana/memo-token/programs/mainnet/   (program keypairs, 700/600)
 │ ├── memo_mint-keypair.json
 │ ├── memo_burn-keypair.json
 │ ├── memo_chat-keypair.json
 │ ├── memo_profile-keypair.json
-│ └── memo_project-keypair.json
-│ 
-└── ~/.config/solana/memo-token/authority/
+│ ├── memo_project-keypair.json
+│ ├── memo_blog-keypair.json
+│ └── memo_forum-keypair.json
+│
+├── ~/.config/solana/memo-token/authority/
 │ ├── deploy_admin-keypair.json
 │ └── memo_token_mint-keypair.json
+│
+└── <repo>/target/deploy/<program>-keypair.json     (symlinks only, for `anchor build`)
+
+Program keypairs are kept outside `target/`, because `anchor clean` / `cargo clean` delete it.
+They are needed only for a program's **first** deploy (they create the program at its address).
+Deployed programs are upgraded by program ID with the upgrade authority (`deploy_admin`), so
+`deploy-*.sh` works even when a deployed program's keypair is not on the machine.
 
 **Environment Config: Environment Config:**
 
@@ -96,7 +105,7 @@ git checkout main  # or your production branch
 ```
 
 This will guide you through:
-1. **Program Keypairs**: Generate new keypairs in `target/deploy/`
+1. **Program Keypairs**: Generate new keypairs in `~/.config/solana/memo-token/programs/mainnet/` (linked into `target/deploy/`; keypairs found in `target/deploy/` from older setups are moved there)
 2. **Authority Keypairs**: Generate admin and mint authority in `~/.config/solana/memo-token/authority/`
 
 ### 2.2 Backup Keypairs Immediately
@@ -115,8 +124,8 @@ After generating mainnet program keypairs, get their public keys:
 cd ~/memo-token
 
 # Get all program IDs
-for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
-  echo "$program: $(solana-keygen pubkey target/deploy/${program}-keypair.json)"
+for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+  echo "$program: $(solana-keygen pubkey ~/.config/solana/memo-token/programs/mainnet/${program}-keypair.json)"
 done
 ```
 
@@ -235,8 +244,8 @@ After successful deployment, verify on block explorer:
 
 ```bash
 # Check each program
-for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
-  PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
+for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
   echo "✅ $program: https://rpc.testnet.x1.xyz/address/$PROGRAM_ID"
 done
 ```
@@ -282,8 +291,8 @@ After successful deployment, verify on block explorer:
 
 ```bash
 # Check each program
-for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
-  PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
+for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
   echo "✅ $program: https://rpc.mainnet.x1.xyz/address/$PROGRAM_ID"
 done
 ```
@@ -386,8 +395,8 @@ For maximum security, consider transferring upgrade authority:
 
 **Option 1: Set to Immutable** (No future upgrades)
 ```bash
-for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
-  PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
+for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
   solana program set-upgrade-authority $PROGRAM_ID --final --url $X1_RPC_URL
   echo "✅ $program set to immutable"
 done
@@ -397,8 +406,8 @@ done
 ```bash
 MULTISIG_ADDRESS="YOUR_MULTISIG_ADDRESS"
 
-for program in memo_mint memo_burn memo_chat memo_profile memo_project; do
-  PROGRAM_ID=$(solana-keygen pubkey target/deploy/${program}-keypair.json)
+for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
   solana program set-upgrade-authority $PROGRAM_ID \
     --new-upgrade-authority $MULTISIG_ADDRESS \
     --url $X1_RPC_URL
@@ -411,14 +420,11 @@ done
 After deployment:
 
 ```bash
-# Option 1: Keep program keypairs in target/deploy/ (needed if programs are upgradeable)
-# Ensure proper file permissions
-chmod 600 ~/memo-token/target/deploy/*-keypair.json
-
-# Option 2: Move to more secure location
-mkdir -p ~/.config/solana/memo-token/program-keypairs
-mv ~/memo-token/target/deploy/*-keypair.json \
-   ~/.config/solana/memo-token/program-keypairs/
+# Program keypairs are not needed for upgrades (upgrades use the program ID and the upgrade
+# authority). Keep an encrypted offline backup, and remove them from the production machine
+# if you like; deploy-mainnet.sh only asks for one when a program is deployed for the first time.
+chmod 700 ~/.config/solana/memo-token/programs ~/.config/solana/memo-token/programs/mainnet
+chmod 600 ~/.config/solana/memo-token/programs/mainnet/*
 
 # Authority keypairs should remain in ~/.config/solana/memo-token/authority/
 chmod 700 ~/.config/solana/memo-token/authority
@@ -462,10 +468,10 @@ export ANCHOR_PROVIDER_URL="$X1_RPC_URL"
 
 If `deploy-mainnet.sh` reports mismatches:
 
-1. **Check program IDs in code match keypairs**:
+1. **Check program IDs in code match keypairs** (only checked when the keypair is present):
    ```bash
    # Get actual ID from keypair
-   solana-keygen pubkey target/deploy/memo_mint-keypair.json
+   solana-keygen pubkey ~/.config/solana/memo-token/programs/mainnet/memo_mint-keypair.json
    
    # Compare with code in programs/memo-mint/src/lib.rs
    grep -A 1 'cfg(feature = "mainnet")' programs/memo-mint/src/lib.rs

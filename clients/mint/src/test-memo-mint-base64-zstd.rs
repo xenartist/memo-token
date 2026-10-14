@@ -918,6 +918,7 @@ fn create_mint_instruction(
         AccountMeta::new(*token_account, false),
         AccountMeta::new_readonly(token_2022_id(), false),
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false),
+        AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
     ];
     
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
@@ -933,8 +934,9 @@ fn simulate_transaction_cu(
     
     // Add compute budget instruction
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_000_000);
-    let mut sim_instructions = vec![compute_budget_ix];
-    sim_instructions.extend(instructions);
+    // memo must stay at index 0, so the compute budget instruction goes last
+    let mut sim_instructions = instructions;
+    sim_instructions.push(compute_budget_ix);
     
     let sim_transaction = Transaction::new_signed_with_payer(
         &sim_instructions,

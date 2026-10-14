@@ -664,6 +664,7 @@ fn send_memo_to_group_instruction(
             solana_sdk::sysvar::instructions::id(),
             false
         ), // instructions
+        AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
     ];
 
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

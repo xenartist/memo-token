@@ -41,19 +41,20 @@ pub struct ProjectCreationData {
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct Project {
+    // Field order must match memo_project::Project
     pub project_id: u64,
     pub creator: Pubkey,
     pub created_at: i64,
     pub last_updated: i64,
-    pub memo_count: u64,
-    pub burned_amount: u64,
-    pub last_memo_time: i64,
-    pub bump: u8,
     pub name: String,
     pub description: String,
     pub image: String,
     pub website: String,
     pub tags: Vec<String>,
+    pub memo_count: u64,
+    pub burned_amount: u64,
+    pub last_memo_time: i64,
+    pub bump: u8,
 }
 
 const BURN_MEMO_VERSION: u8 = 1;
@@ -147,6 +148,7 @@ fn execute_mint_operation(
             AccountMeta::new(*token_account, false),
             AccountMeta::new_readonly(token_2022_id(), false),
             AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
         ],
     );
     

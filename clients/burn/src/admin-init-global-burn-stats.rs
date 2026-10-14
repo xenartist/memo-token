@@ -36,8 +36,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("Run it right after deploying memo-burn: every burn fails until this account exists.");
     println!();
 
-    // Connect to network
-    let rpc_url = get_rpc_url();
+    // Connect to network: optional second argument overrides the RPC URL from Anchor.toml
+    // (the deploy script passes the cluster it just deployed to)
+    let rpc_url = std::env::args().nth(2).unwrap_or_else(get_rpc_url);
     println!("🔍 Connecting to: {}", rpc_url);
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 

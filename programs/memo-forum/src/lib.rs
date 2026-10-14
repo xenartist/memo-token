@@ -604,6 +604,7 @@ pub mod memo_forum {
             token_account: ctx.accounts.user_token_account.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
             instructions: ctx.accounts.instructions.to_account_info(),
+            mint_state: ctx.accounts.mint_state.to_account_info(),
         };
         
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
@@ -1062,6 +1063,15 @@ pub struct MintForPost<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+
+    /// memo-mint's one-mint-per-transaction state (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"mint_state"],
+        bump = mint_state.bump,
+        seeds::program = memo_mint_program.key()
+    )]
+    pub mint_state: Account<'info, memo_mint::MintState>,
 }
 
 /// Post data structure

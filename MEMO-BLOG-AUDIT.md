@@ -39,6 +39,14 @@ During this audit, the following improvements were implemented:
 
 ---
 
+## Revision Note (October 14, 2026): One Mint per Transaction
+
+memo-mint 0.3.0 allows exactly one mint per transaction (see MEMO-MINT-AUDIT.md, Revision 3) and requires its `MintState` account. `mint_for_blog` has a new **last** account, `mint_state`: writable, typed as `memo_mint::MintState`, and checked against seeds `[b"mint_state"]` and its stored bump under the memo-mint program. It is passed through to the `process_mint` CPI, where memo-mint checks it again. Existing accounts keep their order and this app's error codes are unchanged.
+
+A transaction can therefore contain only one minting instruction: calling `mint_for_blog` twice, combining it with a direct `process_mint`, or calling it several times via CPI fails with memo-mint's `OneMintPerTransaction`.
+
+Clients must append the PDA (`memo_token_client::mint_state_pda()`) to `mint_for_blog`. Deploy this app only after memo-mint is upgraded and `MintState` is initialized.
+
 ## Revision Note (October 13, 2026): Global Burn Statistics
 
 memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateBlog`, `UpdateBlog`, `BurnForBlog`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.

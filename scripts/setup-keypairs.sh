@@ -1,6 +1,7 @@
 #!/bin/bash
 # Setup keypairs for deployment
-# Program keypairs: target/deploy/ (Anchor default)
+# Program keypairs: ~/.config/solana/memo-token/programs/<testnet|mainnet>/
+#   (outside target/, which `anchor clean` / `cargo clean` delete; target/deploy/ only holds symlinks)
 # Authority keypairs: ~/.config/solana/memo-token/authority/ (unified across environments)
 
 set -e
@@ -11,8 +12,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Authority keypair storage location (unified path for all environments)
 AUTHORITY_KEYPAIR_DIR="${HOME}/.config/solana/memo-token/authority"
 
-# Program keypair location (project directory, Anchor default)
-PROGRAM_KEYPAIR_DIR="${PROJECT_ROOT}/target/deploy"
+# Program keypair locations: stored per environment; target/deploy only gets symlinks for `anchor build`
+PROGRAM_KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token/programs"
+TARGET_DEPLOY_DIR="${PROJECT_ROOT}/target/deploy"
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
@@ -31,7 +33,7 @@ if [ -z "${ENV}" ]; then
     echo "Usage: $0 <testnet|mainnet>"
     echo ""
     echo "This script sets up keypairs:"
-    echo "  - Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
+    echo "  - Program keypairs: ${PROGRAM_KEYPAIR_BASE_DIR}/<env>/ (linked into ${TARGET_DEPLOY_DIR})"
     echo "  - Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
     echo ""
     echo "Note: Authority keypairs use the same path for all environments."
@@ -44,6 +46,8 @@ if [ "${ENV}" != "testnet" ] && [ "${ENV}" != "mainnet" ]; then
     exit 1
 fi
 
+PROGRAM_KEYPAIR_DIR="${PROGRAM_KEYPAIR_BASE_DIR}/${ENV}"
+
 echo ""
 echo "=========================================="
 echo "Setting up keypairs for $(echo ${ENV} | tr '[:lower:]' '[:upper:]')"
@@ -53,9 +57,15 @@ echo ""
 # Create directories
 mkdir -p "${PROGRAM_KEYPAIR_DIR}"
 mkdir -p "${AUTHORITY_KEYPAIR_DIR}"
+mkdir -p "${TARGET_DEPLOY_DIR}"
 
-# Set restrictive permissions for authority keypairs
-chmod 700 "${AUTHORITY_KEYPAIR_DIR}"
+# Set restrictive permissions for keypair directories
+chmod 700 "${PROGRAM_KEYPAIR_BASE_DIR}" "${PROGRAM_KEYPAIR_DIR}" "${AUTHORITY_KEYPAIR_DIR}"
+
+# Point target/deploy/<program>-keypair.json at the stored keypair so `anchor build` uses it
+link_into_target() {
+    ln -sfn "$2" "${TARGET_DEPLOY_DIR}/$1-keypair.json"
+}
 
 PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog" "memo_forum")
 
@@ -64,14 +74,32 @@ echo "PART 1: Program Keypairs"
 echo "========================================"
 echo ""
 print_info "Location: ${PROGRAM_KEYPAIR_DIR}"
-print_info "These determine your Program IDs"
+print_info "These determine your Program IDs. They are needed only for a program's FIRST deploy:"
+print_info "deployed programs are upgraded by program ID with the upgrade authority."
 echo ""
 
 for program in "${PROGRAMS[@]}"; do
     KEYPAIR_FILE="${PROGRAM_KEYPAIR_DIR}/${program}-keypair.json"
+    TARGET_FILE="${TARGET_DEPLOY_DIR}/${program}-keypair.json"
+    
+    # Migrate a keypair left in target/deploy by older versions of this script
+    if [ ! -f "${KEYPAIR_FILE}" ] && [ -f "${TARGET_FILE}" ] && [ ! -L "${TARGET_FILE}" ]; then
+        print_info "${program}: moving keypair from ${TARGET_DEPLOY_DIR} to ${PROGRAM_KEYPAIR_DIR}"
+        cp -p "${TARGET_FILE}" "${KEYPAIR_FILE}"
+        chmod 600 "${KEYPAIR_FILE}"
+        if [ "$(solana-keygen pubkey "${KEYPAIR_FILE}")" = "$(solana-keygen pubkey "${TARGET_FILE}")" ]; then
+            rm "${TARGET_FILE}"
+        else
+            print_error "${program}: copy verification failed, leaving ${TARGET_FILE} in place"
+            rm -f "${KEYPAIR_FILE}"
+            continue
+        fi
+    fi
     
     if [ -f "${KEYPAIR_FILE}" ]; then
-        print_success "${program}: keypair already exists"
+        chmod 600 "${KEYPAIR_FILE}"
+        link_into_target "${program}" "${KEYPAIR_FILE}"
+        print_success "${program}: keypair stored (linked into target/deploy)"
         PUBKEY=$(solana-keygen pubkey "${KEYPAIR_FILE}")
         echo "  Program ID: ${PUBKEY}"
     else
@@ -80,7 +108,7 @@ for program in "${PROGRAMS[@]}"; do
         echo "Options:"
         echo "  1) Copy existing keypair from backup"
         echo "  2) Generate NEW keypair"
-        echo "  3) Skip for now"
+        echo "  3) Skip (already deployed: upgrades use the program ID, no keypair needed)"
         echo ""
         read -p "Choose option [1/2/3]: " choice
         
@@ -93,6 +121,7 @@ for program in "${PROGRAMS[@]}"; do
                 
                 if [ -f "${KEYPAIR_FILE}" ]; then
                     chmod 600 "${KEYPAIR_FILE}"
+                    link_into_target "${program}" "${KEYPAIR_FILE}"
                     PUBKEY=$(solana-keygen pubkey "${KEYPAIR_FILE}")
                     print_success "${program}: keypair restored"
                     echo "  Program ID: ${PUBKEY}"
@@ -103,10 +132,12 @@ for program in "${PROGRAMS[@]}"; do
             2)
                 solana-keygen new --no-bip39-passphrase -o "${KEYPAIR_FILE}"
                 chmod 600 "${KEYPAIR_FILE}"
+                link_into_target "${program}" "${KEYPAIR_FILE}"
                 PUBKEY=$(solana-keygen pubkey "${KEYPAIR_FILE}")
                 print_success "${program}: generated new keypair"
                 echo "  Program ID: ${PUBKEY}"
                 print_warning "Remember to update this Program ID in your code!"
+                print_warning "Write down the seed phrase above or back up the file before the first deploy!"
                 ;;
             3)
                 print_info "${program}: skipped"
@@ -244,7 +275,7 @@ print_success "Setup complete for ${ENV}"
 echo "=========================================="
 echo ""
 print_info "Keypair locations:"
-echo "  Program keypairs: ${PROGRAM_KEYPAIR_DIR}"
+echo "  Program keypairs: ${PROGRAM_KEYPAIR_DIR} (symlinked into ${TARGET_DEPLOY_DIR})"
 echo "  Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
 echo ""
 
@@ -261,7 +292,7 @@ echo ""
 
 print_warning "SECURITY REMINDERS:"
 echo "  ✓ Authority keypairs: ${AUTHORITY_KEYPAIR_DIR} (unified location)"
-echo "  ✓ Program keypairs: ${PROGRAM_KEYPAIR_DIR} (Anchor default)"
+echo "  ✓ Program keypairs: ${PROGRAM_KEYPAIR_DIR} (only needed for first deploys)"
 echo "  ✓ Directory permissions set to 700 (owner only)"
 echo "  ✓ File permissions set to 600 (owner read/write only)"
 echo "  ✓ Authority keypairs are NOT tracked by git"

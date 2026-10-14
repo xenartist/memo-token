@@ -20,10 +20,11 @@ Anyone can mint MEMO (Token-2022, 6 decimals) by sending a transaction to the me
        no contract maximum, the transaction size limit applies)
 [1..]  memo_mint::process_mint  (mint to yourself)
        or memo_mint::process_mint_to(recipient)  (mint to someone else's MEMO token account)
+       -- exactly one mint per transaction --
 [last] ComputeBudget set_compute_unit_limit (optional, never at index 0)
 ```
 
-One memo can back several mint instructions in the same transaction (up to about 31, limited by the runtime's 64-entry instruction trace). X1 charges fees by the compute-unit limit you request, so simulate first and set the exact limit.
+A transaction can mint only once, directly or through another program; a second mint fails with `OneMintPerTransaction`. Both mint instructions take the `MintState` PDA (seeds `[b"mint_state"]`) as their last account. X1 charges fees by the compute-unit limit you request, so simulate first and set the exact limit.
 
 **Emission curve**: the reward per mint depends on the circulating supply and steps down at every round number.
 
@@ -114,7 +115,7 @@ Save the output addresses:
 ```bash
 cargo run --bin test-memo-mint valid-memo
 cargo run --bin test-memo-mint memo-69
-cargo run --bin test-memo-mint memo-800
+cargo run --bin test-memo-mint memo-750
 cargo run --bin test-memo-mint no-memo
 cargo run --bin test-memo-mint short-memo
 cargo run --bin test-memo-mint long-memo
@@ -184,8 +185,6 @@ The program uses a PDA as mint authority, which means:
 
 ## Development Notes
 
-- Program ID is stored in 
-    `target/deploy/memo_mint-keypair.json`
-    `target/deploy/memo_burn-keypair.json`
+- Program keypairs are stored in `~/.config/solana/memo-token/programs/<testnet|mainnet>/` (outside `target/`, which `anchor clean` deletes) and symlinked into `target/deploy/` by `scripts/setup-keypairs.sh`. They are only needed for a program's first deploy; the deploy scripts upgrade deployed programs by program ID with the upgrade authority.
 - Mint authority is a PDA derived from program ID
 - Each user needs to create their token account before minting

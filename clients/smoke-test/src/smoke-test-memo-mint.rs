@@ -266,6 +266,7 @@ fn create_mint_instruction(
         AccountMeta::new(*token_account, false),
         AccountMeta::new_readonly(token_2022_id(), false),
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false),
+        AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
     ];
     
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

@@ -114,8 +114,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "memo-69" => {
             println!("Execution plan: infinite mint operation testing minimum memo length (69 bytes)");
         },
-        "memo-800" => {
-            println!("Execution plan: infinite mint operation testing maximum memo length (800 bytes)");
+        "memo-750" => {
+            println!("Execution plan: infinite mint operation testing a long memo near the transaction size limit (750 bytes)");
         },
         _ => {
             print_usage();
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let memo_bytes = match test_mode.as_str() {
             "valid-memo" => create_random_valid_ascii_memo()?,
             "memo-69" => create_exact_length_ascii_memo(69)?,
-            "memo-800" => create_exact_length_ascii_memo(800)?,
+            "memo-750" => create_exact_length_ascii_memo(750)?,
             _ => return Err("Invalid test mode".into())
         };
         
@@ -249,13 +249,13 @@ fn print_usage() {
     println!("  mode   - Test mode:");
     println!("           valid-memo - Random memo lengths (default)");
     println!("           memo-69    - Test minimum length (69 bytes)");
-    println!("           memo-800   - Test maximum length (800 bytes)");
+    println!("           memo-750   - Test a long memo near the transaction size limit (750 bytes)");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-batch-mint-ascii                # Random lengths");
     println!("  cargo run --bin test-memo-batch-mint-ascii valid-memo     # Random lengths");
     println!("  cargo run --bin test-memo-batch-mint-ascii memo-69        # 69 bytes");
-    println!("  cargo run --bin test-memo-batch-mint-ascii memo-800       # 800 bytes");
+    println!("  cargo run --bin test-memo-batch-mint-ascii memo-750       # 750 bytes");
 }
 
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -412,6 +412,7 @@ fn create_mint_instruction(
         AccountMeta::new(*token_account, false),
         AccountMeta::new_readonly(token_2022_id(), false),
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false),
+        AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
     ];
     
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)

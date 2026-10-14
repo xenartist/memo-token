@@ -5,6 +5,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use anchor_spl::token_2022::{self, Token2022};
 use anchor_lang::solana_program::sysvar::instructions::{ID as INSTRUCTIONS_ID};
+use solana_sha256_hasher::hash;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
 // Program ID - different for testnet and mainnet
@@ -20,6 +21,13 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("memoX1sJsBY6od7CfQ58XooRALwn
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+
+// Authorized admin pubkey (initializes MintState once) - different for testnet and mainnet
+#[cfg(feature = "mainnet")]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
+
+#[cfg(not(feature = "mainnet"))]
+pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 
 // compile-time constant safety validation
 const _: () = {
@@ -58,6 +66,52 @@ pub const CURVE_START_LAMPORTS: u64 = CURVE_START_TOKENS * DECIMAL_FACTOR;
 pub const CURVE_DECADES: u32 = 6;                                       // 10M -> 10T
 pub const BASE_MINT_AMOUNT: u64 = 1 * DECIMAL_FACTOR;                   // 1 token
 
+/// One mint per transaction.
+///
+/// A transaction's instructions sysvar holds the serialized top-level instructions followed by
+/// a 2-byte current instruction index. Everything except those last 2 bytes is the same for
+/// every instruction and every CPI in the transaction, cannot be changed by any program, and
+/// includes every instruction's program id, accounts (signers included) and data. Its hash is
+/// therefore a fingerprint of the transaction.
+///
+/// MintState stores the fingerprint and slot of the last mint. A mint whose transaction has the
+/// same fingerprint in the same slot is a second mint in the same transaction and is rejected,
+/// whether it comes from another top-level instruction or from a CPI (state written by the first
+/// mint is visible to later instructions and CPIs of the same transaction, and every mint
+/// write-locks MintState, so no other transaction can run in between).
+#[account]
+pub struct MintState {
+    pub last_tx_fingerprint: [u8; 32], // fingerprint of the last transaction that minted
+    pub last_slot: u64,                // slot of that transaction
+    pub bump: u8,                      // PDA bump, seeds = [b"mint_state"]
+    pub reserved: [u8; 64],            // reserved for future fields
+}
+
+impl MintState {
+    pub const SPACE: usize = 8 + 32 + 8 + 1 + 64;
+
+    /// Record a mint; fails if this transaction (same fingerprint, same slot) already minted
+    pub fn record_mint(&mut self, fingerprint: [u8; 32], slot: u64) -> Result<()> {
+        if self.last_slot == slot && self.last_tx_fingerprint == fingerprint {
+            msg!("Only one mint is allowed per transaction");
+            return Err(ErrorCode::OneMintPerTransaction.into());
+        }
+        self.last_tx_fingerprint = fingerprint;
+        self.last_slot = slot;
+        Ok(())
+    }
+}
+
+/// Fingerprint of the current transaction: hash of the instructions sysvar data without the
+/// trailing 2-byte current instruction index (the bytes `load_current_index_checked` reads)
+pub fn transaction_fingerprint(instructions_sysvar_data: &[u8]) -> Result<[u8; 32]> {
+    let len = instructions_sysvar_data.len();
+    if len < 2 {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    Ok(hash(&instructions_sysvar_data[..len - 2]).to_bytes())
+}
+
 #[program]
 pub mod memo_mint {
     use super::*;
@@ -72,6 +126,7 @@ pub mod memo_mint {
             &ctx.accounts.mint_authority,
             &ctx.accounts.token_account,
             &ctx.accounts.token_program,
+            &mut ctx.accounts.mint_state,
             ctx.bumps.mint_authority,
         )
     }
@@ -90,8 +145,19 @@ pub mod memo_mint {
             &ctx.accounts.mint_authority,
             &ctx.accounts.recipient_token_account,
             &ctx.accounts.token_program,
+            &mut ctx.accounts.mint_state,
             ctx.bumps.mint_authority,
         )
+    }
+
+    /// Create the MintState account (admin only, once; run right after deploying this version)
+    pub fn initialize_mint_state(ctx: Context<InitializeMintState>) -> Result<()> {
+        let mint_state = &mut ctx.accounts.mint_state;
+        mint_state.last_tx_fingerprint = [0u8; 32];
+        mint_state.last_slot = 0;
+        mint_state.bump = ctx.bumps.mint_state;
+        mint_state.reserved = [0u8; 64];
+        Ok(())
     }
 }
 
@@ -102,6 +168,7 @@ fn execute_mint_operation<'info>(
     mint_authority: &AccountInfo<'info>,
     token_account: &InterfaceAccount<'info, TokenAccount>,
     token_program: &Program<'info, Token2022>,
+    mint_state: &mut Account<'info, MintState>,
     mint_authority_bump: u8,
 ) -> Result<()> {
     // Check for memo instruction with length constraints
@@ -109,6 +176,10 @@ fn execute_mint_operation<'info>(
         msg!("No memo instruction found");
         return Err(ErrorCode::MemoRequired.into());
     }
+
+    // One mint per transaction (see MintState); checked and recorded before minting
+    let fingerprint = transaction_fingerprint(&instructions.try_borrow_data()?)?;
+    mint_state.record_mint(fingerprint, Clock::get()?.slot)?;
     
     // mint_authority address and canonical bump are already verified by the
     // `seeds = [b"mint_authority"], bump` constraint in the Accounts struct
@@ -260,6 +331,14 @@ pub struct ProcessMint<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+
+    /// One-mint-per-transaction state (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"mint_state"],
+        bump = mint_state.bump
+    )]
+    pub mint_state: Account<'info, MintState>,
 }
 
 /// Account structure for token minting instruction with recipient specification
@@ -294,6 +373,35 @@ pub struct ProcessMintTo<'info> {
     /// CHECK: Instructions sysvar
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
+
+    /// One-mint-per-transaction state (last, so existing account order is unchanged)
+    #[account(
+        mut,
+        seeds = [b"mint_state"],
+        bump = mint_state.bump
+    )]
+    pub mint_state: Account<'info, MintState>,
+}
+
+/// Account structure for creating MintState (admin only, once)
+#[derive(Accounts)]
+pub struct InitializeMintState<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == AUTHORIZED_ADMIN_PUBKEY @ ErrorCode::UnauthorizedAdmin
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        space = MintState::SPACE,
+        seeds = [b"mint_state"],
+        bump
+    )]
+    pub mint_state: Account<'info, MintState>,
+
+    pub system_program: Program<'info, System>,
 }
 
 /// Error code definitions
@@ -319,6 +427,12 @@ pub enum ErrorCode {
 
     #[msg("Arithmetic overflow detected.")]
     ArithmeticOverflow,
+
+    #[msg("Unauthorized admin: Only the authorized admin can perform this operation.")]
+    UnauthorizedAdmin,
+
+    #[msg("Only one mint is allowed per transaction.")]
+    OneMintPerTransaction,
 }
 
 // Unit tests in separate file

@@ -3,9 +3,9 @@
 ## Executive Summary
 
 **Contract**: memo-mint  
-**Audit Date**: October 27, 2025 (original), revised October 13, 2026  
+**Audit Date**: October 27, 2025 (original), revised October 13 and 14, 2026  
 **Auditor**: Pre-Production Security Review  
-**Version**: Revision 2, program version 0.2.0 (round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
+**Version**: Revision 3, program version 0.3.0 (one mint per transaction; Revision 2: round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
 **Language**: Rust (Anchor Framework)  
 **Network**: X1 (SVM-based)
 
@@ -81,6 +81,8 @@ Every decade start pays exactly 10x less than the previous one, so the long-run 
 | `InvalidMintAuthority` | 6007 | removed |
 | `SupplyLimitReached` | 6008 | 6005 |
 | `ArithmeticOverflow` | 6009 | 6006 |
+| `UnauthorizedAdmin` (Revision 3) | — | 6007 (new) |
+| `OneMintPerTransaction` (Revision 3) | — | 6008 (new) |
 
 **Behavior changes integrators must know**:
 1. **Success log format**: `Minted {amount} units to {owner}, supply before mint: {supply} units` (integer units, 1 token = 1,000,000 units). It replaces `Successfully minted X tokens ... current supply: Y tokens`. Off-chain parsers of the old line must be updated.
@@ -88,6 +90,40 @@ Every decade start pays exactly 10x less than the previous one, so the long-run 
 3. **IDL**: `process_mint_to` now has one argument, `recipient: pubkey`. Upgrade the on-chain IDL after deploying.
 
 **Verification**: 47 unit tests pass (every round number from 10M to 9T and one lamport below each, decade starts, monotonicity, cap edge cases, `process_mint_to` wire format). `process_mint` and `process_mint_to` were exercised on a local validator, including rejection of a mismatched recipient (`UnauthorizedTokenAccount`) and of a missing token account (`AccountNotInitialized`).
+
+---
+
+## Revision 3 Changes (October 14, 2026): One Mint per Transaction
+
+A transaction can now mint at most once, whether it calls memo-mint directly, through chat/blog/forum, or through any other program via CPI. Before this revision one memo could back about 31 mints in one transaction, which made batch mining roughly 3.5x cheaper per token than single mints.
+
+| Item | Details |
+|---|---|
+| Transaction fingerprint | The instructions sysvar holds the serialized top-level instructions followed by a 2-byte current instruction index. Everything except those last 2 bytes is identical for every instruction and every CPI of a transaction, cannot be modified by any program, and includes each instruction's program id, accounts (signers included) and data. Its SHA-256 (`sol_sha256` syscall) is the transaction fingerprint. |
+| New account `MintState` | PDA with seeds `[b"mint_state"]`, 113 bytes: discriminator (8), `last_tx_fingerprint: [u8; 32]`, `last_slot: u64`, `bump: u8`, `reserved: [u8; 64]`. One account for the whole program. |
+| Check | Before minting, `process_mint` and `process_mint_to` compute the fingerprint. If it equals the stored one in the same slot, the mint fails with `OneMintPerTransaction`; otherwise the fingerprint and slot are stored and the mint proceeds. State written by the first mint is visible to later instructions and CPIs of the same transaction, and every mint write-locks `MintState`, so no other transaction can run in between. A failed transaction rolls back, so rejected attempts never change the state. |
+| Why one global account, not per user | Per-user records are bypassed by `process_mint_to` to many wallets or by several signers in one transaction. The fingerprint does not depend on who mints, so any second mint in the same transaction is rejected. Every mint already write-locks the mint account, so the extra global account adds no new write-lock contention. |
+| No caller allowlist needed | The rule needs no list of allowed calling programs and no stack-height check: a program that calls memo-mint several times via CPI is rejected on its second call. A third-party program may still mint once per transaction. |
+| New instruction `initialize_mint_state` | Admin only (`AUTHORIZED_ADMIN_PUBKEY`, the deploy admin key, per network; new in memo-mint). Creates `MintState` once; a second call fails because the account exists. |
+| Accounts | `mint_state` is appended as the **last** account of `process_mint` and `process_mint_to` (writable, seeds and stored bump checked). Existing accounts keep their order. chat `send_memo_to_group`, blog `mint_for_blog` and forum `mint_for_post` pass it as their last account. |
+
+**False positives**: only two transactions of the same user with exactly the same instructions (same memo, same accounts) in the same slot collide; the second fails. Two different users with identical memos never collide, because their signer accounts differ. Identical instructions in a later slot succeed.
+
+**Deploy order (required)**: upgrade memo-mint → run `admin-init-mint-state` → upgrade chat, blog and forum. Until `MintState` exists, every mint fails with `AccountNotInitialized`; until the apps are upgraded, their mint instructions fail with `AccountNotEnoughKeys`. `scripts/deploy-common.sh` runs the init client right after deploying memo-mint and verifies memo-mint's `AUTHORIZED_ADMIN_PUBKEY` against the deploy admin keypair.
+
+**Integrator impact**:
+1. Every `process_mint` / `process_mint_to` must append the `MintState` PDA (`memo_token_client::mint_state_pda()`) as the last account. Old clients fail with `AccountNotEnoughKeys`.
+2. Batch mining (several mints in one transaction) is no longer possible. Each mint needs its own transaction and memo.
+3. The extra account adds 33 bytes to every mint transaction. The longest memo that fits a single-signer `process_mint` transaction drops from 853 to 820 bytes (from 813 to 780 bytes with a ComputeBudget instruction); `process_mint_to` and app mint instructions lose the same 33 bytes.
+
+**Economics**: the cheapest way to mint becomes the single-mint transaction again. On the local validator memo-mint itself uses 15,598 CU per mint, up from 12,483 (+3,115: about 1,600 for the seeds check on `MintState`, the rest for loading and writing the account, the clock read and hashing the sysvar). On X1 that is about +0.00003 XNT per mint (fee = 1,500 + 10 × requested CU). Together with the end of batching, the cost per token (and so the cost-based price ceiling) rises from about 0.00016 XNT (31-mint batches) to about 0.00058 XNT (single mints, mainnet Memo program CU).
+
+**Verification**:
+- 59 unit tests (testnet and mainnet builds), including fingerprints built with the runtime's own instructions sysvar serializer (`construct_instructions_data` / `store_current_index_checked`): identical for every instruction index of a transaction, different when any instruction, account, flag or signer differs.
+- Local validator, full run from a fresh ledger, repeated twice with identical results: 3 pre-init checks (mint before init → `AccountNotInitialized`, non-admin init → `UnauthorizedAdmin`), 3 post-init checks, 36 core cases, all 7 smoke tests, 18 app cases and the 52-case `pen-test-memo-mint` suite.
+- Rejected with `OneMintPerTransaction`, with balance, supply and `MintState` unchanged: 2, 3 and 31 top-level mints; `process_mint` + `process_mint_to` in both orders; two memos with two mints; memo/mint/memo/mint; mints separated by other instructions; `process_mint_to` to two recipients; three signers minting together; a test program calling memo-mint via CPI 2 and 30 times, through `process_mint_to`, nested two levels deep, and combined with a top-level mint; chat `send_memo_to_group` (zero-interval group), blog `mint_for_blog` and forum `mint_for_post` twice in one transaction, combined with a direct mint, and called twice via CPI; burn followed by two mints.
+- Still allowed: single mints (11 in a row), `process_mint_to` to self and others, a single CPI mint from a third-party program, mint plus burn in one transaction, three burns in one transaction, two users with identical memos in the same slot, identical instructions in a later slot.
+- Upgrade path on a local validator, both manually and with `deploy-common.sh`: the old program batches; after the upgrade, old clients fail with `AccountNotEnoughKeys` and new clients fail with `AccountNotInitialized` until the admin init; afterwards single mints succeed and batches are rejected.
 
 ---
 
@@ -114,11 +150,9 @@ This is a **fair-launch mining project** where any user can mint tokens by submi
 3. **Competition Encouraged**: Users are expected to compete for early, higher rewards
 4. **No Anti-Spam Needed**: High transaction volume is the desired behavior
 
-**Multiple Mints per Transaction (confirmed as intentional, Revision 2)**:
-- One memo at index 0 backs every `process_mint` in the same transaction, either as several top-level instructions or as a loop of CPI calls from another program.
-- The memo program's compute cost (about 40k CU for a 70-byte memo on X1) is paid once per transaction, so batching lowers the cost per token to roughly a third of a single mint.
-- A transaction can hold about 31 mints: the runtime caps the instruction trace at 64 entries and each mint uses two (memo-mint plus the Token-2022 CPI). With memos longer than about 300 bytes, the 1,232-byte transaction size limit binds first.
-- Clients may expose batching to users. The effective price ceiling is therefore the batch mint cost, not the single-mint cost.
+**One Mint per Transaction (Revision 3)**:
+- Revision 2 allowed one memo to back about 31 mints in one transaction. Revision 3 allows exactly one mint per transaction, enforced with a transaction fingerprint stored in `MintState` (see Revision 3 Changes). This covers top-level instructions, the apps and any CPI caller.
+- Each mint therefore pays the full memo program cost (about 40k CU for a 70-byte memo on X1). The effective price ceiling is the single-mint cost.
 
 **Security Analysis**:
 - ✅ Transaction fees provide natural rate limiting (network-level)
@@ -1171,9 +1205,9 @@ Rule: in `[d × 10ⁿ, (d+1) × 10ⁿ)` from 10M on, reward = `decade_base × (1
 
 **Audit Report End**
 
-**Audit Date**: October 27, 2025 (original), revised October 13, 2026  
-**Contract Version**: Revision 2 (0.2.0)  
-**Final Status**: ✅ APPROVED FOR MAINNET (Revision 2 pending testnet validation)  
+**Audit Date**: October 27, 2025 (original), revised October 13 and 14, 2026  
+**Contract Version**: Revision 3 (0.3.0)  
+**Final Status**: ✅ APPROVED FOR MAINNET (Revision 3 pending testnet validation)  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
 

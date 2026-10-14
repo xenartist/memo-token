@@ -557,3 +557,237 @@ mod test_coverage_summary {
     // Error paths: All tested
 }
 
+// ============================================================================
+// Tests for one mint per transaction (MintState, transaction_fingerprint)
+// ============================================================================
+
+#[cfg(test)]
+mod one_mint_per_transaction_tests {
+    use super::*;
+    use solana_instruction::{AccountMeta as Meta, BorrowedAccountMeta, BorrowedInstruction};
+    use solana_instructions_sysvar::{construct_instructions_data, store_current_index_checked};
+
+    fn new_state() -> MintState {
+        MintState { last_tx_fingerprint: [0u8; 32], last_slot: 0, bump: 255, reserved: [0u8; 64] }
+    }
+
+    fn is_one_mint_error(result: Result<()>) -> bool {
+        match result {
+            Err(e) => e.to_string().contains("OneMintPerTransaction"),
+            Ok(_) => false,
+        }
+    }
+
+    /// Owned description of an instruction: (program_id, accounts, data)
+    struct Ix {
+        program_id: Pubkey,
+        accounts: Vec<Meta>,
+        data: Vec<u8>,
+    }
+
+    /// Instructions sysvar data exactly as the runtime builds it, with the current index set
+    fn sysvar_data(ixs: &[Ix], current_index: u16) -> Vec<u8> {
+        let borrowed: Vec<BorrowedInstruction> = ixs
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: ix.accounts.iter().map(|m| BorrowedAccountMeta {
+                    pubkey: &m.pubkey,
+                    is_signer: m.is_signer,
+                    is_writable: m.is_writable,
+                }).collect(),
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        store_current_index_checked(&mut data, current_index).unwrap();
+        data
+    }
+
+    fn memo_ix(text: &str) -> Ix {
+        Ix { program_id: MEMO_PROGRAM_ID, accounts: vec![], data: text.as_bytes().to_vec() }
+    }
+
+    fn mint_ix(user: Pubkey) -> Ix {
+        Ix {
+            program_id: crate::ID,
+            accounts: vec![Meta::new(user, true), Meta::new(AUTHORIZED_MINT_PUBKEY, false)],
+            data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        }
+    }
+
+    fn tx(user: Pubkey, memo: &str, mints: usize) -> Vec<Ix> {
+        let mut ixs = vec![memo_ix(memo)];
+        for _ in 0..mints {
+            ixs.push(mint_ix(user));
+        }
+        ixs
+    }
+
+    const MEMO: &str = "a memo that is long enough for the memo-mint program minimum length check!!";
+
+    #[test]
+    fn test_mint_state_space() {
+        assert_eq!(MintState::SPACE, 8 + 32 + 8 + 1 + 64);
+        assert_eq!(MintState::SPACE, 113);
+    }
+
+    #[test]
+    fn test_fingerprint_ignores_only_current_index() {
+        let user = Pubkey::new_unique();
+        let ixs = tx(user, MEMO, 3);
+        // every instruction index of the same transaction gives the same fingerprint
+        let f1 = transaction_fingerprint(&sysvar_data(&ixs, 1)).unwrap();
+        let f2 = transaction_fingerprint(&sysvar_data(&ixs, 2)).unwrap();
+        let f3 = transaction_fingerprint(&sysvar_data(&ixs, 3)).unwrap();
+        assert_eq!(f1, f2);
+        assert_eq!(f1, f3);
+        // and the excluded part is exactly what the runtime reads as the current index
+        let data = sysvar_data(&ixs, 3);
+        assert_eq!(u16::from_le_bytes([data[data.len() - 2], data[data.len() - 1]]), 3);
+    }
+
+    #[test]
+    fn test_fingerprint_differs_when_anything_differs() {
+        let user = Pubkey::new_unique();
+        let other_user = Pubkey::new_unique();
+        let base = transaction_fingerprint(&sysvar_data(&tx(user, MEMO, 1), 1)).unwrap();
+
+        // different signer, same memo (two users with identical memos in the same slot)
+        let different_user = transaction_fingerprint(&sysvar_data(&tx(other_user, MEMO, 1), 1)).unwrap();
+        assert_ne!(base, different_user);
+
+        // different memo
+        let different_memo = transaction_fingerprint(&sysvar_data(&tx(user, &format!("{}?", MEMO), 1), 1)).unwrap();
+        assert_ne!(base, different_memo);
+
+        // different instruction count
+        let more_mints = transaction_fingerprint(&sysvar_data(&tx(user, MEMO, 2), 1)).unwrap();
+        assert_ne!(base, more_mints);
+
+        // different account flags
+        let mut ixs = tx(user, MEMO, 1);
+        ixs[1].accounts[1].is_writable = false;
+        let different_flags = transaction_fingerprint(&sysvar_data(&ixs, 1)).unwrap();
+        assert_ne!(base, different_flags);
+
+        // identical transactions give identical fingerprints
+        let same = transaction_fingerprint(&sysvar_data(&tx(user, MEMO, 1), 1)).unwrap();
+        assert_eq!(base, same);
+    }
+
+    #[test]
+    fn test_fingerprint_rejects_too_short_data() {
+        assert!(transaction_fingerprint(&[]).is_err());
+        assert!(transaction_fingerprint(&[0u8]).is_err());
+        // 2 bytes = only the index: fingerprint of empty data, still valid
+        assert!(transaction_fingerprint(&[0u8, 0u8]).is_ok());
+    }
+
+    #[test]
+    fn test_first_mint_recorded() {
+        let mut state = new_state();
+        let fp = [7u8; 32];
+        assert!(state.record_mint(fp, 100).is_ok());
+        assert_eq!(state.last_tx_fingerprint, fp);
+        assert_eq!(state.last_slot, 100);
+    }
+
+    #[test]
+    fn test_second_mint_in_same_transaction_rejected() {
+        let mut state = new_state();
+        let fp = [7u8; 32];
+        assert!(state.record_mint(fp, 100).is_ok());
+        assert!(is_one_mint_error(state.record_mint(fp, 100)));
+        // rejected attempts do not change the state
+        assert_eq!(state.last_tx_fingerprint, fp);
+        assert_eq!(state.last_slot, 100);
+        assert!(is_one_mint_error(state.record_mint(fp, 100)));
+    }
+
+    #[test]
+    fn test_other_transaction_in_same_slot_allowed() {
+        let mut state = new_state();
+        assert!(state.record_mint([1u8; 32], 100).is_ok());
+        assert!(state.record_mint([2u8; 32], 100).is_ok());
+        assert!(state.record_mint([3u8; 32], 100).is_ok());
+        assert_eq!(state.last_tx_fingerprint, [3u8; 32]);
+    }
+
+    #[test]
+    fn test_identical_transaction_in_later_slot_allowed() {
+        let mut state = new_state();
+        let fp = [9u8; 32];
+        assert!(state.record_mint(fp, 100).is_ok());
+        assert!(state.record_mint(fp, 101).is_ok());
+        assert_eq!(state.last_slot, 101);
+    }
+
+    #[test]
+    fn test_fresh_state_accepts_first_mint_at_slot_zero() {
+        // a real fingerprint is a SHA-256 hash, never all zeros, so the initial state never matches
+        let mut state = new_state();
+        let fp = transaction_fingerprint(&sysvar_data(&tx(Pubkey::new_unique(), MEMO, 1), 1)).unwrap();
+        assert_ne!(fp, [0u8; 32]);
+        assert!(state.record_mint(fp, 0).is_ok());
+    }
+
+    #[test]
+    fn test_batched_transaction_mints_once() {
+        // [memo, mint, mint, mint]: instructions 1, 2, 3 see the same fingerprint
+        let user = Pubkey::new_unique();
+        let ixs = tx(user, MEMO, 3);
+        let mut state = new_state();
+        let slot = 12345;
+        let results: Vec<bool> = (1..=3u16)
+            .map(|i| state.record_mint(transaction_fingerprint(&sysvar_data(&ixs, i)).unwrap(), slot).is_ok())
+            .collect();
+        assert_eq!(results, vec![true, false, false]);
+    }
+
+    #[test]
+    fn test_cpi_loop_mints_once() {
+        // a program at index 1 calling memo-mint N times via CPI: every call sees index 1
+        let ixs = vec![memo_ix(MEMO), Ix { program_id: Pubkey::new_unique(), accounts: vec![], data: vec![30] }];
+        let data = sysvar_data(&ixs, 1);
+        let mut state = new_state();
+        let ok: usize = (0..30)
+            .filter(|_| state.record_mint(transaction_fingerprint(&data).unwrap(), 777).is_ok())
+            .count();
+        assert_eq!(ok, 1);
+    }
+
+    #[test]
+    fn test_interleaved_transactions_each_mint_once() {
+        // transactions never interleave inside one transaction (MintState is write-locked),
+        // but consecutive transactions alternate freely
+        let a = transaction_fingerprint(&sysvar_data(&tx(Pubkey::new_unique(), MEMO, 1), 1)).unwrap();
+        let b = transaction_fingerprint(&sysvar_data(&tx(Pubkey::new_unique(), MEMO, 1), 1)).unwrap();
+        let mut state = new_state();
+        assert!(state.record_mint(a, 5).is_ok());
+        assert!(state.record_mint(b, 5).is_ok());
+        assert!(state.record_mint(a, 6).is_ok());
+    }
+
+    #[test]
+    fn test_admin_pubkey_per_network() {
+        #[cfg(feature = "mainnet")]
+        assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
+        #[cfg(not(feature = "mainnet"))]
+        assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
+    }
+
+    #[test]
+    fn test_error_codes_unchanged_and_appended() {
+        let code = |e: ErrorCode| u32::from(e);
+        assert_eq!(code(ErrorCode::MemoRequired), 6000);
+        assert_eq!(code(ErrorCode::MemoTooShort), 6001);
+        assert_eq!(code(ErrorCode::InvalidTokenAccount), 6002);
+        assert_eq!(code(ErrorCode::UnauthorizedMint), 6003);
+        assert_eq!(code(ErrorCode::UnauthorizedTokenAccount), 6004);
+        assert_eq!(code(ErrorCode::SupplyLimitReached), 6005);
+        assert_eq!(code(ErrorCode::ArithmeticOverflow), 6006);
+        assert_eq!(code(ErrorCode::UnauthorizedAdmin), 6007);
+        assert_eq!(code(ErrorCode::OneMintPerTransaction), 6008);
+    }
+}

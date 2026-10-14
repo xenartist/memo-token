@@ -52,6 +52,10 @@ name = "admin-init-global-burn-stats"
 path = "burn/src/admin-init-global-burn-stats.rs"
 
 [[bin]]
+name = "admin-init-mint-state"
+path = "mint/src/admin-init-mint-state.rs"
+
+[[bin]]
 name = "check-memo-burn-user-global-burn-stats"
 path = "burn/src/check-memo-burn-user-global-burn-stats.rs"
 

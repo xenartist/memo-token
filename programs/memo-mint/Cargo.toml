@@ -1,6 +1,6 @@
 [package]
 name = "memo-mint"
-version = "0.2.0"
+version = "0.3.0"
 description = "Simplified memo mint contract"
 edition = "2021"
 
@@ -24,3 +24,9 @@ mainnet = []
 anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
 spl-memo = "6.0"
+solana-sha256-hasher = "2.3.0"  # SHA-256 via the sol_sha256 syscall on-chain
+
+[dev-dependencies]
+# Runtime serializer for the instructions sysvar, used to test the transaction fingerprint
+solana-instructions-sysvar = "2.2.2"
+solana-instruction = "2.3.0"

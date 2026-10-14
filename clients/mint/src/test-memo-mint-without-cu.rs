@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if test_scenario == "custom-length" {
         println!("ERROR: custom-length test requires memo_length parameter");
         println!("Usage: cargo run -- custom-length <memo_length>");
-        println!("Example: cargo run -- custom-length 800");
+        println!("Example: cargo run -- custom-length 750");
         return Ok(());
     } else {
         None
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "valid-memo" => test_valid_memo(),
         "long-memo" => test_long_memo(),
         "memo-69" => test_memo_exact_69(),
-        "memo-800" => test_memo_exact_800(),
+        "memo-750" => test_memo_exact_750(),
         "custom-length" => test_custom_length(custom_memo_length.unwrap()),
         "help" | _ => {
             print_help(&args[0]);
@@ -68,12 +68,12 @@ fn print_help(program_name: &str) {
     println!("  short-memo      - Test mint with memo < 69 bytes (should fail)");
     println!("  memo-69         - Test mint with memo exactly 69 bytes (should succeed)");
     println!("  valid-memo      - Test mint with memo of at least 69 bytes (should succeed)");
-    println!("  memo-800        - Test mint with memo exactly 800 bytes (should succeed)");
+    println!("  memo-750        - Test mint with memo exactly 750 bytes (should succeed)");
     println!("  long-memo       - Test mint with memo too large for the transaction (should fail at the 1232-byte transaction size limit)");
     println!("  custom-length   - Test mint with custom memo length (requires memo_length parameter)");
     println!("\nExamples:");
     println!("  {} valid-memo", program_name);
-    println!("  {} custom-length 800    # Test 800-byte memo", program_name);
+    println!("  {} custom-length 750    # Test 750-byte memo", program_name);
     println!("  {} custom-length 50     # Test 50-byte memo", program_name);
     println!("  {} custom-length 1000   # Test 1000-byte memo", program_name);
     println!("\n⚠️  Note: This client does NOT set compute unit limits!");
@@ -113,7 +113,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     // Analyze expected result
     let expected_result = if actual_length < 69 {
         "FAIL (< 69 bytes)"
-    } else if actual_length > 800 {
+    } else if actual_length > 750 {
         "SUCCESS if the transaction fits in 1232 bytes (no contract maximum)"
     } else {
         "SUCCESS (>= 69 bytes)"
@@ -164,7 +164,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
                 println!("   💡 Try using the standard test-memo-mint client with CU optimization");
             } else if actual_length < 69 {
                 println!("   ✅ EXPECTED FAILURE: Memo < 69 bytes");
-            } else if actual_length > 800 {
+            } else if actual_length > 750 {
                 println!("   ✅ EXPECTED FAILURE if the transaction exceeded 1232 bytes (the contract has no maximum memo length)");
             } else if error_str.contains("SupplyLimitReached") {
                 println!("   ✅ EXPECTED FAILURE: Supply limit reached");
@@ -397,8 +397,8 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing mint with memo EXACTLY 800 bytes (expected to succeed)...\n");
+fn test_memo_exact_750() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🧪 Testing mint with memo EXACTLY 750 bytes (expected to succeed)...\n");
     
     let client = create_rpc_client();
     let payer = load_payer_keypair();
@@ -410,10 +410,10 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
     // Get current token balance (raw lamports)
     let balance_before = get_token_balance_raw(&client, &token_account);
     
-    // Create memo with exactly 800 bytes
-    let memo_text = create_memo_with_exact_length(800);
+    // Create memo with exactly 750 bytes
+    let memo_text = create_memo_with_exact_length(750);
     
-    println!("Memo length: {} bytes (exactly 800 bytes)", memo_text.len());
+    println!("Memo length: {} bytes (exactly 750 bytes)", memo_text.len());
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
@@ -423,7 +423,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
     let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);
     
     // Execute transaction WITHOUT CU setting
-    let result = execute_transaction_without_cu(&client, &payer, vec![memo_ix, mint_ix], "Exact 800 Bytes Memo Test");
+    let result = execute_transaction_without_cu(&client, &payer, vec![memo_ix, mint_ix], "Exact 750 Bytes Memo Test");
     
     match result {
         Ok(signature) => {
@@ -443,7 +443,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
             let (is_valid, description) = validate_mint_amount(raw_minted);
             if is_valid {
                 println!("   ✅ Valid mint amount: {}", description);
-                println!("   ✅ Boundary condition (800 bytes) handled correctly");
+                println!("   ✅ Boundary condition (750 bytes) handled correctly");
             } else {
                 println!("   ❌ {}", description);
             }
@@ -456,7 +456,7 @@ fn test_memo_exact_800() -> Result<(), Box<dyn std::error::Error>> {
             } else if e.to_string().contains("exceeded") || e.to_string().contains("compute") {
                 println!("   ⚠️  Possible CU issue: May need explicit CU setting");
             } else {
-                println!("   The contract should accept memos of exactly 800 bytes.");
+                println!("   The contract should accept memos of exactly 750 bytes.");
             }
         }
     }
@@ -676,6 +676,7 @@ fn create_mint_instruction(
         AccountMeta::new(*token_account, false),          // token_account
         AccountMeta::new_readonly(token_2022_id(), false), // token_program (Token-2022)
         AccountMeta::new_readonly(solana_program::sysvar::instructions::id(), false), // instructions sysvar
+        AccountMeta::new(memo_token_client::mint_state_pda(), false), // mint_state (one mint per transaction)
     ];
     
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
