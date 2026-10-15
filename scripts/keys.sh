@@ -124,7 +124,16 @@ ask_passphrase() {
     require_tty
     if [ -n "${sample}" ]; then
         PASSPHRASE=$(read_secret "Passphrase for ${env} keys: ")
-        gpg_decrypt "${sample}" /dev/null 2>/dev/null || die "Wrong passphrase for ${env}"
+        [ -n "${PASSPHRASE}" ] || die "Empty passphrase (nothing was read from the terminal)"
+        local gpg_error
+        # Decrypt to stdout and discard it: gpg 2.5 writes files via "<name>.part", which fails for /dev/null
+        if ! gpg_error=$(gpg_decrypt "${sample}" - 2>&1 >/dev/null); then
+            if echo "${gpg_error}" | grep -q "Bad session key"; then
+                die "Wrong passphrase for ${env}"
+            fi
+            die "GPG could not decrypt ${sample}:
+${gpg_error}"
+        fi
     else
         print_info "No ${env} keys yet: choose the ${env} passphrase (use a different one for each network)"
         PASSPHRASE=$(read_secret "New passphrase for ${env} keys: ")
