@@ -1,7 +1,7 @@
 //! Unit tests for memo-mint contract
 //! 
 //! This test suite provides comprehensive coverage of all core functions:
-//! - calculate_dynamic_mint_amount: Round-number emission curve (10M, 20M, ... 100M, 200M, ...)
+//! - calculate_dynamic_mint_amount: Round-number emission curve (steps at 10M, 20M, ... 100M, 200M, ...)
 //! - validate_memo_length: Memo minimum-length validation (no maximum)
 
 use super::*;
@@ -16,25 +16,29 @@ mod calculate_dynamic_mint_amount_tests {
 
     const M: u64 = DECIMAL_FACTOR; // 1 token in lamports
 
-    /// Expected reward at a supply given in whole tokens, computed independently
-    /// from the curve definition: below 10M -> 1 token; otherwise in the decade
-    /// [10M * 10^n, 10M * 10^(n+1)) with leading digit d -> (1 / 10^n) * (11 - d) / 10.
-    fn expected_reward(supply_tokens: u64) -> u64 {
-        if supply_tokens < CURVE_START_TOKENS {
+    /// Expected reward (lamports) at a supply given in lamports, from the curve definition:
+    /// up to and including 10M tokens -> 1 token; above that, supply in (d * 10^k, (d+1) * 10^k]
+    /// inside the decade (10M * 10^n, 10M * 10^(n+1)] -> (1 token / 10^n) * (10 - d) / 10.
+    /// Uses u128 and explicit interval checks rather than the program's loop.
+    fn expected_reward(supply: u64) -> u64 {
+        let s = supply as u128;
+        let start = CURVE_START_LAMPORTS as u128;
+        if s <= start {
             return BASE_MINT_AMOUNT;
         }
-        let mut magnitude = CURVE_START_TOKENS;
-        let mut n = 0u32;
-        while supply_tokens >= magnitude * 10 {
-            magnitude *= 10;
-            n += 1;
+        for n in 0..CURVE_DECADES {
+            let magnitude = start * 10u128.pow(n);
+            for d in 1..=9u128 {
+                if s > d * magnitude && s <= (d + 1) * magnitude {
+                    return (BASE_MINT_AMOUNT as u128 / 10u128.pow(n) * (10 - d) / 10) as u64;
+                }
+            }
         }
-        let d = supply_tokens / magnitude;
-        BASE_MINT_AMOUNT / 10u64.pow(n) * (11 - d) / 10
+        panic!("supply {} is beyond the curve", supply);
     }
 
     // ------------------------------------------------------------------------
-    // Below the curve start: 0 - 10M tokens (1.0 token per mint)
+    // Up to and including the curve start: 0 - 10M tokens (1.0 token per mint)
     // ------------------------------------------------------------------------
 
     #[test]
@@ -44,99 +48,99 @@ mod calculate_dynamic_mint_amount_tests {
 
     #[test]
     fn test_current_mainnet_supply_mints_one_token() {
-        // Mainnet supply on 2026-10-13: 8,730,756 MEMO
+        // Mainnet supply on 2026-10-15: 8,730,756 MEMO
         assert_eq!(calculate_dynamic_mint_amount(8_730_756 * M).unwrap(), M);
     }
 
     #[test]
-    fn test_one_lamport_below_curve_start_mints_one_token() {
+    fn test_exactly_10m_still_mints_one_token() {
         assert_eq!(calculate_dynamic_mint_amount(CURVE_START_LAMPORTS - 1).unwrap(), M);
+        assert_eq!(calculate_dynamic_mint_amount(CURVE_START_LAMPORTS).unwrap(), M);
+    }
+
+    #[test]
+    fn test_first_mint_above_10m_pays_0_9() {
+        assert_eq!(calculate_dynamic_mint_amount(CURVE_START_LAMPORTS + 1).unwrap(), 900_000);
+        // e.g. after the 1-token mint at exactly 10M
+        assert_eq!(calculate_dynamic_mint_amount(10_000_001 * M).unwrap(), 900_000);
     }
 
     // ------------------------------------------------------------------------
-    // First decade: 10M - 100M tokens (1.0 -> 0.2, one tenth less per 10M)
+    // First decade: above 10M up to 100M (1 -> 0.1, one tenth less above 10M, 20M, ... 90M)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_first_decade_round_numbers() {
-        let cases: [(u64, u64); 9] = [
-            (10_000_000, 1_000_000), // 10M: 1.0
-            (20_000_000, 900_000),   // 20M: 0.9
-            (30_000_000, 800_000),   // 30M: 0.8
-            (40_000_000, 700_000),   // 40M: 0.7
-            (50_000_000, 600_000),   // 50M: 0.6
-            (60_000_000, 500_000),   // 60M: 0.5
-            (70_000_000, 400_000),   // 70M: 0.4
-            (80_000_000, 300_000),   // 80M: 0.3
-            (90_000_000, 200_000),   // 90M: 0.2
+    fn test_first_decade_steps() {
+        // (round number in tokens, reward at exactly it, reward one lamport above it)
+        let cases: [(u64, u64, u64); 9] = [
+            (10_000_000, 1_000_000, 900_000), // 10M: 1, above: 0.9
+            (20_000_000, 900_000, 800_000),   // 20M: 0.9, above: 0.8
+            (30_000_000, 800_000, 700_000),
+            (40_000_000, 700_000, 600_000),
+            (50_000_000, 600_000, 500_000),
+            (60_000_000, 500_000, 400_000),
+            (70_000_000, 400_000, 300_000),
+            (80_000_000, 300_000, 200_000),
+            (90_000_000, 200_000, 100_000),   // 90M: 0.2, above: 0.1
         ];
-        for (supply_tokens, expected) in cases {
-            assert_eq!(
-                calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
-                expected,
-                "Wrong reward at {} tokens",
-                supply_tokens
-            );
+        for (tokens, at, above) in cases {
+            assert_eq!(calculate_dynamic_mint_amount(tokens * M).unwrap(), at, "Wrong reward at {} tokens", tokens);
+            assert_eq!(calculate_dynamic_mint_amount(tokens * M + 1).unwrap(), above, "Wrong reward above {} tokens", tokens);
         }
     }
 
     #[test]
     fn test_reward_constant_inside_a_step() {
-        // Anywhere in [20M, 30M) pays 0.9
-        for supply in [20_000_000 * M, 25_000_000 * M, 30_000_000 * M - 1] {
-            assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), 900_000);
+        // Anywhere in (20M, 30M] pays 0.8
+        for supply in [20_000_000 * M + 1, 25_000_000 * M, 30_000_000 * M] {
+            assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), 800_000);
         }
     }
 
     #[test]
-    fn test_step_changes_exactly_at_round_number() {
-        assert_eq!(calculate_dynamic_mint_amount(20_000_000 * M - 1).unwrap(), 1_000_000);
-        assert_eq!(calculate_dynamic_mint_amount(20_000_000 * M).unwrap(), 900_000);
-    }
-
-    #[test]
-    fn test_just_below_100m_pays_0_2() {
-        assert_eq!(calculate_dynamic_mint_amount(100_000_000 * M - 1).unwrap(), 200_000);
+    fn test_exactly_100m_pays_0_1_and_above_pays_0_09() {
+        assert_eq!(calculate_dynamic_mint_amount(100_000_000 * M).unwrap(), 100_000);
+        assert_eq!(calculate_dynamic_mint_amount(100_000_000 * M + 1).unwrap(), 90_000);
     }
 
     // ------------------------------------------------------------------------
-    // Decade starts: 10M -> 1, 100M -> 0.1, 1B -> 0.01, ... (10x per decade)
+    // Decade ends: 10M -> 1, 100M -> 0.1, 1B -> 0.01, ... (10x per decade)
     // ------------------------------------------------------------------------
 
     #[test]
-    fn test_decade_starts_are_powers_of_ten() {
-        let cases: [(u64, u64); 6] = [
-            (10_000_000, 1_000_000),     // 10M: 1
-            (100_000_000, 100_000),      // 100M: 0.1
-            (1_000_000_000, 10_000),     // 1B: 0.01
-            (10_000_000_000, 1_000),     // 10B: 0.001
-            (100_000_000_000, 100),      // 100B: 0.0001
-            (1_000_000_000_000, 10),     // 1T: 0.00001
+    fn test_decade_ends_are_powers_of_ten() {
+        // (decade end in tokens, reward at exactly it, reward one lamport above it)
+        let cases: [(u64, u64, u64); 6] = [
+            (10_000_000, 1_000_000, 900_000),   // 10M: 1 / 0.9
+            (100_000_000, 100_000, 90_000),     // 100M: 0.1 / 0.09
+            (1_000_000_000, 10_000, 9_000),     // 1B: 0.01 / 0.009
+            (10_000_000_000, 1_000, 900),       // 10B: 0.001 / 0.0009
+            (100_000_000_000, 100, 90),         // 100B: 0.0001 / 0.00009
+            (1_000_000_000_000, 10, 9),         // 1T: 0.00001 / 0.000009
         ];
-        for (supply_tokens, expected) in cases {
-            assert_eq!(
-                calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
-                expected,
-                "Wrong reward at decade start {} tokens",
-                supply_tokens
-            );
+        for (tokens, at, above) in cases {
+            assert_eq!(calculate_dynamic_mint_amount(tokens * M).unwrap(), at, "Wrong reward at {} tokens", tokens);
+            assert_eq!(calculate_dynamic_mint_amount(tokens * M + 1).unwrap(), above, "Wrong reward above {} tokens", tokens);
         }
     }
 
     #[test]
-    fn test_second_decade_round_numbers() {
+    fn test_second_decade_steps() {
+        // Above 100M up to 1B: 0.09 -> 0.01
         assert_eq!(calculate_dynamic_mint_amount(200_000_000 * M).unwrap(), 90_000); // 200M: 0.09
-        assert_eq!(calculate_dynamic_mint_amount(500_000_000 * M).unwrap(), 60_000); // 500M: 0.06
-        assert_eq!(calculate_dynamic_mint_amount(900_000_000 * M).unwrap(), 20_000); // 900M: 0.02
-        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000 * M - 1).unwrap(), 20_000);
+        assert_eq!(calculate_dynamic_mint_amount(200_000_000 * M + 1).unwrap(), 80_000); // above 200M: 0.08
+        assert_eq!(calculate_dynamic_mint_amount(500_000_000 * M + 1).unwrap(), 50_000); // above 500M: 0.05
+        assert_eq!(calculate_dynamic_mint_amount(900_000_000 * M + 1).unwrap(), 10_000); // above 900M: 0.01
+        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000 * M).unwrap(), 10_000); // 1B: 0.01
     }
 
     #[test]
-    fn test_last_decade_round_numbers() {
-        // 1T - 10T: 10 lamports down to 2 lamports
-        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000_000 * M).unwrap(), 10);
-        assert_eq!(calculate_dynamic_mint_amount(5_000_000_000_000 * M).unwrap(), 6);
+    fn test_last_decade_steps() {
+        // Above 1T up to the cap: 9 lamports down to 1 lamport
+        assert_eq!(calculate_dynamic_mint_amount(1_000_000_000_000 * M + 1).unwrap(), 9);
+        assert_eq!(calculate_dynamic_mint_amount(5_000_000_000_000 * M + 1).unwrap(), 5);
         assert_eq!(calculate_dynamic_mint_amount(9_000_000_000_000 * M).unwrap(), 2);
+        assert_eq!(calculate_dynamic_mint_amount(9_000_000_000_000 * M + 1).unwrap(), 1);
     }
 
     // ------------------------------------------------------------------------
@@ -145,22 +149,19 @@ mod calculate_dynamic_mint_amount_tests {
 
     #[test]
     fn test_every_round_number_matches_definition() {
-        // All 54 round numbers d * 10^k from 10M to 9T, plus one lamport below each
+        // All 54 round numbers d * 10^k from 10M to 9T: one lamport below, exactly at, one lamport above
         let mut magnitude = CURVE_START_TOKENS;
         for _ in 0..CURVE_DECADES {
             for d in 1..=9u64 {
-                let supply_tokens = d * magnitude;
-                assert_eq!(
-                    calculate_dynamic_mint_amount(supply_tokens * M).unwrap(),
-                    expected_reward(supply_tokens),
-                    "Mismatch at {} tokens",
-                    supply_tokens
-                );
-                let below = calculate_dynamic_mint_amount(supply_tokens * M - 1).unwrap();
-                assert_eq!(below, expected_reward(supply_tokens - 1), "Mismatch just below {} tokens", supply_tokens);
+                let supply = d * magnitude * M;
+                for s in [supply - 1, supply, supply + 1] {
+                    assert_eq!(calculate_dynamic_mint_amount(s).unwrap(), expected_reward(s), "Mismatch at {} lamports", s);
+                }
             }
             magnitude *= 10;
         }
+        // And the cap side of the last step
+        assert_eq!(calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 1).unwrap(), expected_reward(MAX_SUPPLY_LAMPORTS - 1));
     }
 
     #[test]
@@ -185,7 +186,7 @@ mod calculate_dynamic_mint_amount_tests {
         let mut magnitude = CURVE_START_TOKENS;
         for _ in 0..CURVE_DECADES {
             for d in 1..=9u64 {
-                assert!(calculate_dynamic_mint_amount(d * magnitude * M).unwrap() >= 1);
+                assert!(calculate_dynamic_mint_amount(d * magnitude * M + 1).unwrap() >= 1);
             }
             magnitude *= 10;
         }
@@ -196,7 +197,7 @@ mod calculate_dynamic_mint_amount_tests {
         assert_eq!(CURVE_START_LAMPORTS, 10_000_000 * DECIMAL_FACTOR);
         assert_eq!(BASE_MINT_AMOUNT, 1_000_000);
         assert_eq!(CURVE_START_LAMPORTS * 10u64.pow(CURVE_DECADES), MAX_SUPPLY_LAMPORTS);
-        // The curve would reach exactly 1 lamport at max supply
+        // The last step (9T, 10T) pays exactly 1 lamport
         assert_eq!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES), 1);
     }
 
@@ -233,17 +234,17 @@ mod calculate_dynamic_mint_amount_tests {
 
     #[test]
     fn test_last_mint_fills_supply_exactly() {
-        // In the last step the reward is 2 lamports, so supply = max - 2 can still mint
-        let amount = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 2).unwrap();
-        assert_eq!(amount, 2);
-        assert_eq!(MAX_SUPPLY_LAMPORTS - 2 + amount, MAX_SUPPLY_LAMPORTS);
+        // In the last step the reward is 1 lamport, so supply = max - 1 mints the very last lamport
+        let amount = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 1).unwrap();
+        assert_eq!(amount, 1);
+        assert_eq!(MAX_SUPPLY_LAMPORTS - 1 + amount, MAX_SUPPLY_LAMPORTS);
     }
 
     #[test]
-    fn test_max_supply_would_exceed_after_mint() {
-        // One lamport below max: the 2-lamport reward would overshoot the cap
-        let result = calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 1);
-        assert!(result.is_err(), "Should fail if minting would exceed max supply");
+    fn test_mint_never_overshoots_max_supply() {
+        // The 1-lamport last step lands exactly on the cap, and nothing mints at the cap
+        assert_eq!(calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS - 2).unwrap(), 1);
+        assert!(calculate_dynamic_mint_amount(MAX_SUPPLY_LAMPORTS).is_err());
     }
 
     // ------------------------------------------------------------------------
@@ -466,14 +467,17 @@ mod integration_tests {
     fn test_mint_amount_round_numbers_in_units() {
         let test_cases = vec![
             (0, 1_000_000),
-            (20_000_000 * DECIMAL_FACTOR, 900_000),
-            (90_000_000 * DECIMAL_FACTOR, 200_000),
+            (10_000_000 * DECIMAL_FACTOR, 1_000_000),
+            (10_000_000 * DECIMAL_FACTOR + 1, 900_000),
+            (20_000_000 * DECIMAL_FACTOR + 1, 800_000),
+            (90_000_000 * DECIMAL_FACTOR + 1, 100_000),
             (100_000_000 * DECIMAL_FACTOR, 100_000),
-            (200_000_000 * DECIMAL_FACTOR, 90_000),
-            (1_000_000_000 * DECIMAL_FACTOR, 10_000),
-            (10_000_000_000 * DECIMAL_FACTOR, 1_000),
-            (100_000_000_000 * DECIMAL_FACTOR, 100),
-            (1_000_000_000_000 * DECIMAL_FACTOR, 10),
+            (100_000_000 * DECIMAL_FACTOR + 1, 90_000),
+            (1_000_000_000 * DECIMAL_FACTOR + 1, 9_000),
+            (10_000_000_000 * DECIMAL_FACTOR + 1, 900),
+            (100_000_000_000 * DECIMAL_FACTOR + 1, 90),
+            (1_000_000_000_000 * DECIMAL_FACTOR + 1, 9),
+            (9_000_000_000_000 * DECIMAL_FACTOR + 1, 1),
         ];
 
         for (supply, expected) in test_cases {
@@ -493,9 +497,9 @@ mod integration_tests {
         let memo_result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
         assert!(memo_result.is_ok(), "Valid memo should pass");
 
-        let supply = 50_000_000 * DECIMAL_FACTOR; // 50M tokens
+        let supply = 55_000_000 * DECIMAL_FACTOR; // 55M tokens
         let mint_amount = calculate_dynamic_mint_amount(supply).unwrap();
-        assert_eq!(mint_amount, 600_000); // 0.6 token
+        assert_eq!(mint_amount, 500_000); // 0.5 token
     }
 
     #[test]
@@ -508,7 +512,7 @@ mod integration_tests {
 
     #[test]
     fn test_curve_decade_relationship() {
-        // Each decade start pays 10x less than the previous one
+        // Each decade end (10M, 100M, 1B, ...) pays 10x less than the previous one
         let mut supply_tokens = CURVE_START_TOKENS;
         let mut previous = calculate_dynamic_mint_amount(supply_tokens * DECIMAL_FACTOR).unwrap();
         for _ in 1..CURVE_DECADES {

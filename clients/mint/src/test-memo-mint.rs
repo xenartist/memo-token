@@ -197,7 +197,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     println!("   Actual length: {} bytes", actual_length);
     println!("   Contract minimum: 69 bytes (no maximum; the transaction size limit applies)");
     println!("   Transaction size limit: 1232 bytes including all instructions");
-    println!("   Mint amount: follows the round-number emission curve (1 token below 20M supply)");
+    println!("   Mint amount: follows the round-number emission curve (1 token up to 10M supply)");
     
     if actual_length != target_length {
         println!("   ⚠️  Note: Actual length differs from target due to JSON formatting");

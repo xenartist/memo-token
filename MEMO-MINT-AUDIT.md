@@ -3,9 +3,9 @@
 ## Executive Summary
 
 **Contract**: memo-mint  
-**Audit Date**: October 27, 2025 (original), revised October 13 and 14, 2026  
+**Audit Date**: October 27, 2025 (original), revised October 13, 14 and 15, 2026  
 **Auditor**: Pre-Production Security Review  
-**Version**: Revision 3, program version 0.3.0 (one mint per transaction; Revision 2: round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
+**Version**: Revision 4, program version 0.4.0 (emission curve steps down just above 10M; Revision 3: one mint per transaction; Revision 2: round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
 **Language**: Rust (Anchor Framework)  
 **Network**: X1 (SVM-based)
 
@@ -28,7 +28,7 @@ The memo-mint contract implements a dynamic token minting mechanism with supply-
 ## Contract Overview
 
 ### Purpose
-The memo-mint contract enables users to mint MEMO tokens by submitting memo instructions. The minting amount decreases as circulating supply increases, stepping down at every round number (10M, 20M, ..., 100M, 200M, ...) from 1 token to 1 lamport (0.000001 token) at the 10 trillion cap.
+The memo-mint contract enables users to mint MEMO tokens by submitting memo instructions. The minting amount decreases as circulating supply increases, stepping down just above every round number (10M, 20M, ..., 100M, 200M, ...) from 1 token to 1 lamport (0.000001 token) in the last step before the 10 trillion cap.
 
 ### Key Features
 - Dynamic mint amounts based on a round-number emission curve
@@ -39,18 +39,18 @@ The memo-mint contract enables users to mint MEMO tokens by submitting memo inst
 - Dual network support (testnet/mainnet)
 
 ### Emission Curve
-- **Below 10M tokens**: 1 token per mint
-- **From 10M tokens**: supply in `[d × 10ⁿ, (d+1) × 10ⁿ)` (leading digit `d` = 1..9) pays `decade_base × (11 − d) / 10`, where `decade_base` is 1 token for 10M–100M, 0.1 for 100M–1B, 0.01 for 1B–10B, and so on
+- **Up to and including 10M tokens**: 1 token per mint
+- **Above 10M tokens**: supply in `(d × 10ⁿ, (d+1) × 10ⁿ]` (`d` = 1..9) pays `decade_base × (10 − d) / 10`, where `decade_base` is 1 token for 10M–100M, 0.1 for 100M–1B, 0.01 for 1B–10B, and so on. A mint at exactly a round number still pays the previous step; the first mint above it pays the next one.
+- Each decade goes from its base down to a tenth of it: 10M → 100M: 1 → 0.1, 100M → 1B: 0.1 → 0.01, ...
 
-| Supply reaches | Reward per mint |
+| Supply before the mint | Reward per mint |
 |---|---|
-| below 20M | 1 |
-| 20M / 30M / ... / 90M | 0.9 / 0.8 / ... / 0.2 |
-| 100M | 0.1 |
-| 200M / ... / 900M | 0.09 / ... / 0.02 |
-| 1B | 0.01 |
-| 10B / 100B / 1T | 0.001 / 0.0001 / 0.00001 |
-| 9T – 10T | 0.000002 (2 lamports) |
+| up to and including 10M | 1 |
+| above 10M / 20M / ... / 90M | 0.9 / 0.8 / ... / 0.1 |
+| above 100M / 200M / ... / 900M | 0.09 / 0.08 / ... / 0.01 |
+| above 1B | 0.009 |
+| above 10B / 100B / 1T | 0.0009 / 0.00009 / 0.000009 |
+| above 9T, up to the cap | 0.000001 (1 lamport) |
 
 Every decade start pays exactly 10x less than the previous one, so the long-run slope matches the original 6-tier schedule; the single 10x cliff at each tier boundary is replaced by nine smaller steps.
 
@@ -124,6 +124,17 @@ A transaction can now mint at most once, whether it calls memo-mint directly, th
 - Rejected with `OneMintPerTransaction`, with balance, supply and `MintState` unchanged: 2, 3 and 31 top-level mints; `process_mint` + `process_mint_to` in both orders; two memos with two mints; memo/mint/memo/mint; mints separated by other instructions; `process_mint_to` to two recipients; three signers minting together; a test program calling memo-mint via CPI 2 and 30 times, through `process_mint_to`, nested two levels deep, and combined with a top-level mint; chat `send_memo_to_group` (zero-interval group), blog `mint_for_blog` and forum `mint_for_post` twice in one transaction, combined with a direct mint, and called twice via CPI; burn followed by two mints.
 - Still allowed: single mints (11 in a row), `process_mint_to` to self and others, a single CPI mint from a third-party program, mint plus burn in one transaction, three burns in one transaction, two users with identical memos in the same slot, identical instructions in a later slot.
 - Upgrade path on a local validator, both manually and with `deploy-common.sh`: the old program batches; after the upgrade, old clients fail with `AccountNotEnoughKeys` and new clients fail with `AccountNotInitialized` until the admin init; afterwards single mints succeed and batches are rejected.
+
+---
+
+## Revision 4 Changes (October 15, 2026): Curve Steps Down Just Above 10M
+
+| Change | Details |
+|---|---|
+| Emission curve | `decade_base × (11 − d) / 10` → `decade_base × (10 − d) / 10`, and each step now takes effect just above its round number instead of at it (the step is located from `supply − 1`). Up to and including exactly 10M a mint pays 1; the first mint above 10M pays 0.9 (in Revision 3 the reward stayed 1 until 20M). Each decade goes from its base down to a tenth of it: above 10M … up to 100M pays 0.9, 0.8, ..., 0.1, then above 100M pays 0.09, ..., 0.01. Every step above 10M pays one tenth of the decade base less than in Revision 3. |
+| Last step | Above 9T pays exactly 1 lamport (was 2), so supply can reach exactly 10T. The `new_supply > MAX_SUPPLY` check is kept as defense in depth. |
+| Effect | Minting from 10M to 100M takes about 283M mints instead of about 193M (+47%). Mainnet supply was 8.73M when the change was made, so no mint at the new rates had happened. |
+| Scope | Only `calculate_dynamic_mint_amount` changed. Accounts, instructions, error codes and the one-mint-per-transaction check are unchanged; chat, blog and forum mint through memo-mint and need no upgrade. |
 
 ---
 
@@ -297,39 +308,42 @@ The project includes a dedicated tool for transferring mint authority: `admin-tr
 
 **Implementation**:
 ```rust
-let amount = if current_supply < CURVE_START_LAMPORTS {
+let amount = if current_supply <= CURVE_START_LAMPORTS {
     BASE_MINT_AMOUNT
 } else {
-    // Find the decade: magnitude <= current_supply < magnitude * 10
+    // Steps take effect just above each round number
+    let below = current_supply - 1;
+    // Find the decade: magnitude <= below < magnitude * 10
     let mut magnitude = CURVE_START_LAMPORTS;
     let mut decade_base = BASE_MINT_AMOUNT;
-    while current_supply / 10 >= magnitude {
+    while below / 10 >= magnitude {
         magnitude *= 10;
         decade_base /= 10;
     }
     // Leading digit, always 1..=9 here
-    let digit = current_supply / magnitude;
-    decade_base * (11 - digit) / 10
+    let digit = below / magnitude;
+    decade_base * (10 - digit) / 10
 };
 ```
 
-**Behavior at Round Numbers** (each step starts exactly at the round number):
-- 20M − 1 lamport: **1 token**; exactly 20M: **0.9 token**
-- 100M − 1 lamport: **0.2 token**; exactly 100M: **0.1 token**
-- Exactly 1B: **0.01 token**
-- 9T up to the cap: **2 lamports**
+**Behavior at Round Numbers** (each step starts just above the round number):
+- Exactly 10M: **1 token**; 10M + 1 lamport: **0.9 token**
+- Exactly 100M: **0.1 token**; 100M + 1 lamport: **0.09 token**
+- Exactly 1B: **0.01 token**; 1B + 1 lamport: **0.009 token**
+- Above 9T up to the cap: **1 lamport**; the last mint lands exactly on 10T
 
 **Rationale**:
-1. **Round numbers users can track**: every change happens at 10M, 20M, ..., 100M, 200M, ...
+1. **Round numbers users can track**: every change happens just above 10M, 20M, ..., 100M, 200M, ...
 2. **No 10x cliff**: the original schedule dropped the reward 10x in one step at each tier; the curve spreads the same drop over nine steps
 3. **Same long-run slope**: each decade start pays exactly 10x less than the previous one, matching the original tiers
-4. **Ends at the cap**: the curve would reach exactly 1 lamport at 10T
+4. **Ends at the cap**: the last step (above 9T) pays exactly 1 lamport, so supply can reach exactly 10T
 
 **Example Scenario**:
 ```
-Current Supply: 19,999,999.000000 tokens
-User A mints: Gets 1 token   → Supply becomes 20,000,000.000000 tokens
-User B mints: Gets 0.9 token → Supply becomes 20,000,000.900000 tokens
+Current Supply: 9,999,999.000000 tokens
+User A mints: Gets 1 token   → Supply becomes 10,000,000.000000 tokens
+User B mints: Gets 1 token   → Supply becomes 10,000,001.000000 tokens (exactly 10M still pays 1)
+User C mints: Gets 0.9 token → Supply becomes 10,000,001.900000 tokens
 ```
 
 **Security Analysis**:
@@ -875,7 +889,7 @@ All design decisions have been confirmed as intentional:
 - [ ] Transfer mint authority to PDA
 - [ ] Verify PDA authority: `spl-token display memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick`
 - [ ] Execute test mint with small compute budget
-- [ ] Verify a mint succeeds and gives the expected curve amount (1 token below 20M)
+- [ ] Verify a mint succeeds and gives the expected curve amount (1 token below 10M)
 - [ ] Upgrade the on-chain IDL (`process_mint_to` now takes `recipient`)
 
 #### 3. Documentation for Users/Integrators
@@ -1088,7 +1102,7 @@ anchor idl upgrade 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX --filepath targe
 **7. Test Mint Transaction**
 ```bash
 cargo run --bin test-memo-mint valid-memo
-# Should succeed and mint the curve amount (1 token while supply is below 20M)
+# Should succeed and mint the curve amount (1 token while supply is below 10M)
 ```
 
 **8. Verify Contract Constants**
@@ -1171,24 +1185,23 @@ ComputeBudgetInstruction::set_compute_unit_limit(simulated_units)
 
 ### Emission Curve (Revision 2)
 
-| Supply range | Reward per mint |
+| Supply before the mint | Reward per mint |
 |---|---|
-| 0 – 20M | 1 |
-| 20M – 30M ... 90M – 100M | 0.9 ... 0.2 |
-| 100M – 200M | 0.1 |
-| 200M – 300M ... 900M – 1B | 0.09 ... 0.02 |
-| 1B – 2B | 0.01 |
-| 10B – 20B | 0.001 |
-| 100B – 200B | 0.0001 |
-| 1T – 2T | 0.00001 |
-| 9T – 10T | 0.000002 |
+| 0 – 10M (including 10M) | 1 |
+| (10M – 20M] ... (90M – 100M] | 0.9 ... 0.1 |
+| (100M – 200M] ... (900M – 1B] | 0.09 ... 0.01 |
+| (1B – 2B] | 0.009 |
+| (10B – 20B] | 0.0009 |
+| (100B – 200B] | 0.00009 |
+| (1T – 2T] | 0.000009 |
+| (9T – 10T) | 0.000001 |
 
-Rule: in `[d × 10ⁿ, (d+1) × 10ⁿ)` from 10M on, reward = `decade_base × (11 − d) / 10`.
+Rule: above 10M, for supply in `(d × 10ⁿ, (d+1) × 10ⁿ]`, reward = `decade_base × (10 − d) / 10`. By decade: 10M → 100M: 1 → 0.1, 100M → 1B: 0.1 → 0.01, ..., 1T → 10T: 0.00001 → 0.000001.
 
 ### Economic Incentives
 
 **Early Miner Advantage**: 
-- The first 20M tokens are minted at 1 token per mint
+- The first 10M tokens (and the mint at exactly 10M) are minted at 1 token per mint
 - Rewards then fall one step at every round number
 - Predictable, gradual reward decay with no 10x cliffs
 
@@ -1206,9 +1219,9 @@ Rule: in `[d × 10ⁿ, (d+1) × 10ⁿ)` from 10M on, reward = `decade_base × (1
 
 **Audit Report End**
 
-**Audit Date**: October 27, 2025 (original), revised October 13 and 14, 2026  
-**Contract Version**: Revision 3 (0.3.0)  
-**Final Status**: ✅ APPROVED FOR MAINNET (Revision 3 pending testnet validation)  
+**Audit Date**: October 27, 2025 (original), revised October 13, 14 and 15, 2026  
+**Contract Version**: Revision 4 (0.4.0)  
+**Final Status**: ✅ APPROVED FOR MAINNET (Revision 3 deployed to mainnet on October 15, 2026; Revision 4 pending testnet validation)  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
 

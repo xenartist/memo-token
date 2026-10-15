@@ -37,7 +37,8 @@ const _: () = {
     // ensure the emission curve ends exactly at the max supply
     assert!(CURVE_START_LAMPORTS * 10u64.pow(CURVE_DECADES) == MAX_SUPPLY_LAMPORTS, "Curve must end at max supply");
 
-    // ensure every step in every decade is a whole number of lamports and the smallest reward is >= 1 lamport
+    // ensure every step in every decade is a whole number of lamports and the smallest reward (the last
+    // decade's base / 10) is >= 1 lamport
     assert!(BASE_MINT_AMOUNT % 10u64.pow(CURVE_DECADES) == 0, "Base mint amount must be divisible across all decades");
     assert!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES) >= 1, "Minimum mint amount must be positive");
 };
@@ -54,13 +55,16 @@ pub const MAX_SUPPLY_LAMPORTS: u64 = MAX_SUPPLY_TOKENS * DECIMAL_FACTOR;
 
 // Emission curve (in lamports for direct comparison)
 //
-// Below CURVE_START every mint pays BASE_MINT_AMOUNT (1 token).
-// From CURVE_START on, supply is split into decades [start * 10^n, start * 10^(n+1)).
-// Inside a decade, supply in [d * 10^k, (d+1) * 10^k) (d = leading digit 1..9) pays
-//     decade_base * (11 - d) / 10,   decade_base = BASE_MINT_AMOUNT / 10^n
-// so the reward drops by a tenth of the decade base at every round number:
-//     10M: 1, 20M: 0.9, ..., 90M: 0.2, 100M: 0.1, 200M: 0.09, ..., 1B: 0.01, ...
-// and would reach exactly 1 lamport at MAX_SUPPLY (10T).
+// Up to and including CURVE_START, every mint pays BASE_MINT_AMOUNT (1 token).
+// Above it, supply is split into decades (start * 10^n, start * 10^(n+1)]. Inside a decade, supply in
+// (d * 10^k, (d+1) * 10^k] (d = 1..9) pays
+//     decade_base * (10 - d) / 10,   decade_base = BASE_MINT_AMOUNT / 10^n
+// so the reward drops by a tenth of the decade base just above every round number: a mint at exactly
+// a round number still pays the previous step, the first mint above it pays the next one.
+//     up to 10M: 1, above 10M: 0.9, above 20M: 0.8, ..., above 90M: 0.1, above 100M: 0.09, ...,
+//     above 900M: 0.01, above 1B: 0.009, ...
+// Each decade goes from its base down to a tenth of it (10M -> 100M: 1 -> 0.1, 100M -> 1B: 0.1 -> 0.01),
+// and the last step (9T, 10T) pays exactly 1 lamport.
 pub const CURVE_START_TOKENS: u64 = 10_000_000;                         // 10M tokens
 pub const CURVE_START_LAMPORTS: u64 = CURVE_START_TOKENS * DECIMAL_FACTOR;
 pub const CURVE_DECADES: u32 = 6;                                       // 10M -> 10T
@@ -271,21 +275,25 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
     }
     
     // Mint amount based on the emission curve (comparing lamports directly)
-    let amount = if current_supply < CURVE_START_LAMPORTS {
+    let amount = if current_supply <= CURVE_START_LAMPORTS {
         BASE_MINT_AMOUNT
     } else {
-        // Find the decade: magnitude <= current_supply < magnitude * 10
-        // (at most CURVE_DECADES - 1 iterations; magnitude * 10 <= current_supply < MAX_SUPPLY, so no overflow)
+        // Steps take effect just above each round number, so locate the step from one lamport below:
+        // supply in (d * 10^k, (d+1) * 10^k] has `below` in [d * 10^k, (d+1) * 10^k)
+        let below = current_supply - 1; // >= CURVE_START_LAMPORTS here
+
+        // Find the decade: magnitude <= below < magnitude * 10
+        // (at most CURVE_DECADES - 1 iterations; magnitude * 10 <= below < MAX_SUPPLY, so no overflow)
         let mut magnitude = CURVE_START_LAMPORTS;
         let mut decade_base = BASE_MINT_AMOUNT;
-        while current_supply / 10 >= magnitude {
+        while below / 10 >= magnitude {
             magnitude *= 10;
             decade_base /= 10;
         }
 
         // Leading digit, always 1..=9 here
-        let digit = current_supply / magnitude;
-        decade_base * (11 - digit) / 10
+        let digit = below / magnitude;
+        decade_base * (10 - digit) / 10
     };
     
     // use checked_add to prevent overflow

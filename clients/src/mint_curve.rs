@@ -11,17 +11,19 @@ pub const CURVE_DECADES: u32 = 6;
 /// Expected mint amount (lamports) for a given supply (lamports) before the mint
 pub fn expected_mint_amount(supply_lamports: u64) -> u64 {
     let start = CURVE_START_TOKENS * DECIMAL_FACTOR;
-    if supply_lamports < start {
+    if supply_lamports <= start {
         return DECIMAL_FACTOR;
     }
+    // Steps take effect just above each round number
+    let below = supply_lamports - 1;
     let mut magnitude = start;
     let mut decade_base = DECIMAL_FACTOR;
-    while supply_lamports / 10 >= magnitude {
+    while below / 10 >= magnitude {
         magnitude *= 10;
         decade_base /= 10;
     }
-    let digit = supply_lamports / magnitude;
-    decade_base * (11 - digit) / 10
+    let digit = below / magnitude;
+    decade_base * (10 - digit) / 10
 }
 
 fn format_tokens(tokens: u64) -> String {
@@ -38,18 +40,18 @@ pub fn validate_mint_amount(raw_amount: u64) -> (bool, String) {
         return (false, "No tokens minted - supply limit reached".to_string());
     }
     if raw_amount == DECIMAL_FACTOR {
-        return (true, format!("1.0 token (supply below {})", format_tokens(2 * CURVE_START_TOKENS)));
+        return (true, format!("1.0 token (supply up to {})", format_tokens(CURVE_START_TOKENS)));
     }
 
     let mut magnitude = CURVE_START_TOKENS;
     let mut decade_base = DECIMAL_FACTOR;
     for _ in 0..CURVE_DECADES {
         for digit in 1..=9u64 {
-            if decade_base * (11 - digit) / 10 == raw_amount {
+            if decade_base * (10 - digit) / 10 == raw_amount {
                 return (
                     true,
                     format!(
-                        "{:.6} token (supply {}-{})",
+                        "{:.6} token (supply above {} up to {})",
                         raw_amount as f64 / DECIMAL_FACTOR as f64,
                         format_tokens(digit * magnitude),
                         format_tokens((digit + 1) * magnitude)
@@ -78,10 +80,13 @@ mod tests {
     #[test]
     fn test_curve_matches_program_round_numbers() {
         assert_eq!(expected_mint_amount(0), 1_000_000);
-        assert_eq!(expected_mint_amount(20_000_000 * DECIMAL_FACTOR), 900_000);
+        assert_eq!(expected_mint_amount(10_000_000 * DECIMAL_FACTOR), 1_000_000);
+        assert_eq!(expected_mint_amount(10_000_000 * DECIMAL_FACTOR + 1), 900_000);
+        assert_eq!(expected_mint_amount(90_000_000 * DECIMAL_FACTOR + 1), 100_000);
         assert_eq!(expected_mint_amount(100_000_000 * DECIMAL_FACTOR), 100_000);
-        assert_eq!(expected_mint_amount(200_000_000 * DECIMAL_FACTOR), 90_000);
-        assert_eq!(expected_mint_amount(9_000_000_000_000 * DECIMAL_FACTOR), 2);
+        assert_eq!(expected_mint_amount(100_000_000 * DECIMAL_FACTOR + 1), 90_000);
+        assert_eq!(expected_mint_amount(1_000_000_000 * DECIMAL_FACTOR + 1), 9_000);
+        assert_eq!(expected_mint_amount(9_000_000_000_000 * DECIMAL_FACTOR + 1), 1);
     }
 
     #[test]
@@ -89,7 +94,7 @@ mod tests {
         let mut magnitude = CURVE_START_TOKENS;
         for _ in 0..CURVE_DECADES {
             for digit in 1..=9u64 {
-                let amount = expected_mint_amount(digit * magnitude * DECIMAL_FACTOR);
+                let amount = expected_mint_amount(digit * magnitude * DECIMAL_FACTOR + 1);
                 assert!(validate_mint_amount(amount).0, "amount {} should be valid", amount);
             }
             magnitude *= 10;
@@ -100,6 +105,7 @@ mod tests {
     fn test_invalid_amounts() {
         assert!(!validate_mint_amount(0).0);
         assert!(!validate_mint_amount(123_456).0);
-        assert!(!validate_mint_amount(1).0);
+        assert!(!validate_mint_amount(950_000).0);
+        assert!(!validate_mint_amount(2 * DECIMAL_FACTOR).0);
     }
 }

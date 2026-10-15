@@ -26,16 +26,15 @@ Anyone can mint MEMO (Token-2022, 6 decimals) by sending a transaction to the me
 
 A transaction can mint only once, directly or through another program; a second mint fails with `OneMintPerTransaction`. Both mint instructions take the `MintState` PDA (seeds `[b"mint_state"]`) as their last account. X1 charges fees by the compute-unit limit you request, so simulate first and set the exact limit.
 
-**Emission curve**: the reward per mint depends on the circulating supply and steps down at every round number.
+**Emission curve**: the reward per mint depends on the circulating supply before the mint. It is 1 MEMO up to and including 10M, then steps down by a tenth of the decade base just above every round number (a mint at exactly a round number still pays the previous step), so each 10x of supply pays 10x less.
 
-| Supply reaches | Reward per mint |
+| Supply before the mint | Reward per mint |
 |---|---|
-| below 20M | 1 MEMO |
-| 20M, 30M, ..., 90M | 0.9, 0.8, ..., 0.2 |
-| 100M | 0.1 |
-| 200M, ..., 900M | 0.09, ..., 0.02 |
-| 1B | 0.01 |
-| each further 10x | 10x less, down to 1 lamport at the cap |
+| up to and including 10M | 1 MEMO |
+| 10M → 100M | 1 → 0.1: 0.9 above 10M, 0.8 above 20M, ..., 0.1 above 90M |
+| 100M → 1B | 0.1 → 0.01: 0.09 above 100M, ..., 0.01 above 900M |
+| 1B → 10B | 0.01 → 0.001: 0.009 above 1B, ..., 0.001 above 9B |
+| each further 10x | 10x less, down to 0.000001 MEMO (1 lamport) above 9T, up to the 10T cap |
 
 Circulating supply is capped at 10 trillion MEMO. Burns lower the circulating supply, so minting never stops permanently. See `MEMO-MINT-AUDIT.md` for details.
 
