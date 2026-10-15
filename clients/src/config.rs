@@ -44,6 +44,18 @@ fn default_program_env() -> String {
     "testnet".to_string()
 }
 
+/// Environment variable that overrides Anchor.toml's program_env (set by the deploy scripts,
+/// so admin clients use the environment being deployed)
+const PROGRAM_ENV_OVERRIDE: &str = "MEMO_PROGRAM_ENV";
+
+/// program_env in effect: MEMO_PROGRAM_ENV if set, otherwise Anchor.toml's program_env
+fn effective_program_env(config: &AnchorToml) -> String {
+    match std::env::var(PROGRAM_ENV_OVERRIDE) {
+        Ok(env) if !env.is_empty() => env,
+        _ => config.provider.program_env.clone(),
+    }
+}
+
 /// Get the RPC URL from Anchor.toml
 /// This is the single source of truth for RPC configuration
 pub fn get_rpc_url() -> String {
@@ -115,14 +127,14 @@ pub fn get_program_env() -> String {
     
     match read_anchor_config(&anchor_toml_path) {
         Ok(config) => {
-            let env = config.provider.program_env;
+            let env = effective_program_env(&config);
             if env != "testnet" && env != "mainnet" {
-                eprintln!("⚠️  Warning: Invalid program_env '{}' in Anchor.toml", env);
+                eprintln!("⚠️  Warning: Invalid program_env '{}'", env);
                 eprintln!("   Valid values: 'testnet' or 'mainnet'");
                 eprintln!("   Falling back to 'testnet'");
                 "testnet".to_string()
             } else {
-                println!("✓ Using program_env from Anchor.toml: {}", env);
+                println!("✓ Using program_env: {}", env);
                 env
             }
         },
@@ -132,6 +144,34 @@ pub fn get_program_env() -> String {
             "testnet".to_string()
         }
     }
+}
+
+/// Path of an authority keypair (e.g. "deploy_admin", "memo_token_mint") for the current program_env:
+/// ~/.config/solana/memo-token/<program_env>/authority/<name>-keypair.json
+/// Keypairs are stored encrypted; this file exists only while `scripts/keys.sh unlock <env>` is in effect.
+pub fn get_authority_keypair_path(name: &str) -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME environment variable not set");
+    PathBuf::from(home)
+        .join(".config/solana/memo-token")
+        .join(get_program_env())
+        .join("authority")
+        .join(format!("{}-keypair.json", name))
+}
+
+/// Read an authority keypair, with a hint to unlock the keys when it is missing
+pub fn read_authority_keypair(name: &str) -> Result<solana_sdk::signature::Keypair, String> {
+    let path = get_authority_keypair_path(name);
+    solana_sdk::signature::read_keypair_file(&path).map_err(|e| {
+        if path.exists() {
+            format!("Failed to read {}: {}", path.display(), e)
+        } else {
+            let env = get_program_env();
+            format!(
+                "{} not found. Unlock the {} keys first: ./scripts/keys.sh unlock {}",
+                path.display(), env, env
+            )
+        }
+    })
 }
 
 /// Get a specific program ID from Anchor.toml based on program_env
@@ -147,7 +187,7 @@ pub fn get_program_id(program_name: &str) -> Result<Pubkey, String> {
     
     match read_anchor_config(&anchor_toml_path) {
         Ok(config) => {
-            let env = &config.provider.program_env;
+            let env = &effective_program_env(&config);
             
             // Validate program_env
             if env != "testnet" && env != "mainnet" {
@@ -190,7 +230,7 @@ pub fn get_all_program_ids() -> HashMap<String, Pubkey> {
     let mut result = HashMap::new();
     
     if let Ok(config) = read_anchor_config(&anchor_toml_path) {
-        let env = &config.provider.program_env;
+        let env = &effective_program_env(&config);
         
         if env != "testnet" && env != "mainnet" {
             eprintln!("⚠️  Warning: Invalid program_env '{}', using testnet", env);
@@ -234,7 +274,7 @@ pub fn get_all_program_ids() -> HashMap<String, Pubkey> {
 pub fn get_token_mint(token_name: &str) -> Result<Pubkey, Box<dyn std::error::Error>> {
     let anchor_toml_path = get_anchor_toml_path();
     let config = read_anchor_config(&anchor_toml_path)?;
-    let env = &config.provider.program_env;
+    let env = &effective_program_env(&config);
     
     // Validate program_env
     if env != "testnet" && env != "mainnet" {
@@ -278,7 +318,7 @@ pub fn get_token_mint(token_name: &str) -> Result<Pubkey, Box<dyn std::error::Er
 pub fn get_all_token_mints() -> Result<std::collections::HashMap<String, Pubkey>, Box<dyn std::error::Error>> {
     let anchor_toml_path = get_anchor_toml_path();
     let config = read_anchor_config(&anchor_toml_path)?;
-    let env = &config.provider.program_env;
+    let env = &effective_program_env(&config);
     
     // Validate program_env
     if env != "testnet" && env != "mainnet" {

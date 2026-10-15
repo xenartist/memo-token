@@ -265,6 +265,19 @@ else
 fi
 
 print_message "$BLUE" "Environment: $ENV_NAME"
+
+# The test clients pay with Anchor.toml's wallet, which is stored encrypted (scripts/keys.sh)
+WALLET_PATH=$(grep -A 5 '\[provider\]' Anchor.toml | grep '^wallet' | awk -F'"' '{print $2}')
+WALLET_PATH="${WALLET_PATH/#\~/$HOME}"
+if [ ! -f "$WALLET_PATH" ]; then
+    if [ -f "$WALLET_PATH.gpg" ]; then
+        WALLET_ENV=$(basename "$(dirname "$(dirname "$WALLET_PATH")")")
+        print_message "$RED" "❌ The test wallet is locked. Run in your terminal: ./scripts/keys.sh unlock $WALLET_ENV"
+    else
+        print_message "$RED" "❌ Test wallet not found: $WALLET_PATH"
+    fi
+    exit 1
+fi
 print_message "$BLUE" "Description: $ENV_DESC"
 print_message "$BLUE" "RPC Cluster: $CLUSTER_TYPE"
 print_message "$BLUE" "RPC URL: $RPC_URL"

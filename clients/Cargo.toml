@@ -193,6 +193,10 @@ path = "forum/src/test-memo-forum-mint-for-post.rs"
 name = "smoke-test-memo-forum"
 path = "smoke-test/src/smoke-test-memo-forum.rs"
 
+[[bin]]
+name = "verify-deployment"
+path = "smoke-test/src/verify-deployment.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

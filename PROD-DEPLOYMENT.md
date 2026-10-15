@@ -5,48 +5,55 @@ This document describes how to deploy the MEMO Token project to the production e
 
 ## Architecture Overview
 
-**Project Architecture (Based on Physical Environment Isolation):**
+**Keypair layout (same on every machine; the network is part of the path):**
 
-Production Machine
-├── ~/.config/solana/memo-token/programs/mainnet/   (program keypairs, 700/600)
-│ ├── memo_mint-keypair.json
-│ ├── memo_burn-keypair.json
-│ ├── memo_chat-keypair.json
-│ ├── memo_profile-keypair.json
-│ ├── memo_project-keypair.json
-│ ├── memo_blog-keypair.json
-│ └── memo_forum-keypair.json
-│
-├── ~/.config/solana/memo-token/authority/
-│ ├── deploy_admin-keypair.json
-│ └── memo_token_mint-keypair.json
-│
-└── <repo>/target/deploy/<program>-keypair.json     (symlinks only, for `anchor build`)
+```
+~/.config/solana/memo-token/
+├── testnet/
+│   ├── authority/   deploy_admin, memo_token_mint
+│   └── programs/    memo_mint, memo_burn, memo_chat, memo_profile, memo_project, memo_blog, memo_forum
+└── mainnet/
+    ├── authority/   (same names)
+    └── programs/    (same names; new programs are added here too)
 
-Program keypairs are kept outside `target/`, because `anchor clean` / `cargo clean` delete it.
-They are needed only for a program's **first** deploy (they create the program at its address).
-Deployed programs are upgraded by program ID with the upgrade authority (`deploy_admin`), so
-`deploy-*.sh` works even when a deployed program's keypair is not on the machine.
-
-**Environment Config: Environment Config:**
-
-```bash
-export X1_RPC_URL= "https://rpc.mainnet.x1.xyz"
+Each keypair <name> is stored as:
+  <name>-keypair.json.gpg   GPG-encrypted keypair (symmetric, AES256; one passphrase per network)
+  <name>-keypair.pub        its public key (lets scripts verify configuration while locked)
+  <name>-keypair.json       link to the decrypted file on a RAM disk, only while unlocked
 ```
 
-or
+`scripts/keys.sh` manages the keys:
 
-# edit ~/.bashrc or ~/.zshrc on production machine, and reload
+```bash
+./scripts/keys.sh unlock <testnet|mainnet>   # one passphrase; decrypts that network's keys into a RAM disk
+./scripts/keys.sh lock                       # removes the links and decrypted keys, ejects the RAM disk
+./scripts/keys.sh status                     # key states + any plaintext keypair files left on disk
+./scripts/keys.sh import <net> <authority|programs> <file> [name]   # encrypt an existing keypair
+./scripts/keys.sh new <net> <authority|programs> <name>             # generate one inside the RAM disk
+./scripts/keys.sh migrate                    # encrypt keypairs from the old plaintext layout
+```
+
+The network whose keys are used is the **program_env**:
+- Deploy scripts use the network they deploy. Prod Staging deploys the mainnet build, so it uses the **mainnet** keys.
+- Admin clients use `Anchor.toml` `program_env` (the deploy scripts override it with `MEMO_PROGRAM_ENV`).
+
+Program keypairs are needed only for a program's **first** deploy (they create the program at its address).
+Deployed programs are upgraded by program ID with the upgrade authority (`deploy_admin`).
+
+**Environment Config:**
+
+```bash
 export X1_RPC_URL="https://rpc.mainnet.x1.xyz"
+```
 
 ### Keypair Management Strategy
 
-
 **Key Principles:**
-- ✅ **Physical Isolation**: Test and production use completely separate machines
-- ✅ **Unified Paths**: Same directory structure on both environments
+- ✅ **Encrypted at rest**: no plaintext keypair on disk; decrypted only into a RAM disk while unlocked
+- ✅ **Per-network trees**: the path tells which network a key belongs to; testnet and mainnet use different passphrases
+- ✅ **Same layout everywhere**: development and production machines use the same paths and scripts
 - ✅ **Different Keypairs**: Mainnet uses completely different program IDs and authority keys
-- ✅ **Environment Variables**: Network switching via `X1_RPC_URL` environment variable
+- ✅ **Offline backups**: keep the `.gpg` files and the passphrases in separate offline locations
 
 ---
 
@@ -65,6 +72,94 @@ export X1_RPC_URL="https://rpc.mainnet.x1.xyz"
 ```bash
 curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/solana-developers/solana-install/main/install.sh | bash
 ```
+
+---
+
+## Upgrading an Existing Deployment (Read First)
+
+Mainnet programs are already live, so a release is normally an **upgrade**, not a first deploy.
+Steps 2, 3 and 8 (new keypairs, new IDs, token creation) apply only to a brand-new deployment.
+
+### Deployment Machine Setup
+
+**Machine with keypairs in an old plaintext layout.** Older scripts kept authority keypairs in
+`~/.config/solana/memo-token/authority/` and program keypairs in `programs/<env>/` or `<repo>/target/deploy/`.
+
+1. Back up those keypair files to offline storage first.
+2. Update the repository (`git pull`) to the release being deployed. Do not run `anchor clean` / `cargo clean`
+   before the next step, because they delete `target/`.
+3. Run `./scripts/keys.sh migrate` in your terminal. It identifies each keypair by its public key
+   (code constants and `Anchor.toml`), asks for each network's passphrase (set on first use), encrypts the keys
+   into the new layout, verifies every round trip, then offers to remove the plaintext files.
+4. Run `./scripts/keys.sh status`. It lists any plaintext keypair files still on disk.
+
+**New machine.** Copy `~/.config/solana/memo-token/<network>/` (the `.gpg` and `.pub` files) from the
+offline backup, then `chmod 700` the directories and `chmod 600` the `.gpg` files.
+
+**Every deployment session:**
+
+```bash
+./scripts/keys.sh unlock mainnet     # in your own terminal; asks for the mainnet passphrase
+./scripts/deploy-prod-staging-testnet.sh    # or ./scripts/deploy-mainnet.sh
+cargo run --bin verify-deployment -- <WALLET_WITH_MEMO>
+./scripts/keys.sh lock
+```
+
+Notes:
+- The deploy scripts check that `deploy_admin` matches `AUTHORIZED_ADMIN_PUBKEY` in the code and that it is
+  the on-chain upgrade authority. If the keys are locked, they stop and tell you to unlock.
+- Run `unlock` in your own terminal: the passphrase is read from the terminal and passed to GPG through a pipe.
+  It never appears in arguments, files, or an AI assistant's session.
+- `unlock` refuses to run if a plaintext keypair sits where a link goes.
+- `Anchor.toml` `[provider] wallet` points at the testnet `deploy_admin` and is only the payer for test clients.
+  Set `cluster` / `program_env` for the target network.
+
+### Release Order: Client First, Then All Programs
+
+Contract changes are not backward compatible with old clients:
+
+- memo-mint requires the `mint_state` account (one mint per transaction).
+- memo-burn requires the `global_burn_stats` account.
+- Every chat / blog / forum / profile / project instruction that mints or burns passes these accounts as its last account.
+
+Old clients and old programs do not pass these accounts, so their mint/burn calls fail against the new programs.
+New clients also work against the old programs (Anchor ignores extra trailing accounts). So:
+
+1. **Release the updated client (memo-app) first.** It works with both old and new programs.
+2. **Upgrade all 7 programs in one run**: `./scripts/deploy-mainnet.sh` with no arguments.
+   The script builds everything first, then upgrades in order:
+   `memo_mint` → `memo_burn` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
+   Between the `memo_mint` / `memo_burn` upgrade and the upgrade of the dependent programs,
+   mint/burn through those dependent programs fails. Do not stop halfway.
+3. `mint_state` and `global_burn_stats` are created automatically by the deploy script right after
+   `memo_mint` / `memo_burn` are deployed or upgraded. The init clients are idempotent.
+   If that step fails, the script stops and prints the retry command. Until both accounts exist, every mint/burn fails.
+4. Verify with `cargo run --bin verify-deployment -- <WALLET_WITH_MEMO>`. It is read-only: it runs simulations
+   only and sends nothing. It uses `cluster` / `program_env` from `Anchor.toml` and checks:
+   - all 7 programs: upgrade authority is `deploy_admin`, and the on-chain bytecode matches `target/deploy/*.so`
+   - the MEMO mint authority is the memo-mint PDA
+   - `mint_state` and `global_burn_stats` exist with the right owner, size and discriminator
+   - simulated mints and burns:
+     - a single mint succeeds
+     - a second mint in the same transaction fails with `OneMintPerTransaction`
+     - a 1 MEMO burn succeeds
+     - old-client calls without the new accounts are rejected
+
+   `<WALLET_WITH_MEMO>` is any address that holds MEMO and has burned before, needed for the mint and burn
+   simulations; no private key is needed. Exit code 1 means a check failed.
+
+   Then:
+   - Prod Staging: also run the smoke tests (`./scripts/run-smoke-tests.sh`).
+   - Mainnet: do one real mint and one small burn from the client. The smoke tests spend real MEMO there.
+
+Always run the same release through **Prod Staging (Step 5)** first.
+
+### On-chain IDL
+
+For upgrades, the script runs `anchor idl upgrade` (falling back to `anchor idl init`) with retries.
+If IDL sync still fails, the program upgrade has already succeeded. Rerun the printed command later.
+This relies on Anchor 0.32's legacy IDL instructions. Anchor 1.x stores IDLs with the Program Metadata
+program, which is not deployed on X1 yet. Stay on Anchor 0.32.x until it is.
 
 ---
 
@@ -104,13 +199,16 @@ git checkout main  # or your production branch
 ./scripts/setup-keypairs.sh mainnet
 ```
 
-This will guide you through:
-1. **Program Keypairs**: Generate new keypairs in `~/.config/solana/memo-token/programs/mainnet/` (linked into `target/deploy/`; keypairs found in `target/deploy/` from older setups are moved there)
-2. **Authority Keypairs**: Generate admin and mint authority in `~/.config/solana/memo-token/authority/`
+For each missing keypair it offers: import from a backup file, generate a new one, or skip.
+1. **Authority Keypairs**: `deploy_admin` and `memo_token_mint` in `~/.config/solana/memo-token/mainnet/authority/`
+2. **Program Keypairs**: one per program in `~/.config/solana/memo-token/mainnet/programs/`
+
+New keypairs are generated inside the RAM disk and stored encrypted; the plaintext never touches the disk.
 
 ### 2.2 Backup Keypairs Immediately
 
-**🔐 CRITICAL**: Backup keypairs in multiple secure, offline locations.
+**🔐 CRITICAL**: Back up `~/.config/solana/memo-token/mainnet/` (the `.gpg` files) in multiple secure, offline
+locations, and keep the passphrase separately.
 
 ---
 
@@ -125,7 +223,7 @@ cd ~/memo-token
 
 # Get all program IDs
 for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
-  echo "$program: $(solana-keygen pubkey ~/.config/solana/memo-token/programs/mainnet/${program}-keypair.json)"
+  echo "$program: $(cat ~/.config/solana/memo-token/mainnet/programs/${program}-keypair.pub)"
 done
 ```
 
@@ -150,10 +248,10 @@ Get authority public keys:
 
 ```bash
 # Admin authority
-solana-keygen pubkey ~/.config/solana/memo-token/authority/deploy_admin-keypair.json
+cat ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.pub
 
 # Mint authority
-solana-keygen pubkey ~/.config/solana/memo-token/authority/memo_token_mint-keypair.json
+cat ~/.config/solana/memo-token/mainnet/authority/memo_token_mint-keypair.pub
 ```
 
 Update in contract code:
@@ -193,13 +291,13 @@ The deployment wallet (admin authority) needs XNT to pay for:
 
 ```bash
 # Check admin wallet address
-solana-keygen pubkey ~/.config/solana/memo-token/authority/deploy_admin-keypair.json
+cat ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.pub
 
 # Fund this address with XNT on X1 Mainnet
 # Recommended: At least 5-10 XNT for initial deployment
 
 # Verify balance
-solana balance $(solana-keygen pubkey ~/.config/solana/memo-token/authority/deploy_admin-keypair.json) \
+solana balance $(cat ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.pub) \
   --url $X1_RPC_URL
 ```
 
@@ -232,7 +330,7 @@ cd ~/memo-token
 ```
 
 The script will:
-1. Verify all keypairs exist
+1. Verify the mainnet keys are unlocked and match the code
 2. Verify program IDs and authorities match code
 3. Build with `mainnet` feature flag
 4. Deploy to X1 Testnet
@@ -252,9 +350,9 @@ done
 
 ---
 
-## Step 5: Deploy to Mainnet
+## Step 6: Deploy to Mainnet
 
-### 5.1 Pre-Deployment Checklist
+### 6.1 Pre-Deployment Checklist
 
 Before running deployment:
 
@@ -266,7 +364,7 @@ Before running deployment:
 - [ ] Running on secure, isolated production machine
 - [ ] Contracts tested thoroughly on testnet
 
-### 5.2 Run Deployment
+### 6.2 Run Deployment
 
 ```bash
 cd ~/memo-token
@@ -279,13 +377,13 @@ cd ~/memo-token
 ```
 
 The script will:
-1. Verify all keypairs exist
+1. Verify the mainnet keys are unlocked and match the code
 2. Verify program IDs and authorities match code
 3. Build with `mainnet` feature flag
 4. Deploy to X1 Mainnet
 5. Display deployment summary
 
-### 5.3 Verify Deployment
+### 6.3 Verify Deployment
 
 After successful deployment, verify on block explorer:
 
@@ -299,9 +397,12 @@ done
 
 ---
 
-## Step 6: Initialize Global State Accounts
+## Step 7: Initialize Global State Accounts
 
-### 6.1 Initialize Chat Global Counter
+> `memo-mint`'s `mint_state` and `memo-burn`'s `global_burn_stats` are initialized automatically by the
+> deploy script (Step 5 / Step 6). The accounts below are only needed on a **first** deployment.
+
+### 7.1 Initialize Chat Global Counter
 
 ```bash
 # Ensure X1_RPC_URL is set
@@ -312,38 +413,39 @@ cd ~/memo-token
 cargo run --bin admin-init-global-group-counter
 ```
 
-### 6.2 Initialize Chat Burn Leaderboard
+### 7.2 Initialize Chat Burn Leaderboard
 
 ```bash
 cargo run --bin admin-init-burn-leaderboard
 ```
 
-### 6.3 Initialize Project Global Counter
+### 7.3 Initialize Project Global Counter
 
 ```bash
 cargo run --bin admin-memo-project-init-global-project-counter
 ```
 
-### 6.4 Initialize Project Burn Leaderboard
+### 7.4 Initialize Project Burn Leaderboard
 
 ```bash
 cargo run --bin admin-memo-project-init-burn-leaderboard
 ```
 
-**Note**: All admin tools automatically use `X1_RPC_URL` from environment and `deploy_admin-keypair.json` for authorization.
+**Note**: Admin tools use `cluster` / `program_env` from `Anchor.toml` and sign with that network's `deploy_admin`
+(`./scripts/keys.sh unlock <network>` first).
 
 ---
 
-## Step 7: Create MEMO Token
+## Step 8: Create MEMO Token
 
-### 7.1 Prepare Token Metadata
+### 8.1 Prepare Token Metadata
 
 Review and update if needed:
 ```bash
 vim metadata/memo_token-metadata.json
 ```
 
-### 7.2 Run Token Creation Script
+### 8.2 Run Token Creation Script
 
 ```bash
 cd ~/memo-token/clients/memo-token/src
@@ -360,14 +462,14 @@ This will:
 - Set mint authority to `memo_token_mint-keypair.json`
 - Display the mint address
 
-### 7.3 Record Mint Address
+### 8.3 Record Mint Address
 
 Save the output mint address - you'll need it for:
 - Frontend configuration
 - User documentation
 - Future operations
 
-### 7.4 Transfer Mint Authority to Program
+### 8.4 Transfer Mint Authority to Program
 
 After creating the token, transfer the mint authority to the memo-mint program's PDA for decentralized control:
 
@@ -387,9 +489,9 @@ cargo run --bin admin-transfer-memo-token-mint-authority
 
 ---
 
-## Step 8: Post-Deployment Security
+## Step 9: Post-Deployment Security
 
-### 8.1 Consider Transferring Program Upgrade Authority
+### 9.1 Consider Transferring Program Upgrade Authority
 
 For maximum security, consider transferring upgrade authority:
 
@@ -415,23 +517,16 @@ for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog
 done
 ```
 
-### 8.2 Secure Keypair Storage
+### 9.2 Secure Keypair Storage
 
 After deployment:
 
 ```bash
-# Program keypairs are not needed for upgrades (upgrades use the program ID and the upgrade
-# authority). Keep an encrypted offline backup, and remove them from the production machine
-# if you like; deploy-mainnet.sh only asks for one when a program is deployed for the first time.
-chmod 700 ~/.config/solana/memo-token/programs ~/.config/solana/memo-token/programs/mainnet
-chmod 600 ~/.config/solana/memo-token/programs/mainnet/*
-
-# Authority keypairs should remain in ~/.config/solana/memo-token/authority/
-chmod 700 ~/.config/solana/memo-token/authority
-chmod 600 ~/.config/solana/memo-token/authority/*
+./scripts/keys.sh lock      # remove decrypted keys and links, eject the RAM disk
+./scripts/keys.sh status    # every key "locked", no plaintext keypair files on disk
 ```
 
-### 8.3 Backup Everything Again
+### 9.3 Backup Everything Again
 
 ```bash
 # Final backup after deployment
@@ -470,8 +565,8 @@ If `deploy-mainnet.sh` reports mismatches:
 
 1. **Check program IDs in code match keypairs** (only checked when the keypair is present):
    ```bash
-   # Get actual ID from keypair
-   solana-keygen pubkey ~/.config/solana/memo-token/programs/mainnet/memo_mint-keypair.json
+   # Get actual ID from the stored keypair
+   cat ~/.config/solana/memo-token/mainnet/programs/memo_mint-keypair.pub
    
    # Compare with code in programs/memo-mint/src/lib.rs
    grep -A 1 'cfg(feature = "mainnet")' programs/memo-mint/src/lib.rs
@@ -481,15 +576,13 @@ If `deploy-mainnet.sh` reports mismatches:
 
 3. **Re-run deployment**
 
-### Admin Tools: "Failed to read admin keypair"
+### Admin Tools: "Failed to read admin keypair" / "not found"
 
-Ensure:
+The keys are locked, or the tool targets another network than you expect:
 ```bash
-# Check file exists
-ls -la ~/.config/solana/memo-token/authority/deploy_admin-keypair.json
-
-# Check permissions
-chmod 600 ~/.config/solana/memo-token/authority/deploy_admin-keypair.json
+./scripts/keys.sh status            # which networks are unlocked
+grep program_env Anchor.toml        # the network admin tools use (MEMO_PROGRAM_ENV overrides it)
+./scripts/keys.sh unlock mainnet    # in your terminal
 ```
 
 ### Admin Tools: "UnauthorizedAdmin" Error
@@ -498,7 +591,7 @@ The admin keypair public key must match `AUTHORIZED_ADMIN_PUBKEY` in contract co
 
 ```bash
 # Get your admin public key
-solana-keygen pubkey ~/.config/solana/memo-token/authority/deploy_admin-keypair.json
+cat ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.pub
 
 # Compare with code
 grep "AUTHORIZED_ADMIN_PUBKEY" programs/memo-chat/src/lib.rs
@@ -511,7 +604,7 @@ grep "AUTHORIZED_ADMIN_PUBKEY" programs/memo-chat/src/lib.rs
 ### ✅ DO
 
 - Use dedicated, isolated production machine
-- Set file permissions to 600 for all keypairs
+- Keep every keypair encrypted (`scripts/keys.sh`); lock the keys as soon as a session ends
 - Create multiple encrypted backups in offline storage
 - Test thoroughly on testnet before mainnet deployment
 - Consider multisig or governance for upgrade authority
@@ -542,13 +635,19 @@ Use this checklist for each mainnet deployment:
 - [ ] All prerequisites installed on production server
 - [ ] Environment variables set (`X1_RPC_URL`)
 - [ ] Repository cloned and on correct branch
-- [ ] Mainnet keypairs generated via `setup-keypairs.sh`
+- [ ] Mainnet keypairs stored encrypted (`setup-keypairs.sh` / `keys.sh migrate`); `keys.sh status` shows no plaintext files
 - [ ] All keypairs backed up to offline storage
-- [ ] Program IDs updated in contract code (all 5 programs)
+- [ ] Program IDs updated in contract code (all 7 programs)
 - [ ] Authority public keys updated in contract code
 - [ ] Changes committed to git
-- [ ] Admin wallet funded with sufficient SOL
+- [ ] Admin wallet funded with sufficient XNT
+- [ ] Updated client (memo-app) released before the program upgrade
+- [ ] Prod Staging (testnet) deployment verified
 - [ ] Deployment script executed successfully
+- [ ] `mint_state` and `global_burn_stats` initialized (deploy script output)
+- [ ] `verify-deployment` passes with no failures
+- [ ] `./scripts/keys.sh lock` run; `status` shows every key locked
+- [ ] One real mint and one burn from the client succeed
 - [ ] All programs verified on block explorer
 - [ ] Global state accounts initialized
 - [ ] MEMO token created

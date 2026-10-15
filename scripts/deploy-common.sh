@@ -10,11 +10,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Keypair locations
-AUTHORITY_KEYPAIR_DIR="${HOME}/.config/solana/memo-token/authority"
-# Program keypairs live outside target/ (which `anchor clean` / `cargo clean` delete), one directory
-# per environment. target/deploy/<program>-keypair.json is only a symlink to them, for `anchor build`.
-PROGRAM_KEYPAIR_BASE_DIR="${HOME}/.config/solana/memo-token/programs"
+# Keypair locations: one tree per environment, managed by scripts/keys.sh. Keypairs are stored
+# GPG-encrypted (<name>-keypair.json.gpg) with their public key (<name>-keypair.pub); while the
+# environment is unlocked, <name>-keypair.json links to the decrypted file on a RAM disk.
+KEYS_BASE="${HOME}/.config/solana/memo-token"
 TARGET_DEPLOY_DIR="${PROJECT_ROOT}/target/deploy"
 
 # Color codes
@@ -75,20 +74,23 @@ is_valid_program() {
     return 1
 }
 
-# Program keypair path for an environment (testnet/mainnet)
-program_keypair_path() {
-    local program=$(get_program_name_underscore "$1")
-    echo "${PROGRAM_KEYPAIR_BASE_DIR}/$2/${program}-keypair.json"
+# Keypair paths for an environment (testnet/mainnet); the file exists only while unlocked
+authority_keypair_path() {
+    echo "${KEYS_BASE}/$2/authority/$1-keypair.json"
 }
 
-# Link the stored program keypair into target/deploy so `anchor build` finds it
-# (otherwise anchor generates a random keypair there). No-op if the keypair is not stored.
-link_program_keypair() {
+program_keypair_path() {
     local program=$(get_program_name_underscore "$1")
-    local keypair_file=$(program_keypair_path "${program}" "$2")
-    if [ -f "${keypair_file}" ]; then
-        mkdir -p "${TARGET_DEPLOY_DIR}"
-        ln -sfn "${keypair_file}" "${TARGET_DEPLOY_DIR}/${program}-keypair.json"
+    echo "${KEYS_BASE}/$2/programs/${program}-keypair.json"
+}
+
+# Public key of a stored keypair (works while locked); empty if the keypair is not stored
+stored_pubkey() {
+    local pub="${1%.json}.pub"
+    if [ -f "${pub}" ]; then
+        cat "${pub}"
+    elif [ -f "$1" ]; then
+        solana-keygen pubkey "$1"
     fi
 }
 
@@ -96,8 +98,9 @@ link_program_keypair() {
 get_program_state() {
     local program_id=$1
     local cluster=$2
+    local keypair=$3 # any keypair: the CLI wants a signer even for this read-only query
     local output
-    if output=$(solana program show "${program_id}" -u "${cluster}" 2>&1); then
+    if output=$(solana program show "${program_id}" -u "${cluster}" -k "${keypair}" 2>&1); then
         echo "deployed $(echo "${output}" | awk '/^Authority:/{print $2}')"
     elif echo "${output}" | grep -q "Unable to find the account"; then
         echo "absent"
@@ -115,8 +118,10 @@ sync_idl() {
     local attempt
     for attempt in 1 2 3 4 5; do
         sleep 3
-        if anchor idl upgrade "${program_id}" --filepath "${idl_file}" --provider.cluster "${cluster}" >/dev/null 2>&1 \
-            || anchor idl init "${program_id}" --filepath "${idl_file}" --provider.cluster "${cluster}" >/dev/null 2>&1; then
+        if anchor idl upgrade "${program_id}" --filepath "${idl_file}" \
+                --provider.cluster "${cluster}" --provider.wallet "${DEPLOY_WALLET}" >/dev/null 2>&1 \
+            || anchor idl init "${program_id}" --filepath "${idl_file}" \
+                --provider.cluster "${cluster}" --provider.wallet "${DEPLOY_WALLET}" >/dev/null 2>&1; then
             return 0
         fi
         print_info "IDL update not possible yet (attempt ${attempt}/5), retrying..."
@@ -196,35 +201,29 @@ verify_configuration() {
     local PROGRAMS=("$@")
     
     print_info "Verifying ${ENV} configuration..."
-    print_info "Program keypairs: ${PROGRAM_KEYPAIR_BASE_DIR}/${ENV} (needed only for first deploys)"
-    print_info "Authority keypairs: ${AUTHORITY_KEYPAIR_DIR}"
+    print_info "Keypairs: ${KEYS_BASE}/${ENV} (program keypairs are needed only for first deploys)"
     echo ""
     
-    if [ ! -d "${AUTHORITY_KEYPAIR_DIR}" ]; then
-        print_error "Authority keypair directory not found: ${AUTHORITY_KEYPAIR_DIR}"
-        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
-        exit 1
-    fi
+    local DEPLOY_ADMIN_KEYPAIR=$(authority_keypair_path deploy_admin "${ENV}")
+    local MINT_AUTHORITY_KEYPAIR=$(authority_keypair_path memo_token_mint "${ENV}")
     
-    # Read authority keypairs
-    local DEPLOY_ADMIN_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/deploy_admin-keypair.json"
-    local MINT_AUTHORITY_KEYPAIR="${AUTHORITY_KEYPAIR_DIR}/memo_token_mint-keypair.json"
-    
-    # Verify authority keypairs exist
+    # The deploy admin signs the deployment, so it must be unlocked; the mint keypair only needs its public key
     if [ ! -f "${DEPLOY_ADMIN_KEYPAIR}" ]; then
-        print_error "Deploy/Admin keypair not found: ${DEPLOY_ADMIN_KEYPAIR}"
-        print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
+        if [ -f "${DEPLOY_ADMIN_KEYPAIR}.gpg" ]; then
+            print_error "${ENV} keys are locked. Run in your terminal: ./scripts/keys.sh unlock ${ENV}"
+        else
+            print_error "Deploy/Admin keypair not found: ${DEPLOY_ADMIN_KEYPAIR}.gpg"
+            print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
+        fi
         exit 1
     fi
     
-    if [ ! -f "${MINT_AUTHORITY_KEYPAIR}" ]; then
-        print_error "Mint authority keypair not found: ${MINT_AUTHORITY_KEYPAIR}"
+    local MINT_AUTHORITY_PUBKEY=$(stored_pubkey "${MINT_AUTHORITY_KEYPAIR}")
+    if [ -z "${MINT_AUTHORITY_PUBKEY}" ]; then
+        print_error "Mint authority keypair not found: ${MINT_AUTHORITY_KEYPAIR}.gpg"
         print_info "Run: ./scripts/setup-keypairs.sh ${ENV}"
         exit 1
     fi
-    
-    # Get authority pubkeys from keypair files
-    local MINT_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${MINT_AUTHORITY_KEYPAIR}")
     local ADMIN_AUTHORITY_PUBKEY=$(solana-keygen pubkey "${DEPLOY_ADMIN_KEYPAIR}")
     
     print_info "Authority Pubkeys (from keypair files):"
@@ -255,8 +254,8 @@ verify_configuration() {
             echo "${code_program_id}"
             
             # 2. If the program keypair is stored, it must match the code
-            if [ -f "${keypair_file}" ]; then
-                local keypair_program_id=$(solana-keygen pubkey "${keypair_file}")
+            local keypair_program_id=$(stored_pubkey "${keypair_file}")
+            if [ -n "${keypair_program_id}" ]; then
                 echo -n "  Program keypair: "
                 if [ "${keypair_program_id}" != "${code_program_id}" ]; then
                     print_error "MISMATCH"
@@ -273,7 +272,7 @@ verify_configuration() {
             
             # 3. Deployed programs are upgraded by program ID with the upgrade authority;
             #    only a first deploy needs the program keypair
-            local state=$(get_program_state "${code_program_id}" "${CLUSTER}")
+            local state=$(get_program_state "${code_program_id}" "${CLUSTER}" "${DEPLOY_ADMIN_KEYPAIR}")
             echo -n "  On-chain: "
             case "${state}" in
                 deployed\ *)
@@ -289,6 +288,10 @@ verify_configuration() {
                 absent)
                     if [ -f "${keypair_file}" ]; then
                         print_success "not deployed yet (first deploy with ${keypair_file})"
+                    elif [ -f "${keypair_file}.gpg" ]; then
+                        print_error "not deployed yet, and its program keypair is locked"
+                        mismatch_details="${mismatch_details}\n${program}: first deploy needs the program keypair (./scripts/keys.sh unlock ${ENV})"
+                        all_match=false
                     else
                         print_error "not deployed yet, and no program keypair at ${keypair_file}"
                         mismatch_details="${mismatch_details}\n${program}: first deploy needs ${keypair_file} (run ./scripts/setup-keypairs.sh ${ENV})"
@@ -458,8 +461,13 @@ deploy_to_env() {
     # Step 2: Build
     echo ""
     print_info "Step 2: Building programs..."
-    for program in "${SELECTED_PROGRAMS[@]}"; do
-        link_program_keypair "${program}" "${ENV}"
+    # Drop links from the old keypair layout: cargo build-sbf would write a new keypair through
+    # a dangling link. A missing keypair is fine: build-sbf generates an unused random one, and
+    # first deploys pass the stored program keypair explicitly.
+    for keypair_link in "${TARGET_DEPLOY_DIR}"/*-keypair.json; do
+        if [ -L "${keypair_link}" ]; then
+            rm "${keypair_link}"
+        fi
     done
     if [ -n "${FEATURE_FLAG}" ]; then
         print_info "Building with feature: ${FEATURE_FLAG}"
@@ -483,20 +491,25 @@ deploy_to_env() {
     print_info "Step 3: Deploying to ${CLUSTER}..."
     
     export ANCHOR_PROVIDER_URL="${CLUSTER}"
+    # Every anchor command signs with this environment's deploy admin, whatever Anchor.toml's wallet is
+    DEPLOY_WALLET="$(authority_keypair_path deploy_admin "${ENV}")"
+    # Admin clients read their keypair from this environment's key tree
+    export MEMO_PROGRAM_ENV="${ENV}"
     
     for program in "${SELECTED_PROGRAMS[@]}"; do
         echo ""
         print_info "Deploying ${program}..."
         
         local program_id=$(extract_program_id_from_code "${program}" "${ENV}")
-        local state=$(get_program_state "${program_id}" "${CLUSTER}")
+        local state=$(get_program_state "${program_id}" "${CLUSTER}" "${DEPLOY_WALLET}")
         
         case "${state}" in
             deployed\ *)
                 # Upgrade by program ID: needs only the upgrade authority (the Anchor.toml wallet)
                 anchor upgrade "${TARGET_DEPLOY_DIR}/${program}.so" \
                     --program-id "${program_id}" \
-                    --provider.cluster "${CLUSTER}"
+                    --provider.cluster "${CLUSTER}" \
+                    --provider.wallet "${DEPLOY_WALLET}"
                 print_success "${program} upgraded: ${program_id}"
                 
                 # Keep the on-chain IDL in sync (create it if it does not exist yet)
@@ -505,13 +518,14 @@ deploy_to_env() {
                     print_success "${program} IDL updated"
                 else
                     print_warning "${program} IDL update failed; the program is upgraded. Retry:"
-                    echo "   anchor idl upgrade ${program_id} --filepath target/idl/${program}.json --provider.cluster ${CLUSTER}"
+                    echo "   anchor idl upgrade ${program_id} --filepath target/idl/${program}.json --provider.cluster ${CLUSTER} --provider.wallet ${DEPLOY_WALLET}"
                 fi
                 ;;
             absent)
                 # First deploy: the program keypair creates the program at its address (uploads the IDL too)
                 anchor deploy \
                     --provider.cluster "${CLUSTER}" \
+                    --provider.wallet "${DEPLOY_WALLET}" \
                     --program-name "${program}" \
                     --program-keypair "$(program_keypair_path "${program}" "${ENV}")"
                 print_success "${program} deployed: ${program_id}"
@@ -529,7 +543,7 @@ deploy_to_env() {
             if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
                     --bin admin-init-mint-state -- "${program_id}" "${CLUSTER}"; then
                 print_error "Mint state initialization failed. Mints will fail until it succeeds."
-                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-mint-state -- ${program_id} ${CLUSTER}"
+                print_info "Retry: MEMO_PROGRAM_ENV=${ENV} cargo run --manifest-path clients/Cargo.toml --bin admin-init-mint-state -- ${program_id} ${CLUSTER}"
                 exit 1
             fi
             print_success "Mint state ready"
@@ -542,7 +556,7 @@ deploy_to_env() {
             if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
                     --bin admin-init-global-burn-stats -- "${program_id}" "${CLUSTER}"; then
                 print_error "Global burn stats initialization failed. Burns will fail until it succeeds."
-                print_info "Retry: cargo run --manifest-path clients/Cargo.toml --bin admin-init-global-burn-stats -- ${program_id} ${CLUSTER}"
+                print_info "Retry: MEMO_PROGRAM_ENV=${ENV} cargo run --manifest-path clients/Cargo.toml --bin admin-init-global-burn-stats -- ${program_id} ${CLUSTER}"
                 exit 1
             fi
             print_success "Global burn stats ready"

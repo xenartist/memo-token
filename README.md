@@ -185,6 +185,6 @@ The program uses a PDA as mint authority, which means:
 
 ## Development Notes
 
-- Program keypairs are stored in `~/.config/solana/memo-token/programs/<testnet|mainnet>/` (outside `target/`, which `anchor clean` deletes) and symlinked into `target/deploy/` by `scripts/setup-keypairs.sh`. They are only needed for a program's first deploy; the deploy scripts upgrade deployed programs by program ID with the upgrade authority.
+- All keypairs are stored GPG-encrypted, one tree per network: `~/.config/solana/memo-token/<testnet|mainnet>/{authority,programs}/` (outside `target/`, which `anchor clean` deletes). `scripts/keys.sh unlock <network>` decrypts them into a RAM disk for a work session and `scripts/keys.sh lock` removes them; `scripts/setup-keypairs.sh` imports or generates missing keypairs. Program keypairs are only needed for a program's first deploy; the deploy scripts upgrade deployed programs by program ID with the upgrade authority.
 - Mint authority is a PDA derived from program ID
 - Each user needs to create their token account before minting

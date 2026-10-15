@@ -15,11 +15,9 @@ use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use solana_system_interface::program as system_program;
 
-// Get admin authority keypair path (unified for all environments)
+// Admin authority keypair of the current program_env (decrypted while `scripts/keys.sh unlock <env>` is in effect)
 fn get_admin_authority_keypair_path() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME environment variable not set");
-    PathBuf::from(home)
-        .join(".config/solana/memo-token/authority/deploy_admin-keypair.json")
+    memo_token_client::get_authority_keypair_path("deploy_admin")
 }
 
 use memo_token_client::{get_rpc_url, get_program_id};
@@ -39,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading admin keypair from: {}", admin_keypair_path.display());
     
     let admin = read_keypair_file(&admin_keypair_path)
-        .expect(&format!("Failed to read admin keypair file from {:?}. Run setup-keypairs.sh first.", admin_keypair_path));
+        .expect(&format!("Failed to read admin keypair file from {:?}. Unlock the keys first: ./scripts/keys.sh unlock <env>.", admin_keypair_path));
 
     println!("✅ Admin keypair loaded successfully!");
     println!("   Admin address: {}", admin.pubkey());

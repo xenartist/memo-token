@@ -245,8 +245,9 @@ The project includes a dedicated tool for transferring mint authority: `admin-tr
 
 **Transfer Procedure**:
 1. **Load Keypairs**:
-   - Mint keypair: `~/.config/solana/memo-token/authority/memo_token_mint-keypair.json`
-   - Program keypair: `target/deploy/memo_mint-keypair.json`
+   - Mint keypair: `~/.config/solana/memo-token/<network>/authority/memo_token_mint-keypair.json`
+   - Program keypair: `~/.config/solana/memo-token/<network>/programs/memo_mint-keypair.json`
+   - Both are stored encrypted and available while `scripts/keys.sh unlock <network>` is in effect
 
 2. **Calculate PDA**:
    ```rust

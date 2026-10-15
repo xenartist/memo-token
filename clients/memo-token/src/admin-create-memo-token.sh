@@ -1,9 +1,17 @@
 #!/bin/bash
 set -e  # Exit on error
 
-# Keypair paths
-ADMIN_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/deploy_admin-keypair.json"
-MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/authority/memo_token_mint-keypair.json"
+# Keypair paths: the program_env's key tree (MEMO_PROGRAM_ENV, else Anchor.toml's program_env).
+# The keys are stored encrypted: unlock them first with ./scripts/keys.sh unlock <env>
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ANCHOR_TOML="${SCRIPT_DIR}/../../../Anchor.toml"
+PROGRAM_ENV="${MEMO_PROGRAM_ENV:-$(grep '^program_env' "${ANCHOR_TOML}" | awk -F'"' '{print $2}')}"
+if [ "${PROGRAM_ENV}" != "testnet" ] && [ "${PROGRAM_ENV}" != "mainnet" ]; then
+  echo "Could not determine program_env (got '${PROGRAM_ENV}')"
+  exit 1
+fi
+ADMIN_KEYPAIR_PATH="$HOME/.config/solana/memo-token/${PROGRAM_ENV}/authority/deploy_admin-keypair.json"
+MINT_KEYPAIR_PATH="$HOME/.config/solana/memo-token/${PROGRAM_ENV}/authority/memo_token_mint-keypair.json"
 
 # Default token values
 TOKEN_NAME="MEMO Engraves Memories Onchain"

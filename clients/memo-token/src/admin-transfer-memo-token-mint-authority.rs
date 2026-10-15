@@ -15,12 +15,15 @@ use std::{str::FromStr, env, process};
 // Token-2022 program ID constant
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-use memo_token_client::{get_rpc_url, get_wallet_path};
+use memo_token_client::{get_authority_keypair_path, get_rpc_url, get_wallet_path};
 
 fn main() {
     // Default paths
-    let mint_keypair_path = shellexpand::tilde("~/.config/solana/memo-token/authority/memo_token_mint-keypair.json").to_string();
-    let program_keypair_path = "target/deploy/memo_mint-keypair.json";
+    // Default paths: the current program_env's key tree (decrypted while `scripts/keys.sh unlock <env>` is in effect)
+    let mint_keypair_path = get_authority_keypair_path("memo_token_mint").display().to_string();
+    let program_keypair_path = mint_keypair_path
+        .replace("/authority/memo_token_mint-keypair.json", "/programs/memo_mint-keypair.json");
+    let program_keypair_path = program_keypair_path.as_str();
     
     // Read command line arguments for optional overrides
     let args: Vec<String> = env::args().collect();
@@ -33,8 +36,9 @@ fn main() {
         println!("  Payer wallet: Read from Anchor.toml [provider].wallet");
         println!("  RPC endpoint: Read from Anchor.toml [provider].cluster");
         println!("\nDefault paths:");
-        println!("  Mint keypair: ~/.config/solana/memo-token/authority/memo_token_mint-keypair.json");
-        println!("  Program keypair: target/deploy/memo_mint-keypair.json");
+        println!("  Mint keypair: ~/.config/solana/memo-token/<program_env>/authority/memo_token_mint-keypair.json");
+        println!("  Program keypair: ~/.config/solana/memo-token/<program_env>/programs/memo_mint-keypair.json");
+        println!("  (unlock them first: ./scripts/keys.sh unlock <program_env>)");
         println!("\nOptions:");
         println!("  --mint-keypair <path>     Override mint keypair path");
         println!("  --program-keypair <path>  Override program keypair path");
@@ -114,7 +118,7 @@ fn main() {
             println!("  Error details: {}", e);
             println!("\nPlease ensure:");
             println!("  1. The file exists at the specified path");
-            println!("  2. You have built the program (run: anchor build)");
+            println!("  2. The keys are unlocked (run: ./scripts/keys.sh unlock <program_env>)");
             println!("  3. The file is a valid Solana keypair JSON file");
             process::exit(1);
         }

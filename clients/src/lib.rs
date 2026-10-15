@@ -13,6 +13,8 @@ pub use config::{
     get_all_program_ids,
     get_token_mint,
     get_all_token_mints,
+    get_authority_keypair_path,
+    read_authority_keypair,
 };
 
 pub use mint_curve::{expected_mint_amount, validate_mint_amount};
