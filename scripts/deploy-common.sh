@@ -499,6 +499,21 @@ deploy_to_env() {
     fi
     
     print_success "Build complete"
+
+    # cargo build-sbf generated a random <program>-keypair.json for each program (no keypair is linked
+    # into target/deploy). Remove them so no plaintext keypair is left behind; a real program keypair
+    # found there is kept and reported.
+    for keypair_file in "${TARGET_DEPLOY_DIR}"/*-keypair.json; do
+        [ -f "${keypair_file}" ] && [ ! -L "${keypair_file}" ] || continue
+        local generated_program=$(basename "${keypair_file}" -keypair.json)
+        local generated_pubkey=$(solana-keygen pubkey "${keypair_file}" 2>/dev/null)
+        if [ "${generated_pubkey}" = "$(extract_program_id_from_code "${generated_program}" testnet)" ] \
+            || [ "${generated_pubkey}" = "$(extract_program_id_from_code "${generated_program}" mainnet)" ]; then
+            print_warning "${keypair_file} is the real ${generated_program} program keypair in plaintext. Encrypt it with ./scripts/keys.sh migrate."
+        else
+            rm -f "${keypair_file}"
+        fi
+    done
     
     # Step 3: Deploy
     echo ""
