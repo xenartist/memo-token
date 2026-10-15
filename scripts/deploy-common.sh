@@ -392,6 +392,20 @@ deploy_to_env() {
     shift 3
     local SELECTED_PROGRAMS=("$@")
     
+    # The network deployed to (the cluster), which differs from ENV for Prod Staging:
+    # ENV selects the build, program IDs and keys; CLUSTER is where they go
+    local TARGET_LABEL
+    if [[ "${CLUSTER}" =~ "mainnet" ]]; then
+        TARGET_LABEL="MAINNET"
+    elif [[ "${CLUSTER}" =~ "testnet" ]]; then
+        TARGET_LABEL="TESTNET"
+    else
+        TARGET_LABEL="${CLUSTER}"
+    fi
+    if [ "${TARGET_LABEL}" != "$(to_upper "${ENV}")" ]; then
+        TARGET_LABEL="${TARGET_LABEL} (${ENV} build, program IDs and keys)"
+    fi
+    
     # If no programs specified, deploy all
     if [ ${#SELECTED_PROGRAMS[@]} -eq 0 ]; then
         SELECTED_PROGRAMS=("${ALL_PROGRAMS[@]}")
@@ -424,7 +438,7 @@ deploy_to_env() {
     
     echo ""
     echo "=========================================="
-    echo "🚀 Deploying to $(to_upper "${ENV}")"
+    echo "🚀 Deploying to ${TARGET_LABEL}"
     echo "=========================================="
     echo ""
     
@@ -443,7 +457,7 @@ deploy_to_env() {
     
     # Confirm deployment
     echo ""
-    print_warning "Ready to deploy to $(to_upper "${ENV}")"
+    print_warning "Ready to deploy to ${TARGET_LABEL}"
     echo "  Cluster: ${CLUSTER}"
     echo "  Programs: ${SELECTED_PROGRAMS[*]}"
     echo ""
@@ -576,14 +590,14 @@ deploy_to_env() {
     print_success "Deployment Complete!"
     echo "=========================================="
     echo ""
-    print_info "Deployed Program IDs ($(to_upper "${ENV}")):"
+    print_info "Deployed Program IDs (${TARGET_LABEL}):"
     for program in "${SELECTED_PROGRAMS[@]}"; do
         local program_id=$(extract_program_id_from_code "${program}" "${ENV}")
         echo "  ${program} = \"${program_id}\""
     done
     echo ""
     
-    if [ "${ENV}" = "mainnet" ]; then
+    if [[ "${CLUSTER}" =~ "mainnet" ]]; then
         echo ""
         print_warning "POST-DEPLOYMENT SECURITY CHECKLIST:"
         echo "  ☐ Verify contracts on blockchain explorer"
