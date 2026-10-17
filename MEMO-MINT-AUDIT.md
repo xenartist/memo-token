@@ -1252,7 +1252,7 @@ Rule: above 10M, for supply in `(d × 10ⁿ, (d+1) × 10ⁿ]`, reward = `decade_
 **Audit Date**: October 27, 2025 (original), revised October 13, 14, 15 and 16, 2026  
 **Contract Version**: Revision 4 (0.4.0)  
 **Final Status**: ✅ APPROVED FOR MAINNET  
-**Deployment Status (October 16, 2026, from the core audit, OPS-04)**: Revision 4 (the curve change) is deployed on X1 mainnet since October 15, 2026, 12:38:02 UTC (slot 86131302); the mainnet bytecode matches the `--features mainnet` build of commit `ca4c8a0b`. The October 16 follow-up (`mint_amount_at_supply` extracted, mint behavior unchanged) is deployed on testnet and not yet on mainnet. Testnet runs the audited working tree.  
+**Deployment Status (October 16, 2026, from the core audit, OPS-04)**: Revision 4 (the curve change) is deployed on X1 mainnet since October 15, 2026, 12:38:02 UTC (slot 86131302); the mainnet bytecode matches the `--features mainnet` build of commit `ca4c8a0b`. The October 16 follow-up (`mint_amount_at_supply` extracted, mint behavior unchanged) is deployed on testnet and, since **October 17, 2026**, on mainnet (commit `c47f1eb9`, slot 86507050, bytecode sha256 `2423c17f…` = the audited `--features mainnet` build). Both networks run the audited code.  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
 

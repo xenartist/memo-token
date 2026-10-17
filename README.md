@@ -72,7 +72,7 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 ### Burning
 
-- **memo-burn minimum: 1 unit (0.000001 MEMO).** Any amount in units is allowed (no whole-token rule, no integer multiple), up to 1T MEMO per `process_burn` instruction. The memo's `burn_amount` must equal the instruction's `amount` exactly. Each user must call `initialize_user_global_burn_stats` once before their first burn. Note: until the mainnet memo-burn upgrade, mainnet still accepts whole tokens only (at least 1 MEMO); see `MEMO-BURN-AUDIT.md`.
+- **memo-burn minimum: 1 unit (0.000001 MEMO).** Any amount in units is allowed (no whole-token rule, no integer multiple), up to 1T MEMO per `process_burn` instruction. The memo's `burn_amount` must equal the instruction's `amount` exactly. Each user must call `initialize_user_global_burn_stats` once before their first burn.
 - **App minimums scale with the current mint reward**: `minimum = multiplier × reward at the current supply` (1 MEMO per mint today, so the multiplier is the minimum in MEMO while supply is at or below 10M):
 
   | Operation | Multiplier |

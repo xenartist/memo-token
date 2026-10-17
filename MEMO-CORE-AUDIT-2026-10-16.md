@@ -4,7 +4,8 @@
 |---|---|
 | Audit target | `memo-mint`, `memo-burn` (Anchor 0.32.1, Token-2022, decimals = 6, X1 chain) |
 | Code version | Branch `dev`, HEAD `ca4c8a0b` ("re-design memo emission curve") plus uncommitted working-tree changes. This report audits the **working tree** |
-| Report date | 2026-10-16 |
+| Report date | 2026-10-16 (deployment status updated 2026-10-17) |
+| Deployment status | Testnet and mainnet both run the audited code. Prod staging and mainnet were upgraded on 2026-10-17; see 8.4 |
 | Audience | Project owner; third-party developers building on MEMO |
 | Severity definitions | Critical: unauthorized minting, burning other users' assets, breaking the supply cap, multiple mints in one transaction, theft of funds. High: a core invariant broken under realistic conditions, or permanent denial of service for minting or burning. Medium: an invariant broken under edge conditions, real harm to other users, or accounting errors with real impact. Low: minor accounting/logging/UX inconsistencies, defense-in-depth gaps. Info: observations, design notes, centralization and trust assumptions |
 
@@ -17,7 +18,7 @@
 | Program | Conclusion |
 |---|---|
 | **memo-mint** | Within the scope of this audit (see 1.3–1.6), **no critical, high, medium or low program defects were found, and the program code does not need to change**. At most one mint per transaction, the 10T circulating-supply cap, the reward curve, the mint authority and the account bindings are all proven from the code (together with dependency source), and the expected results were observed in local-validator attack tests and in read-only simulations on X1 testnet and mainnet. All confirmed program-related findings are Info. They are design notes, documentation errors, test coverage gaps and runtime trust assumptions. |
-| **memo-burn** | Within the scope of this audit, **no critical, high, medium or low program defects were found, and the program code does not need to change**. Proven: only tokens of the authorized mint held by the signer can be burned; the memo and the amount are bound per instruction; the statistics arithmetic is correct and atomic with the burn CPI. Every rejection path was observed on a local validator running a binary byte-identical to the testnet deployment. **Note: mainnet currently runs the HEAD `ca4c8a0b` version, which still requires "whole tokens, at least 1 token". This report's conclusion that "any amount from 1 base unit can be burned" holds for mainnet only after mainnet is upgraded to the working tree (OPS-01, OPS-04).** |
+| **memo-burn** | Within the scope of this audit, **no critical, high, medium or low program defects were found, and the program code does not need to change**. Proven: only tokens of the authorized mint held by the signer can be burned; the memo and the amount are bound per instruction; the statistics arithmetic is correct and atomic with the burn CPI. Every rejection path was observed on a local validator running a binary byte-identical to the testnet deployment. **Note: at audit time mainnet ran the HEAD `ca4c8a0b` version (whole tokens, at least 1 token); mainnet was upgraded to the audited code on 2026-10-17, so the conclusion that "any amount from 1 base unit can be burned" now holds on both networks (OPS-01, OPS-04, 8.4).** |
 
 This report **does not claim "100% security"**. The conclusions hold only within these limits:
 - The audit covers the working-tree source and the dependency versions listed in section 2.2.
@@ -91,7 +92,7 @@ The audit found no way to bypass the core security properties. The remaining ris
 
 - **Double mint through two levels of nested CPI**: code reasoning only. "Multiple CPIs within one top-level instruction" was observed to return 6008 in the control case of the LiteSVM harness (INT-12), but no CPI test program is committed to the repository (TEST-01).
 - **End-to-end burns on the mainnet runtime + mainnet Token-2022**: not executed, including small-amount burns (mainnet rejects small amounts before the upgrade anyway). However, the testnet runtime version is the same as mainnet, and the local Token-2022 is the same as mainnet.
-- **The mainnet upgrade itself**: not executed. By rule, no mainnet transactions are sent.
+- **The mainnet upgrade itself**: not executed during the audit. By rule, no mainnet transactions are sent. The owner performed the upgrade after the audit, on 2026-10-17 (see 8.4).
 - **Deployment scripts**: not actually run. They need encrypted keys and act on real clusters. OPS-09 and OPS-10 were checked statically only.
 - **The exact X1 per-writable-account block CU limit**: not verified, because the cost-model source was not available locally (INT-08).
 - **There are no repeatable regression tests in the repository** covering memo-burn rejection paths, CPI double mint, or `check_memo_instruction`. The dynamic harnesses used in this audit are temporary files and were not committed (TEST-01/02/03). **Status: addressed by committed regression tests — see section 8.2.**
@@ -262,7 +263,7 @@ Evidence types:
 | # | Invariant | Status | Evidence type | Main basis |
 |---|---|---|---|---|
 | D-1 | The bytecode deployed on testnet is the audited working tree | Holds | Local on-chain attack test; testnet live test (program dump) | ENV-01: sha256 `caa266ae…` / `eecad893…` |
-| D-2 | The bytecode deployed on mainnet is the audited working tree | **Does not hold** (mainnet runs HEAD `ca4c8a0b`) | Testnet live test (mainnet read-only dump) | OPS-04 |
+| D-2 | The bytecode deployed on mainnet is the audited working tree | **Did not hold at audit time** (mainnet ran HEAD `ca4c8a0b`); **holds since the 2026-10-17 upgrade** | Testnet live test (mainnet read-only dump) | OPS-04 |
 | D-3 | `MintState` and `GlobalBurnStats` exist on both networks, use canonical bumps and are rent-exempt | Holds | Read-only RPC | See section 6 |
 | D-4 | Deployment scripts never auto-confirm a mainnet deployment; mainnet builds always use `--features mainnet` | Holds (network detection relies on a URL substring, see OPS-09) | Code proof | `scripts/deploy-common.sh:449-456`; `scripts/deploy-mainnet.sh:31-40, 56-60` |
 | D-5 | A binary built for the wrong network cannot run at the other network's program address | Holds | Code proof | `anchor-syn-0.32.1/src/codegen/program/entry.rs:51-53` (`DeclaredProgramIdMismatch`) |
@@ -685,6 +686,7 @@ Evidence types:
   - A project burn of 420.5 tokens returns 6005, and 420 tokens succeeds.
 - **Recommendation**: for the mainnet upgrade, upgrade memo-burn first or in the same deployment as the apps; never deploy the apps alone. Add a check to `deploy-common.sh`: when apps are selected but memo_burn is not, compare the on-chain memo-burn ProgramData with a local build using the same feature (truncated to the ELF length), and abort on mismatch. After the upgrade, verify hashes and simulate one small-amount burn.
 - **Owner note (2026-10-16)**: mainnet currently has very few users, so the upgrade is low-impact. The recommended order (memo-burn and memo-mint first, then the apps) still applies.
+- **Status: upgraded 2026-10-17.** Mainnet was upgraded on 2026-10-17 (commit `c47f1eb9`, all 7 programs in canonical order, slots 86507050–86508852, 02:58–03:09 UTC); the on-chain bytecode equals the reviewed `--features mainnet` build (memo_mint `2423c17f…`, memo_burn `39d06125…`), see 8.4. The cross-program version check in `deploy-common.sh` remains a recommendation.
 
 #### OPS-04 Deployed version matrix: testnet runs the audited working tree, mainnet runs HEAD `ca4c8a0b`; until the mainnet upgrade, this audit does not cover mainnet bytecode
 - **Final severity**: Info (reported Info)
@@ -702,6 +704,8 @@ Evidence types:
 
   After the upgrade, use `verify-deployment` (with the mainnet build in target/deploy) to check bytecode and IDL, and do one small-amount burn as a smoke check.
 - **Owner note (2026-10-16)**: mainnet currently has very few users, so the upgrade is low-impact. The recommended order (memo-burn and memo-mint first, then the apps) still applies.
+
+- **Status: upgraded 2026-10-17.** Mainnet was upgraded on 2026-10-17 (commit `c47f1eb9`, all 7 programs in canonical order, slots 86507050–86508852, 02:58–03:09 UTC); the on-chain bytecode equals the reviewed `--features mainnet` build (memo_mint `2423c17f…`, memo_burn `39d06125…`), see 8.4.
 
 #### OPS-05 Centralization: one System-owned hot key is at the same time the upgrade authority, admin, IDL authority and metadata authority of all memo programs; it could mint without limit and abuse users' signer privileges
 - **Final severity**: Info (reported Info; by definition this is centralization and a trust assumption)
@@ -1304,6 +1308,8 @@ Conclusion: **the tests committed to the repository can hardly catch regressions
 
 ### 7.1 Must be done before the mainnet upgrade
 
+> **Status (2026-10-17)**: done. Items 1, 2 and 4 were completed and the upgrade was performed; item 3 is an accepted risk (8.3). See 8.4.
+
 > **Owner note (2026-10-16)**: mainnet currently has very few users, so the upgrade is low-impact. The recommended order (memo-burn and memo-mint first, then the apps) still applies.
 
 1. **Upgrade in the correct order** (OPS-01): upgrade memo-burn (and memo-mint) first, or do it in the same `deploy-mainnet.sh` run as the apps, in canonical order. Never deploy the apps alone. Add a cross-program version check to `deploy-common.sh`.
@@ -1355,7 +1361,7 @@ Conclusion: **the tests committed to the repository can hardly catch regressions
 
 1. **Upgrade and admin key** — **accepted risk with a planned mitigation.** On mainnet all memo programs can be upgraded by one hot key; its holder could mint without limit and abuse users' signer privileges; this key has also been used for testnet staging. The keys are stored GPG-encrypted and unlocked to a RAM disk, but the key trees for both networks are on the same machine. Owner response (2026-10-16): accepted for now; once memo-mint and memo-burn have run stably for a while, their upgrade authority will be revoked (programs made immutable). See 8.3.
 2. **Platform**: X1 Token-2022 can be upgraded by a 3/6 multisig with no timelock; the X1 runtime's sysvar layout and CPI account synchronization semantics (on mainnet the byte comparison is the only barrier).
-3. **Deployment state**: mainnet currently runs the HEAD version. This report's conclusions about small-amount burns do not apply to mainnet before the upgrade; if the upgrade order is wrong, the apps' small-amount burn paths will fail (no funds lost). Mainnet currently has very few users, so the upgrade itself is low-impact.
+3. **Deployment state**: resolved. At audit time mainnet ran the HEAD version; mainnet was upgraded on 2026-10-17 (commit `c47f1eb9`, all 7 programs in canonical order, slots 86507050–86508852, 02:58–03:09 UTC); the on-chain bytecode equals the reviewed `--features mainnet` build (memo_mint `2423c17f…`, memo_burn `39d06125…`), see 8.4. The conclusions of this report, including small-amount burns, now apply to mainnet. For future upgrades the order rule (OPS-01) still applies.
 4. **Bounded behavior by design**: same-slot false positives (MINT-01); burn-then-mint step arbitrage, cumulative < 1 token over the whole curve (INT-01); in-flight transactions failing when thresholds jump a tier (INT-02); paid congestion from global write locks (INT-08).
 5. **Off-chain misreading**: indexers that count by memo text or by `GlobalBurnStats` will report wrong numbers.
 6. **Insufficient regression protection**: the committed tests can hardly catch regressions in the core checks (5.8). Before any future code change is deployed, the tests in 7.2 item 2 should be in place first. **Status: addressed by committed regression tests — see section 8.2.**
@@ -1428,9 +1434,26 @@ Every failing case asserts the exact `InstructionError [index, Custom(code)]` an
 |---|---|---|
 | OPS-02 (mainnet key also used for testnet staging) | Low | Accepted for now. Once memo-mint and memo-burn have run stably for a while, their upgrade authority will be revoked (programs made immutable). The recommendations in OPS-02 remain valid but do not block the mainnet upgrade. |
 | OPS-05 (one hot key holds all upgrade/admin/IDL/metadata authorities) | Info | Accepted for now, with the same planned mitigation: revoke the upgrade authority of memo-mint and memo-burn after a period of stable operation. |
-| OPS-01 / OPS-04 (mainnet still on HEAD; upgrade order) | Info | Mainnet currently has very few users, so the upgrade is low-impact. The recommended order (memo-burn and memo-mint first, then the apps) still applies. |
+| OPS-01 / OPS-04 (mainnet on HEAD at audit time; upgrade order) | Info | Mainnet had very few users, so the upgrade was low-impact. Upgraded on 2026-10-17 in the recommended order (see 8.4); the order rule still applies to future upgrades. |
 
 ---
+
+### 8.4 Deployment record (2026-10-17)
+
+Both deployments used commit `c47f1eb9` ("re-audit core contracts - mint/burn"), built with `anchor build -- --features mainnet`. Before deploying, the build hashes were checked against 6.2: `memo_mint.so` `2423c17f850df4d41d32db57c7743b6fd15488851be92c52f3ef7c66079be5c7` and `memo_burn.so` `39d06125fca59a581b19fb9ab2925f79166b6d15dcfb4155de19b4e6faac3abf` — both match.
+
+| Step | Network | Slots (UTC) | Result |
+|---|---|---|---|
+| Prod staging (`deploy-prod-staging-testnet.sh`, mainnet IDs) | X1 testnet | 195997654–195999428 (02:36–02:47) | `verify-deployment`: 23 passed, 0 failed |
+| Mainnet (`deploy-mainnet.sh`, all 7 programs, order mint → burn → chat → profile → project → blog → forum) | X1 mainnet | 86507050–86508852 (02:58–03:09) | `verify-deployment`: 23 passed, 0 failed |
+
+`verify-deployment` on mainnet (read-only, simulated as an existing burner wallet) confirmed:
+- all 7 programs: upgrade authority `FVvew…`, on-chain bytecode equal to the local build;
+- the MEMO mint authority is the memo-mint PDA `C1r27…`; supply 8,730,757 MEMO;
+- `mint_state` and `global_burn_stats` exist with the expected owner and size; existing statistics were preserved;
+- a single mint succeeds; a second mint in the same transaction fails with 6008; a 1 MEMO burn succeeds; old-client calls without the new accounts fail with 3005.
+
+The on-chain memo-burn IDL was updated ("Must burn at least 1 unit (0.000001 token)"). Testnet (testnet IDs) has run the same audited code since 2026-10-15.
 
 ## Appendix A: Evidence file locations (temporary audit directory, not part of the repository, may be cleaned up)
 

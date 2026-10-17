@@ -47,14 +47,14 @@ The memo-burn contract allows users to permanently destroy MEMO tokens while att
 - **Memo length**: at least 69 bytes checked on chain (in practice at least 72 characters, because padded Base64 lengths are multiples of 4), no contract maximum
 - **Memo payload**: no contract maximum; a memo decodes to 3/4 of its length, and the payload is that minus the 13-byte Borsh header. With the 9 account keys a burn transaction needs since Revision 3 (the 7 `process_burn` accounts plus the Memo and memo-burn program IDs), a single-burn legacy transaction on X1 today holds a memo of about 812 bytes (about 772 with a SetComputeUnitLimit instruction), that is a payload of about 596 bytes; a v0 transaction with an address lookup table holds about 960 bytes
 
-### Deployment Status (October 16, 2026, from the core audit, OPS-01 / OPS-04)
+### Deployment Status (updated October 17, 2026)
 
 | Network | Deployed memo-burn | Burn amount rule |
 |---|---|---|
 | X1 testnet | The audited working tree (upgraded October 15, 2026, 21:34 UTC) | Any amount from 1 unit (this document) |
-| X1 mainnet | Commit `ca4c8a0b` (Revision 3), last deployed October 15, 2026, 10:27 UTC (slot 86109925) | Still **whole tokens only, at least 1 token**: amounts below 1,000,000 units fail with `BurnAmountTooSmall` (6003), non-whole amounts with `InvalidBurnAmount` (6005) |
+| X1 mainnet | **Upgraded October 17, 2026** to commit `c47f1eb9` (slot 86507344, together with memo-mint and all apps); bytecode sha256 `39d06125…` = the audited `--features mainnet` build | Any amount from 1 unit (this document). Before the upgrade mainnet ran `ca4c8a0b` (Revision 3, whole tokens only) |
 
-Until mainnet memo-burn is upgraded, the "any amount from 1 unit" statements in this document apply to testnet only. When upgrading mainnet, memo-burn must be upgraded **before or together with** the apps: the current apps set supply-scaled minimums that are fractional above 10M supply (for example 37,862.1 MEMO to create a chat group), and those burns fail with 6005 against the old memo-burn. The transaction rolls back and no funds are lost.
+Both networks now run the fractional-burn version. For future upgrades, memo-burn must still be upgraded **before or together with** the apps: the apps set supply-scaled minimums that become fractional above 10M supply, and those burns would fail with 6005 against a whole-token memo-burn (the transaction rolls back, no funds are lost).
 
 ---
 
@@ -556,7 +556,7 @@ The memo-burn contract exhibits strong security posture, precise validation logi
 
 - **Contract Name**: memo-burn  
 - **Purpose**: Structured token burn with verifiable metadata  
-- **Version**: Revision 3 plus the October 16, 2026 fractional-burn change (0.2.0); mainnet still runs Revision 3 with whole-token burns (see Deployment Status)  
+- **Version**: Revision 3 plus the October 16, 2026 fractional-burn change (0.2.0); deployed to testnet and mainnet (mainnet upgraded October 17, 2026; see Deployment Status)  
 - **Security Status**: ✅ Production Ready  
 - **Risk Level**: Low  
 - **Code Quality**: Excellent
@@ -659,7 +659,7 @@ memo-burn is already deployed on X1 mainnet (`2sb3gz5Cmr2g1ia5si2rmCZqPACxgaZXEm
 **Audit Date**: November 8, 2025 (original), revised October 13 and 16, 2026  
 **Contract Version**: Revision 3 plus the October 16, 2026 fractional-burn change (0.2.0)  
 **Final Status**: ✅ APPROVED FOR MAINNET  
-**Deployment Status (October 16, 2026)**: testnet runs the audited working tree; mainnet runs Revision 3 (commit `ca4c8a0b`, whole-token burns only, `GlobalBurnStats` initialized October 15, 2026). The fractional-burn change still has to be deployed to mainnet, before or together with the apps.  
+**Deployment Status (October 17, 2026)**: testnet and mainnet both run the audited code (mainnet upgraded October 17, 2026 to commit `c47f1eb9`; `GlobalBurnStats` initialized October 15, 2026).  
 
 *This report is informational only and does not constitute financial or legal advice. The auditor confirmed security properties as of the audit date.*
 
