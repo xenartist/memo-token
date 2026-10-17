@@ -3,11 +3,13 @@
 ## Executive Summary
 
 **Contract**: memo-mint  
-**Audit Date**: October 27, 2025 (original), revised October 13, 14 and 15, 2026  
+**Audit Date**: October 27, 2025 (original), revised October 13, 14, 15 and 16, 2026  
 **Auditor**: Pre-Production Security Review  
 **Version**: Revision 4, program version 0.4.0 (emission curve steps down just above 10M; Revision 3: one mint per transaction; Revision 2: round-number emission curve, `process_mint_to` fix, compute-unit optimization)  
 **Language**: Rust (Anchor Framework)  
 **Network**: X1 (SVM-based)
+
+> **Note (October 16, 2026)**: the final audit of memo-mint and memo-burn, `MEMO-CORE-AUDIT-2026-10-16.md`, re-verified this contract against the source code and corrected several statements in this document (finding IDs such as MINT-01 and OPS-03 refer to that report). Where the two documents differ, the core audit report takes precedence.
 
 ### Overall Assessment
 
@@ -107,7 +109,7 @@ A transaction can now mint at most once, whether it calls memo-mint directly, th
 | New instruction `initialize_mint_state` | Admin only (`AUTHORIZED_ADMIN_PUBKEY`, the deploy admin key, per network; new in memo-mint). Creates `MintState` once; a second call fails because the account exists. |
 | Accounts | `mint_state` is appended as the **last** account of `process_mint` and `process_mint_to` (writable, seeds and stored bump checked). Existing accounts keep their order. chat `send_memo_to_group`, blog `mint_for_blog` and forum `mint_for_post` pass it as their last account. |
 
-**False positives**: only two transactions of the same user with exactly the same instructions (same memo, same accounts) in the same slot collide; the second fails. Two different users with identical memos never collide, because their signer accounts differ. Identical instructions in a later slot succeed.
+**False positives** (corrected in the core audit, MINT-01): the fingerprint covers exactly the serialized top-level instruction list (program ids, account keys with their signer/writable flags, instruction data). It does not cover signatures, the recent blockhash, lookup table addresses, or a fee payer that no instruction references, and `record_mint` compares only with the last recorded mint. A mint is therefore rejected as a false positive only when its transaction's top-level instruction list is byte-for-byte identical to that of the **immediately preceding** recorded mint in the same slot; any other mint in between overwrites `MintState`. Example: a user re-signs the same instructions with a new blockhash or a different fee payer after an RPC timeout, and both transactions land in the same slot; the second fails with 6008 and still pays the fee. For direct calls and the built-in apps the minting user is a signer of a top-level instruction, so only the same user can collide with themselves; two different users with identical memos never collide. A third-party integration whose top-level instructions contain no signer (for example a permissionless crank calling `process_mint_to` with its own PDA) can be made to collide by anyone. Identical instructions in a later slot succeed. Clients can avoid this by adding a nonce or timestamp to the memo, or listing the fee payer as a memo signer; one mint per transaction is never affected.
 
 **Deploy order (required)**: upgrade memo-mint → run `admin-init-mint-state` → upgrade chat, blog and forum. Until `MintState` exists, every mint fails with `AccountNotInitialized`; until the apps are upgraded, their mint instructions fail with `AccountNotEnoughKeys`. `scripts/deploy-common.sh` runs the init client right after deploying memo-mint and verifies memo-mint's `AUTHORIZED_ADMIN_PUBKEY` against the deploy admin keypair.
 
@@ -121,7 +123,7 @@ A transaction can now mint at most once, whether it calls memo-mint directly, th
 **Verification**:
 - 59 unit tests (testnet and mainnet builds), including fingerprints built with the runtime's own instructions sysvar serializer (`construct_instructions_data` / `store_current_index_checked`): identical for every instruction index of a transaction, different when any instruction, account, flag or signer differs.
 - Local validator, full run from a fresh ledger, repeated twice with identical results: 3 pre-init checks (mint before init → `AccountNotInitialized`, non-admin init → `UnauthorizedAdmin`), 3 post-init checks, 36 core cases, all 7 smoke tests, 18 app cases and the 52-case `pen-test-memo-mint` suite.
-- Rejected with `OneMintPerTransaction`, with balance, supply and `MintState` unchanged: 2, 3 and 31 top-level mints; `process_mint` + `process_mint_to` in both orders; two memos with two mints; memo/mint/memo/mint; mints separated by other instructions; `process_mint_to` to two recipients; three signers minting together; a test program calling memo-mint via CPI 2 and 30 times, through `process_mint_to`, nested two levels deep, and combined with a top-level mint; chat `send_memo_to_group` (zero-interval group), blog `mint_for_blog` and forum `mint_for_post` twice in one transaction, combined with a direct mint, and called twice via CPI; burn followed by two mints.
+- Rejected with `OneMintPerTransaction`, with balance, supply and `MintState` unchanged: 2, 3 and 31 top-level mints; `process_mint` + `process_mint_to` in both orders; two memos with two mints; memo/mint/memo/mint; mints separated by other instructions; `process_mint_to` to two recipients; three signers minting together; a test program calling memo-mint via CPI 2 and 30 times, through `process_mint_to`, nested two levels deep, and combined with a top-level mint; chat `send_memo_to_group` (zero-interval group), blog `mint_for_blog` and forum `mint_for_post` twice in one transaction, combined with a direct mint, and called twice via CPI; burn followed by two mints. Note (core audit TEST-01): the CPI test program used for these runs is not in the repository, and the committed tests (unit tests, `pen-test-memo-mint`, smoke tests) only build top-level mints, so this part cannot be reproduced from the repository today. The core audit re-verified the property with app CPI cases on a local validator and on testnet (read-only simulation) and with a LiteSVM CPI harness.
 - Still allowed: single mints (11 in a row), `process_mint_to` to self and others, a single CPI mint from a third-party program, mint plus burn in one transaction, three burns in one transaction, two users with identical memos in the same slot, identical instructions in a later slot.
 - Upgrade path on a local validator, both manually and with `deploy-common.sh`: the old program batches; after the upgrade, old clients fail with `AccountNotEnoughKeys` and new clients fail with `AccountNotInitialized` until the admin init; afterwards single mints succeed and batches are rejected.
 
@@ -135,6 +137,8 @@ A transaction can now mint at most once, whether it calls memo-mint directly, th
 | Last step | Above 9T pays exactly 1 lamport (was 2), so supply can reach exactly 10T. The `new_supply > MAX_SUPPLY` check is kept as defense in depth. |
 | Effect | Minting from 10M to 100M takes about 283M mints instead of about 193M (+47%). Mainnet supply was 8.73M when the change was made, so no mint at the new rates had happened. |
 | Scope | Only `calculate_dynamic_mint_amount` changed. Accounts, instructions, error codes and the one-mint-per-transaction check are unchanged; chat, blog and forum mint through memo-mint and need no upgrade. |
+
+**Follow-up (October 16, 2026): public curve function.** The curve calculation moved out of `calculate_dynamic_mint_amount` into a new public pure function, `mint_amount_at_supply(supply) -> u64`, which `calculate_dynamic_mint_amount` now calls before its cap checks. Mint behavior is unchanged. The function has no cap check: at or above `MAX_SUPPLY_LAMPORTS` it returns the last step (1 lamport), so its result is always ≥ 1. memo-chat, memo-profile, memo-project, memo-blog and memo-forum call it as a library function (no CPI) to scale their burn minimums with the current mint reward (`MINTS × mint_amount_at_supply(mint.supply)`). As a result, any future change to the curve also changes those burn minimums, and those programs must be rebuilt and redeployed to pick it up. Unit tests check that it equals `calculate_dynamic_mint_amount` below the cap and returns 1 at and above the cap (including `u64::MAX`).
 
 ---
 
@@ -218,6 +222,7 @@ The strict position requirement has been **tested and validated** for the follow
 3. **Gas Efficiency**: Reduces compute units by avoiding position scanning loops
 4. **Security**: Prevents ambiguity about which memo applies to which instruction
 5. **Compute Budget Placement**: Compute budget instructions occupy an instruction index like any other instruction, so they go at index 1 or later (usually last). Wallets or aggregators that prepend them at index 0 make the mint fail; this strict rule was re-confirmed in Revision 2.
+6. **No durable nonce transactions** (core audit INT-04): the runtime treats a transaction as a durable nonce transaction only when instruction 0 is `AdvanceNonceAccount`, which conflicts with the memo-at-index-0 rule. `[AdvanceNonce, memo, process_mint]` fails with `MemoRequired` (the nonce still advances and the fee is charged), and `[memo, AdvanceNonce, process_mint]` is not recognized as a nonce transaction. Offline-signing, custody or multisig flows that depend on durable nonces cannot mint.
 
 **Required Transaction Structure**:
 ```
@@ -282,15 +287,15 @@ The project includes a dedicated tool for transferring mint authority: `admin-tr
 5. **Post-Transfer State**:
    - ✅ Mint authority is now the PDA
    - ✅ PDA can only mint via program CPIs
-   - ✅ No private key controls the mint authority
-   - ⚠️ Authority transfer is **irreversible** (by design)
+   - ✅ No private key controls the mint authority directly
+   - ⚠️ The current program has no instruction that moves the authority away from the PDA, so the transfer cannot be undone with this program; a program upgrade could add one (see below)
 
 **Security Analysis**:
 - ✅ Well-documented transfer process
 - ✅ Includes validation and error handling
 - ✅ PDA-based authority is industry best practice
-- ✅ Authority cannot be transferred back (prevents recentralization)
-- ✅ Mint logic is permanently governed by program rules
+- ⚠️ The authority cannot be transferred back **as long as the deployed code is unchanged**. memo-mint is upgradeable: whoever holds the upgrade authority can deploy code that mints without the curve and cap, or that moves the mint authority with `SetAuthority` (core audit OPS-03, OPS-05)
+- ⚠️ Mint logic is governed by the program rules only while the program is not upgraded; it becomes permanent only if the upgrade authority is removed (`--final`)
 
 **Deployment Verification Steps**:
 1. Run authority transfer tool on testnet first
@@ -298,15 +303,15 @@ The project includes a dedicated tool for transferring mint authority: `admin-tr
 3. Test mint transaction to confirm functionality
 4. Repeat on mainnet with production keys
 
-**Verdict**: Comprehensive and secure mint authority management. The irreversible transfer to PDA is the correct design for a decentralized fair-launch token.
+**Verdict**: Comprehensive and secure mint authority management. Transferring the authority to the PDA is the correct design for a decentralized fair-launch token; it is final only once the program itself is immutable.
 
 ---
 
 ### ✅ DESIGN CONFIRMATION #4: Emission Curve Boundary Behavior
 
-**Design Intent**: ✅ **CONFIRMED AS INTENTIONAL (Revision 2)**
+**Design Intent**: ✅ **CONFIRMED AS INTENTIONAL (Revision 2; step positions and last step changed in Revision 4)**
 
-**Implementation**:
+**Implementation** (in `mint_amount_at_supply`, which also returns 1 lamport at or above the cap; `calculate_dynamic_mint_amount` checks the cap and then calls it):
 ```rust
 let amount = if current_supply <= CURVE_START_LAMPORTS {
     BASE_MINT_AMOUNT
@@ -436,7 +441,7 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 ```
 
 **Theoretical Scenario**:
-1. Supply at 9,999,999,999,999.999998 tokens (2 lamports below max; the last-step reward is 2 lamports)
+1. Supply at 9,999,999,999,999.999999 tokens (1 lamport below max; the last-step reward is 1 lamport)
 2. Two users submit mint transactions simultaneously
 3. Both read supply < MAX_SUPPLY
 
@@ -452,15 +457,15 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 Time | Transaction A              | Transaction B
 -----|----------------------------|---------------------------
 T0   | Locks mint account         | Waits for lock
-T1   | Reads supply = MAX - 2     |
-T2   | Mints 2 lamports          |
-T3   | Supply = MAX              |
+T1   | Reads supply = MAX - 1     |
+T2   | Mints 1 lamport            |
+T3   | Supply = MAX               |
 T4   | Unlocks mint account       | Acquires lock
-T5   |                           | Reads supply = MAX
-T6   |                           | Fails: SupplyLimitReached
+T5   |                            | Reads supply = MAX
+T6   |                            | Fails: SupplyLimitReached
 ```
 
-At 1 lamport below the cap the 2-lamport reward would overshoot, so that mint fails with `SupplyLimitReached`; the cap is never exceeded.
+Since Revision 4 the last step (above 9T) pays exactly 1 lamport, so a mint at 1 lamport below the cap succeeds and lands exactly on 10T; the next mint fails with `SupplyLimitReached` (observed on a local validator in the core audit, cases C03/C04). Because every reward below the cap is at most the remaining room, the `new_supply > MAX_SUPPLY_LAMPORTS` check and the `checked_add` overflow branch can never trigger; they are kept as defense in depth (core audit MINT-05).
 
 **Verdict**: The double-check pattern is excellent defensive programming, but Solana's account locking already prevents race conditions. No changes needed.
 
@@ -490,7 +495,7 @@ pub recipient_token_account: InterfaceAccount<'info, TokenAccount>,
 
 **Validation Performed**:
 - ✅ Token account belongs to correct mint
-- ✅ Token account owner matches the declared recipient (a consistency check that catches a wrong account; the recipient does not sign, and does not need to)
+- ✅ Token account owner matches the declared recipient (a consistency check that catches a wrong account; the recipient does not sign, and does not need to). It is not access control and does not mean the recipient agreed to receive tokens (core audit MINT-06)
 - ✅ Uses `InterfaceAccount` for Token2022 compatibility
 
 **Flexibility by Design**:
@@ -503,8 +508,7 @@ The contract allows minting to **any valid token account**, including:
 **Use Cases**:
 1. **Direct User Minting**: User mints to their own account
 2. **Contract Integration**: memo-chat/memo-project mint rewards to users
-3. **Airdrops**: Distribute tokens programmatically
-4. **Batch Operations**: Mint to multiple recipients
+3. **Airdrops**: Distribute tokens programmatically, one mint per transaction (since Revision 3 a transaction cannot mint to several recipients)
 
 **Why No Recipient Restrictions**:
 1. **Composability**: Other contracts need to call process_mint_to
@@ -514,7 +518,7 @@ The contract allows minting to **any valid token account**, including:
 
 **Not Restricted**:
 - ❌ No blacklist checking (would be centralized)
-- ❌ No burn address prevention (user choice)
+- ❌ No burn address prevention (user choice). Note: in Token-2022, a token account whose owner field is the incinerator address or the System program ID can be burned by anyone without authorization, and such burns do not go through memo-burn. Minting to such an account costs only the caller's own fee and one-mint slot; no security property is affected (core audit MINT-06)
 - ❌ No program account restrictions (breaks composability)
 
 **Verdict**: Permissionless recipient selection is the correct design for a fair-launch token. Restrictions would contradict the open-access philosophy.
@@ -618,7 +622,8 @@ assert!(MAX_SUPPLY_TOKENS <= u64::MAX / DECIMAL_FACTOR);
 ```
 
 **Analysis**:
-- All arithmetic uses checked operations ✓
+- The cap addition uses `checked_add` ✓
+- The curve (`mint_amount_at_supply`) uses plain integer operations (`-`, `*`, `/`), not checked ones; the core audit proved they cannot overflow or panic for any `u64` input (`below = supply - 1` only runs when supply > 10M, `magnitude * 10 <= below`, the digit is 1..=9), and `[profile.release] overflow-checks = true` turns any unexpected overflow into a failed transaction instead of a wrapped value ✓
 - Compile-time constant validation ✓
 - No floating-point math in critical paths ✓
 - Proper error handling ✓
@@ -682,11 +687,11 @@ pub token_account: InterfaceAccount<'info, TokenAccount>,
 
 ### 5. Reentrancy Protection ✅ SECURE
 
-**Analysis**:
-- No external calls before state changes ✓
-- CPI call is the final action (mint_to) ✓
-- No callbacks or external program invocations ✓
-- No state changes after CPI ✓
+**Analysis** (wording corrected in the core audit, MINT-04):
+- `MintState` is checked and updated in memory (`record_mint`) before the only external call, the Token-2022 `mint_to` CPI ✓
+- The CPI is the last action of the handler; Anchor writes the updated `MintState` back to the account in its exit step, i.e. after the CPI returns. During the CPI the stored `MintState` still holds the old value ✓
+- This is safe today: Token-2022 `mint_to` makes no CPI of its own, `MintState` is not passed to it, the runtime forbids A→B→A reentrancy, and a calling app cannot write back a stale copy of `MintState` (Anchor only writes accounts owned by the executing program) ✓
+- If a future version CPIs into a program that could call back into memo-mint, or passes `MintState` to a CPI, it should persist `MintState` (`mint_state.exit(&crate::ID)?`) right after `record_mint`
 
 **Verdict**: Not vulnerable to reentrancy attacks.
 
@@ -712,7 +717,7 @@ if new_supply > MAX_SUPPLY_LAMPORTS {
 - The cap is enforced on circulating (outstanding) supply ✓
 - Account locking serializes mints at the boundary (see Informational #1) ✓
 
-**Design note**: the cap and the curve both read the live `mint.supply`. Burns lower it, so they free room under the cap and can move the reward back up a step. Total tokens ever minted are therefore not capped; this is intentional, so minting never stops permanently.
+**Design note**: the 10T limit is a cap on **circulating** supply, not on total issuance (core audit MINT-05). While supply equals the cap, every operation that mints fails with `SupplyLimitReached` (6005), including chat `send_memo_to_group`, blog `mint_for_blog` and forum `mint_for_post`, which roll back as a whole until someone burns. At the current supply this is far away. The cap and the curve both read the live `mint.supply`. Burns lower it, so they free room under the cap and can move the reward back up a step. Total tokens ever minted are therefore not capped; this is intentional, so minting never stops permanently. The burn minimums of chat, profile, project, blog and forum use the same curve value (`mint_amount_at_supply`), so near a step boundary a burn can raise them by one step as well.
 
 **Verdict**: Secure; behavior at the boundary is verified by unit tests.
 
@@ -847,9 +852,9 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24c
 - Modular validation functions
 
 ### 5. ✅ Integer Arithmetic
-- All operations use checked math
+- Integer-only math; the cap addition is checked, and the curve uses plain operations proven not to overflow (see Arithmetic Safety)
 - No unchecked conversions
-- Proper overflow prevention
+- `overflow-checks = true` in the release profile as a backstop
 
 ---
 
@@ -861,9 +866,9 @@ All design decisions have been confirmed as intentional:
 - ✅ Fair-launch unrestricted minting model
 - ✅ Fixed memo position requirement
 - ✅ PDA mint authority transfer process
-- ✅ Emission curve boundary behavior (Revision 2)
+- ✅ Emission curve boundary behavior (Revision 4)
 - ✅ Permissive memo content validation
-- ✅ Multiple mints per transaction allowed (Revision 2)
+- ✅ One mint per transaction (Revision 3; Revision 2 allowed several)
 
 ### 🔴 CRITICAL - Required Before Mainnet Launch
 
@@ -879,7 +884,7 @@ All design decisions have been confirmed as intentional:
 - [ ] Verify logs show correct curve amounts
 - [ ] Test `process_mint_to` (to another wallet, mismatched recipient, missing token account)
 - [ ] Measure compute units of a real mint transaction
-- [ ] Test error cases (short memo, long memo, no memo)
+- [ ] Test error cases (short memo, no memo, compute budget at index 0, two mints in one transaction); a long memo is limited only by the transaction size
 
 #### 2. Mainnet Deployment Preparation
 - [ ] Compile with `--features mainnet` flag
@@ -906,7 +911,7 @@ All design decisions have been confirmed as intentional:
 - [ ] Track current supply and the current curve step
 - [ ] Monitor mint transaction rate
 - [ ] Alert on supply approaching the next round number
-- [ ] Track failed transactions (memo too short/long)
+- [ ] Track failed transactions (memo too short, `OneMintPerTransaction`, `SupplyLimitReached`)
 
 #### 5. Community Resources
 - [ ] User guide: How to mint tokens
@@ -926,13 +931,16 @@ All design decisions have been confirmed as intentional:
 
 ## Testing Recommendations
 
-### Unit Tests (implemented, Revision 2)
+### Unit Tests (implemented, Revision 4)
 
-`programs/memo-mint/src/tests.rs` — 47 tests, all passing:
-- Emission curve: below the curve start, the current mainnet supply, every round number from 10M to 9T and one lamport below each (checked against an independent implementation of the formula), decade starts, monotonicity, minimum reward
-- Max supply: exactly at the cap, above it, the last 2-lamport mint landing exactly on the cap, a mint that would overshoot, values near `u64::MAX`
-- Memo length: empty, below/at/above both limits, binary and text content
+`programs/memo-mint/src/tests.rs` — at the time of the core audit, 60 hand-written tests plus the Anchor-generated `test_id`, 61 in total, all passing (testnet and `--features mainnet` builds). Regression tests recommended by the core audit are being added afterwards; see the current `tests.rs` for the up-to-date list. As audited:
+- Emission curve: below the curve start, the current mainnet supply, every round number from 10M to 9T and one lamport below each (checked against an independent implementation of the formula), decade starts, monotonicity, minimum reward, `mint_amount_at_supply` equal to `calculate_dynamic_mint_amount` below the cap and 1 lamport at or above it
+- Max supply: exactly at the cap, above it, the last 1-lamport mint landing exactly on the cap, values near `u64::MAX`
+- Memo length: empty, below/at/above the 69-byte minimum, long memos, binary and text content
+- One mint per transaction: fingerprints built with the runtime's instructions sysvar serializer; error code numbering
 - `process_mint_to` wire format: 8-byte discriminator + 32-byte recipient
+
+Not covered by unit tests at the time of the core audit (TEST-01, TEST-03, TEST-09): `check_memo_instruction`, the instruction handlers, account constraints and `initialize_mint_state`. `test_cpi_loop_mints_once` calls `record_mint` repeatedly with the same input, so it shows that `record_mint` rejects a repeated fingerprint, not that a CPI sees the same sysvar bytes. These paths were exercised on a local validator during the core audit, but that harness is not committed.
 
 ### Integration Tests Needed
 
@@ -963,11 +971,11 @@ The memo-mint contract has passed comprehensive security review with **all desig
 ### Security Assessment: **EXCELLENT**
 
 **Critical Security Strengths**:
-- ✅ **Arithmetic Safety**: All operations use checked math, compile-time validation prevents overflow
+- ✅ **Arithmetic Safety**: Checked cap addition, curve arithmetic proven overflow-free for every `u64` input, compile-time constant validation, `overflow-checks = true`
 - ✅ **Access Control**: PDA-based mint authority with proper validation
 - ✅ **Account Security**: Comprehensive constraint validation for all accounts
 - ✅ **Token2022 Compatibility**: Proper interface implementation
-- ✅ **Reentrancy Protection**: No external calls before state changes
+- ✅ **Reentrancy Protection**: `MintState` is checked and updated before the single Token-2022 CPI; the CPI cannot call back
 - ✅ **Supply Cap Enforcement**: Double-check pattern on circulating supply
 - ✅ **Error Handling**: Descriptive errors with runtime context
 - ✅ **Network Configuration**: Proper testnet/mainnet separation
@@ -976,9 +984,9 @@ The memo-mint contract has passed comprehensive security review with **all desig
 - ✅ **Fair-Launch Model**: Unrestricted minting is intentional (equal opportunity for all)
 - ✅ **Performance Optimized**: Fixed memo position at index 0 reduces compute units
 - ✅ **Flexible Integration**: Binary memo support enables contract composability
-- ✅ **Emission Curve**: Round-number steps confirmed as economically sound (Revision 2)
+- ✅ **Emission Curve**: Round-number steps confirmed as economically sound (Revision 2, adjusted in Revision 4)
 - ✅ **Permissionless**: No artificial restrictions align with decentralization goals
-- ✅ **Batch Minting**: Multiple mints per transaction allowed by design (Revision 2)
+- ✅ **One Mint per Transaction**: Batch minting was removed in Revision 3; any second mint in a transaction fails with `OneMintPerTransaction`
 
 **Code Quality**: **EXCELLENT**
 - Clean, well-documented code
@@ -1048,16 +1056,16 @@ All initial questions were answered satisfactorily, confirming that design choic
 
 **Revision 2 (October 13, 2026)** changed the emission curve, fixed `process_mint_to`, and reduced compute units; see "Revision 2 Changes" above.
 
-**Remaining operational risk**: the program upgrade authority and the token metadata update authority are the same hot key. Whoever holds the upgrade authority can replace the program and mint without these rules. Consider moving the upgrade authority to a multisig or making the program immutable (`--final`) once Revision 2 is stable on mainnet.
+**Remaining operational risk**: the program upgrade authority, `AUTHORIZED_ADMIN_PUBKEY`, the IDL authority and the token metadata update authority are the same hot key (mainnet `FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ`, not a multisig), and the same key has also been used for testnet staging deployments (core audit OPS-02, OPS-05). Whoever holds the upgrade authority can replace the program and mint without these rules. Consider moving the upgrade authority to a multisig with a timelock or making the program immutable (`--final`) once the current revision is stable on mainnet.
 
 ---
 
 ## Appendix A: Code Quality Metrics
 
-- **Lines of Code**: 326 (Revision 2)
-- **Functions**: 2 instructions, 4 private helpers
+- **Lines of Code**: 461 in `lib.rs` (Revision 4 with the October 16 follow-up)
+- **Functions**: 3 instructions (`process_mint`, `process_mint_to`, `initialize_mint_state`), 2 public helpers (`transaction_fingerprint`, `mint_amount_at_supply`), 4 private helpers
 - **Complexity**: Moderate
-- **Test Coverage**: 47 unit tests (see Testing Recommendations)
+- **Test Coverage**: 61 unit tests at the time of the core audit (60 hand-written + `test_id`; see Testing Recommendations)
 - **Documentation**: Good
 - **Error Handling**: Excellent
 
@@ -1065,47 +1073,62 @@ All initial questions were answered satisfactorily, confirming that design choic
 
 ## Appendix B: Mainnet Deployment Procedure
 
-### Step-by-Step Deployment Guide
+memo-mint is already deployed on X1 mainnet (`8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX`), `MintState` is initialized and the mint authority is already the PDA. New versions are **upgrades** of that program, not fresh deployments. Use `scripts/deploy-mainnet.sh` as described in `PROD-DEPLOYMENT.md`; it builds with the `mainnet` feature, upgrades in canonical order (memo-mint, memo-burn, then the apps), runs the admin init clients and upgrades the IDL.
+
+> **Corrected (core audit OPS-03)**: earlier versions of this appendix used `anchor build --features mainnet` (rejected by Anchor; the feature must follow `--`), `anchor deploy ... --provider.cluster mainnet` (`mainnet` means Solana mainnet-beta in Anchor, not X1, and `anchor deploy` makes a fresh deployment at a new address instead of upgrading), read the program ID from `target/deploy/memo_mint-keypair.json` (that file is not the real program keypair; the real keypairs are kept encrypted, see `scripts/keys.sh`) and omitted the `MintState` initialization. Following those steps could not bypass any safety check (a binary at the wrong address fails with `DeclaredProgramIdMismatch`), but it would not upgrade the real program.
+
+### Step-by-Step Upgrade Guide (manual equivalent of the script)
 
 **1. Build for Mainnet**
 ```bash
-anchor build --features mainnet
+anchor build -p memo-mint -- --features mainnet
+sha256sum target/deploy/memo_mint.so   # record and publish the hash
 ```
 
-**2. Verify Program ID**
+**2. Unlock the Mainnet Keys** (on the dedicated mainnet machine only)
 ```bash
-solana address -k target/deploy/memo_mint-keypair.json
-# Expected: 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX
+./scripts/keys.sh unlock mainnet
 ```
 
-**3. Deploy Program**
+**3. Upgrade the Program** (X1 mainnet RPC, never `--provider.cluster mainnet`)
 ```bash
-anchor deploy --program-name memo-mint --provider.cluster mainnet
+anchor upgrade target/deploy/memo_mint.so \
+  --program-id 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX \
+  --provider.cluster https://rpc.mainnet.x1.xyz \
+  --provider.wallet ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.json
 ```
 
-**4. Transfer Mint Authority to PDA**
+**4. Initialize `MintState` (only if it does not exist yet)**
 ```bash
-cargo run --bin admin-transfer-memo-token-mint-authority
+MEMO_PROGRAM_ENV=mainnet cargo run --manifest-path clients/Cargo.toml --bin admin-init-mint-state -- \
+  8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX https://rpc.mainnet.x1.xyz
+# Does nothing if the account already exists (it exists on testnet and mainnet)
 ```
 
-**5. Verify PDA Authority**
+**5. Verify PDA Authority** (unchanged by upgrades; the one-time transfer to the PDA was done at launch with `admin-transfer-memo-token-mint-authority`)
 ```bash
-spl-token display memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
-# Verify "Mint authority" shows the PDA address
+spl-token display memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb --url https://rpc.mainnet.x1.xyz
+# "Mint authority" must be C1r27YsPiY6wbVvRY2cVCsaRKK5HiXxdvWhxJd5wapSh (the memo-mint PDA)
 ```
 
 **6. Upgrade the On-Chain IDL**
 ```bash
-anchor idl upgrade 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX --filepath target/idl/memo_mint.json --provider.cluster mainnet
+anchor idl upgrade 8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX --filepath target/idl/memo_mint.json --provider.cluster https://rpc.mainnet.x1.xyz --provider.wallet ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.json
 ```
 
-**7. Test Mint Transaction**
+**7. Lock the Keys**
 ```bash
-cargo run --bin test-memo-mint valid-memo
-# Should succeed and mint the curve amount (1 token while supply is below 10M)
+./scripts/keys.sh lock mainnet
 ```
 
-**8. Verify Contract Constants**
+**8. Test Mint Transaction**
+```bash
+cargo run --manifest-path clients/Cargo.toml --bin test-memo-mint valid-memo
+# Should succeed and mint the curve amount (1 token while supply is at or below 10M)
+```
+Also run `verify-deployment` (with the mainnet build in `target/deploy`) to compare the on-chain bytecode and IDL with the local build.
+
+**9. Verify Contract Constants**
 - Program ID: `8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX`
 - Mint address: `memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick`
 - Token decimals: `6`
@@ -1113,8 +1136,8 @@ cargo run --bin test-memo-mint valid-memo
 - Curve start: `10,000,000` tokens
 - Memo length: at least `69` bytes (no contract maximum)
 
-**9. Monitor Initial Launch**
-- Track first 100 mint transactions
+**10. Monitor After the Upgrade**
+- Track the first mint transactions
 - Verify curve amounts are correct
 - Monitor for any failed transactions
 - Check PDA authority remains unchanged
@@ -1134,11 +1157,12 @@ Transaction Instructions:
       - Program: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
       - Required: YES
   
-  [1+] MemoMint::process_mint OR MemoMint::process_mint_to (one or more)
+  [1+] MemoMint::process_mint OR MemoMint::process_mint_to (exactly one per transaction)
       - Mints tokens based on the emission curve
       - Validates memo at index 0
       - Executes token mint CPI
-      - Up to about 31 mints fit in one transaction (64-entry instruction trace limit)
+      - A second mint in the same transaction (top-level or via any CPI) fails
+        with OneMintPerTransaction (Revision 3)
   
   [last] ComputeBudgetProgram::SetComputeUnitLimit (optional)
       - Sets compute budget for transaction; X1 charges for the requested limit,
@@ -1162,7 +1186,8 @@ memo_mint::process_mint(
     token_account: Pubkey,
     user: Signer,
     token_program: Token2022,
-    instructions: Sysvar
+    instructions: Sysvar,
+    mint_state: Pubkey (PDA [b"mint_state"], writable, last)
 )
 
 // Last instruction: Compute Budget (optional, never at index 0)
@@ -1177,13 +1202,18 @@ ComputeBudgetInstruction::set_compute_unit_limit(simulated_units)
 ❌ **Transaction too large** - The memo and instructions together exceed the 1,232-byte transaction size limit
 ❌ **Wrong token program** - Using SPL Token instead of Token2022
 ❌ **Compute budget at index 0** - Pushes the memo out of index 0
+❌ **Durable nonce transaction** - `AdvanceNonceAccount` must be at index 0, which conflicts with the memo rule; not supported
+❌ **Two mints in one transaction** - The second fails with `OneMintPerTransaction`
+❌ **Missing `mint_state` account** - Must be the last account (`AccountNotEnoughKeys` otherwise)
 ❌ **Old IDL for process_mint_to** - Missing the `recipient` argument
+
+See also the integration notes in `README.md`.
 
 ---
 
 ## Appendix D: Economic Model Reference
 
-### Emission Curve (Revision 2)
+### Emission Curve (Revision 4)
 
 | Supply before the mint | Reward per mint |
 |---|---|
@@ -1208,7 +1238,7 @@ Rule: above 10M, for supply in `(d × 10ⁿ, (d+1) × 10ⁿ]`, reward = `decade_
 **Cost Anchor**:
 - Minting costs the transaction fee, which X1 charges by requested compute units
 - Minting is worthwhile only when the market price exceeds the cost per token, which keeps the price roughly anchored relative to XNT
-- Batching several mints in one transaction lowers the cost per token (the memo is paid once)
+- Since Revision 3 each transaction can mint only once, so every mint pays the full memo and transaction cost; batching is no longer possible
 
 **Supply Cap**:
 - Maximum of 10 trillion tokens in circulation, enforced on every mint
@@ -1219,9 +1249,10 @@ Rule: above 10M, for supply in `(d × 10ⁿ, (d+1) × 10ⁿ]`, reward = `decade_
 
 **Audit Report End**
 
-**Audit Date**: October 27, 2025 (original), revised October 13, 14 and 15, 2026  
+**Audit Date**: October 27, 2025 (original), revised October 13, 14, 15 and 16, 2026  
 **Contract Version**: Revision 4 (0.4.0)  
-**Final Status**: ✅ APPROVED FOR MAINNET (Revision 3 deployed to mainnet on October 15, 2026; Revision 4 pending testnet validation)  
+**Final Status**: ✅ APPROVED FOR MAINNET  
+**Deployment Status (October 16, 2026, from the core audit, OPS-04)**: Revision 4 (the curve change) is deployed on X1 mainnet since October 15, 2026, 12:38:02 UTC (slot 86131302); the mainnet bytecode matches the `--features mainnet` build of commit `ca4c8a0b`. The October 16 follow-up (`mint_amount_at_supply` extracted, mint behavior unchanged) is deployed on testnet and not yet on mainnet. Testnet runs the audited working tree.  
 
 *This audit report is provided for informational purposes and does not constitute financial or legal advice. The auditor has conducted a thorough review of the smart contract code and design, confirming its security and correctness as of the audit date.*
 

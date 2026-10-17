@@ -47,8 +47,9 @@ const BORSH_PAYLOAD_LEN_OFFSET: usize = BORSH_U8_SIZE + BORSH_U64_SIZE;
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
 
-// Minimum burn requirement (1 token)  
-pub const MIN_BURN_TOKENS: u64 = 1;
+// Minimum burn per process_burn instruction: 1 unit (0.000001 token), any amount in units is allowed.
+// Programs built on memo-burn set their own, supply-scaled minimums.
+pub const MIN_BURN_AMOUNT: u64 = 1;
 
 // Maximum burn per process_burn instruction (1 trillion tokens = 1,000,000,000,000 * 1,000,000)
 // A transaction may contain several burn instructions, so this is not a per-transaction total
@@ -159,8 +160,8 @@ pub mod memo_burn {
 
     /// Process burn operation with Borsh memo validation
     pub fn process_burn(ctx: Context<ProcessBurn>, amount: u64) -> Result<()> {
-        // Check burn amount is at least 1 token and is a multiple of DECIMAL_FACTOR (decimal=6)
-        if amount < DECIMAL_FACTOR * MIN_BURN_TOKENS {
+        // Check burn amount is at least 1 unit
+        if amount < MIN_BURN_AMOUNT {
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
@@ -168,11 +169,7 @@ pub mod memo_burn {
         if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
         }
-        
-        // Check burn amount is a multiple of DECIMAL_FACTOR (decimal=6)
-        if amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
-        }
+
 
         // Check memo instruction with length validation
         let memo_data = match check_memo_instruction(ctx.accounts.instructions.as_ref())? {
@@ -432,13 +429,14 @@ pub enum ErrorCode {
     #[msg("Unsupported memo version. Please use the correct memo structure version.")]
     UnsupportedMemoVersion,
     
-    #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least 1 unit (0.000001 token).")]
     BurnAmountTooSmall,
 
     #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
-    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    /// No longer returned (fractional amounts are allowed); kept so later error codes stay unchanged
+    #[msg("Invalid burn amount.")]
     InvalidBurnAmount,
 
     #[msg("Invalid token account. Token account must belong to the correct mint.")]

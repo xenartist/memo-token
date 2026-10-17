@@ -27,6 +27,16 @@ The memo-project contract implements a decentralized project registry and leader
 
 ---
 
+## Revision Note (October 16, 2026): Supply-Scaled Burn Minimums
+
+Burn minimums are no longer fixed whole-token amounts. Each minimum is a multiple of the current memo-mint reward, computed from the live `mint.supply` before the burn: `min_burn_amount(MINTS, supply) = MINTS × memo_mint::mint_amount_at_supply(supply)` (saturating multiply; see MEMO-MINT-AUDIT.md). Multipliers (constants renamed from `*_BURN_TOKENS` / `*_BURN_AMOUNT` to `*_BURN_MINTS`): create `MIN_PROJECT_CREATION_BURN_MINTS = 42069`, update `MIN_PROJECT_UPDATE_BURN_MINTS = 42069`, `burn_for_project` `MIN_PROJECT_BURN_MINTS = 420`. The whole-token check (`amount % DECIMAL_FACTOR != 0` → `InvalidBurnAmount`) was removed, so fractional amounts are accepted. `InvalidBurnAmount` stays in the enum but is never returned, so later error codes are unchanged. `BurnAmountTooSmall` now has a generic message, and a failed check logs the actual and required amounts in units. Success logs report units instead of whole tokens.
+
+**New dependency**: memo-project now depends on the memo-mint crate (`memo-mint = { path = "../memo-mint", features = ["cpi"] }`; the `mainnet` feature cascades as `mainnet = ["memo-burn/mainnet", "memo-mint/mainnet"]`). It is used only for the pure function `mint_amount_at_supply`: there is no CPI to memo-mint, and no new accounts, instructions or program ID checks. The curve is compiled into memo-project, so if memo-mint's curve ever changes, memo-project must be rebuilt and redeployed to keep its minimums in step with the actual mint reward.
+
+- **Why**: as supply grows the mint reward falls to as little as 1 unit (0.000001 token), so fixed whole-token thresholds would eventually be out of reach for users who earn by minting, and amounts that are not whole tokens could not be burned at all (memo-burn now accepts any amount of at least 1 unit). Up to and including 10M supply the reward is 1 token, so every minimum equals its previous value (mainnet supply was about 8.73M at the time of the change); above 10M the minimums fall with each curve step, down to `MINTS` units at the last step.
+- **Supply source**: the supply is read from the `mint` account, which is constrained to `AUTHORIZED_MINT_PUBKEY`, so a caller cannot pass a mint with a chosen supply.
+- **Boundary / front-running**: supply can change between building and executing a transaction. Mints raise it (the minimum can only fall); burns lower it, and a burn that moves supply back across a step boundary raises the reward, and so the minimum, by one step (relatively largest at the low end of a decade, e.g. 0.1 → 0.2 token per mint around 90M). Crossing a second boundary would take burning a whole step's width of supply (at least 10M tokens), so in practice the minimum can move by one step at most, and the only effect is that a transaction fails with `BurnAmountTooSmall` and rolls back; no tokens are lost. Burning more than the minimum is always accepted, so clients should compute the minimum from a fresh supply and may add a buffer (for example, one step).
+
 ## Revision Note (October 13, 2026): Global Burn Statistics
 
 memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateProject`, `UpdateProject`, `BurnForProject`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
@@ -76,7 +86,7 @@ This contract no longer limits the memo's maximum length, matching memo-mint and
 | `TooManyTags` | 6027 | 6026 |
 | `BurnAmountTooSmall` | 6028 | 6027 |
 | `BurnAmountTooLarge` | 6029 | 6028 |
-| `InvalidBurnAmount` | 6030 | 6029 |
+| `InvalidBurnAmount` | 6030 | 6029 (no longer returned since October 16, 2026) |
 | `BurnAmountMismatch` | 6031 | 6030 |
 | `PayloadTooLong` | 6032 | removed |
 | `UnauthorizedAdmin` | 6033 | 6031 |
@@ -114,10 +124,11 @@ The memo-project contract enables users to:
 - Dual network support (testnet/mainnet)
 
 ### Economic Model
-- **Project Creation**: Minimum 42,069 MEMO tokens burned
-- **Project Update**: Minimum 42,069 MEMO tokens burned (creator only)
-- **Burn for Project**: Minimum 420 MEMO tokens burned (creator only)
-- **Maximum Burn**: 1 trillion MEMO tokens per transaction
+- **Project Creation**: Minimum 42,069 × the current mint reward (42,069 MEMO while supply ≤ 10M; scales down with the emission curve)
+- **Project Update**: Minimum 42,069 × the current mint reward (creator only)
+- **Burn for Project**: Minimum 420 × the current mint reward (creator only)
+- **Fractional amounts**: allowed (no whole-token requirement)
+- **Maximum Burn**: 1 trillion MEMO tokens per burn instruction
 
 ---
 
@@ -250,7 +261,7 @@ The `burn_for_project` instruction is **intentionally restricted to project crea
 
 **Security Analysis**:
 - ✅ Creator authorization enforced via Anchor constraint
-- ✅ Burn amount validated (minimum 420 tokens)
+- ✅ Burn amount validated (minimum 420 × the current mint reward)
 - ✅ Maximum burn enforced (1 trillion tokens)
 - ✅ Project existence validated (PDA must exist)
 - ✅ Memo validated and tracked
@@ -741,6 +752,7 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxS
 - Feature flags separate testnet/mainnet ✓
 - Compile-time configuration prevents misuse ✓
 - Consistent with memo-burn/memo-mint ✓
+- The memo-mint crate dependency follows the same feature (`mainnet = ["memo-burn/mainnet", "memo-mint/mainnet"]`) ✓
 
 **Verdict**: Proper network configuration management.
 
@@ -805,7 +817,7 @@ pub enum ErrorCode {
     #[msg("Project name is empty. Name is required.")]
     ProjectNameEmpty,
     
-    #[msg("Burn amount is too small. Minimum for project creation: 42069 tokens.")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
     
     #[msg("Unauthorized: Only project creator can update this project.")]
@@ -816,7 +828,8 @@ pub enum ErrorCode {
 
 // Runtime messages
 msg!("Project {} created by {}", project_id, creator.key());
-msg!("Burned {} tokens (expected: {}, actual: {})", burn_memo_data.burn_amount, burn_amount, burn_memo_data.burn_amount);
+msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
+msg!("Project {} created successfully by {} with {} units burned", project_id, creator.key(), burn_amount);
 ```
 
 **Strengths**:
@@ -863,8 +876,10 @@ pub struct Project {
 
 **Examples**:
 ```rust
-// Explicit validation before processing
-if burn_amount < MIN_PROJECT_CREATION_BURN_AMOUNT {
+// Explicit validation before processing (minimum scales with the current mint reward)
+let min_required = min_burn_amount(MIN_PROJECT_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 if burn_amount > MAX_BURN_PER_INSTRUCTION {
@@ -1010,9 +1025,10 @@ All code quality issues have been resolved:
 - [ ] Deploy to testnet with `--features` flag **OFF**
 - [ ] Initialize global counter PDA
 - [ ] Initialize burn leaderboard PDA
-- [ ] Test project creation (42,069 tokens)
-- [ ] Test project update (42,069 tokens, creator only)
-- [ ] Test burn for project (420 tokens, creator only)
+- [ ] Test project creation (42,069 × mint reward; 42,069 tokens while supply ≤ 10M)
+- [ ] Test project update (42,069 × mint reward, creator only)
+- [ ] Test burn for project (420 × mint reward, creator only)
+- [ ] Test a fractional burn amount above the minimum (accepted) and one unit below the minimum (`BurnAmountTooSmall`)
 - [ ] Test leaderboard updates correctly
 - [ ] Test leaderboard replacement when full (100 entries)
 - [ ] Verify all events emit correctly
@@ -1042,9 +1058,9 @@ All code quality issues have been resolved:
 - [ ] Verify first project succeeds
 
 #### 4. Documentation for Users/Integrators
-- [ ] Project creation guide (minimum burn: 42,069 tokens)
-- [ ] Project update guide (creator-only, 42,069 tokens)
-- [ ] Burn for project guide (creator-only, 420 tokens)
+- [ ] Project creation guide (minimum burn: 42,069 × the current mint reward)
+- [ ] Project update guide (creator-only, 42,069 × the current mint reward)
+- [ ] Burn for project guide (creator-only, 420 × the current mint reward)
 - [ ] Leaderboard query guide
 - [ ] Memo format specification
 - [ ] Event indexing guide
@@ -1207,23 +1223,29 @@ The contract demonstrates industry-leading security practices and is ready for p
 
 ## Appendix B: Mainnet Deployment Procedure
 
-### Step-by-Step Deployment Guide
+memo-project is already deployed on X1 mainnet, so new versions are **upgrades**. Use `scripts/deploy-mainnet.sh` as described in `PROD-DEPLOYMENT.md` (it upgrades memo-mint and memo-burn before the apps). The manual commands below are corrected per `MEMO-CORE-AUDIT-2026-10-16.md` (OPS-03): `--provider.cluster mainnet` means Solana mainnet-beta in Anchor, not X1; `anchor deploy` would create a fresh program at a new address; `target/deploy/*-keypair.json` is not the real program keypair (the real keypairs are kept encrypted, see `scripts/keys.sh`).
+
+### Step-by-Step Upgrade Guide
 
 **1. Build for Mainnet**
 ```bash
-anchor build --features mainnet
+anchor build -p memo-project -- --features mainnet
 ```
 
-**2. Verify Program ID**
+**2. Program ID**
 ```bash
-solana address -k target/deploy/memo_project-keypair.json
-# Expected: 6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a
+# Expected (Anchor.toml [programs.mainnet]): 6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a
 ```
 
-**3. Deploy Program**
+**3. Upgrade Program** (after memo-burn has been upgraded)
 ```bash
-anchor deploy --program-name memo-project --provider.cluster mainnet
+anchor upgrade target/deploy/memo_project.so \
+  --program-id 6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a \
+  --provider.cluster https://rpc.mainnet.x1.xyz \
+  --provider.wallet ~/.config/solana/memo-token/mainnet/authority/deploy_admin-keypair.json
 ```
+
+Steps 4 and 5 are needed only on a network where the accounts do not exist yet.
 
 **4. Initialize Global Counter**
 ```bash
@@ -1238,7 +1260,7 @@ cargo run --bin admin-memo-project-init-burn-leaderboard
 **6. Test Project Creation**
 ```bash
 cargo run --bin test-memo-project-create-project
-# Should succeed and burn 42,069 tokens
+# Should succeed and burn 42,069 tokens (42,069 × the mint reward while supply ≤ 10M)
 ```
 
 **7. Verify Contract Constants**
@@ -1246,9 +1268,9 @@ cargo run --bin test-memo-project-create-project
 - Mint address: `memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick`
 - Admin address: `FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ`
 - Token decimals: `6`
-- Min creation burn: `42,069` tokens
-- Min update burn: `42,069` tokens
-- Min support burn: `420` tokens
+- Min creation burn: `42,069` × mint reward (`MIN_PROJECT_CREATION_BURN_MINTS`)
+- Min update burn: `42,069` × mint reward (`MIN_PROJECT_UPDATE_BURN_MINTS`)
+- Min support burn: `420` × mint reward (`MIN_PROJECT_BURN_MINTS`)
 
 **8. Monitor Initial Launch**
 - Track first 100 projects created
@@ -1264,24 +1286,26 @@ cargo run --bin test-memo-project-create-project
 
 | Operation | Minimum Burn | Who Can Execute | Purpose |
 |-----------|--------------|-----------------|---------|
-| Create Project | 42,069 tokens | Anyone | Register new project on-chain |
-| Update Project | 42,069 tokens | Creator only | Update project metadata |
-| Burn for Project | 420 tokens | Creator only | Increase project burn statistics and leaderboard rank |
+| Create Project | 42,069 × mint reward | Anyone | Register new project on-chain |
+| Update Project | 42,069 × mint reward | Creator only | Update project metadata |
+| Burn for Project | 420 × mint reward | Creator only | Increase project burn statistics and leaderboard rank |
+
+The mint reward is memo-mint's current reward per mint (`mint_amount_at_supply(mint.supply)`): 1 token up to and including 10M supply, so the minimums are 42,069 / 42,069 / 420 tokens today, falling with each curve step down to 42,069 / 42,069 / 420 units at the last step. Amounts need not be whole tokens.
 
 ### Economic Incentives
 
 **Project Creation Barrier**:
-- 42,069 token burn discourages spam projects
+- 42,069 × mint reward burn discourages spam projects (the cost of 42,069 mints, whatever the supply)
 - Creates economic commitment from project creators
 - Aligns creator incentives with project success
 
 **Update Cost**:
-- Same cost as creation (42,069 tokens)
+- Same cost as creation (42,069 × mint reward)
 - Prevents frivolous updates
 - Ensures metadata quality
 
 **Creator Burn Support**:
-- Lower barrier (420 tokens) for burn_for_project operations
+- Lower barrier (420 × mint reward) for burn_for_project operations
 - Allows creators to incrementally build burn statistics
 - Creator controls their project's leaderboard position
 
@@ -1382,4 +1406,5 @@ Full error list: 35 error codes with descriptive messages
 |------|---------|
 | November 13, 2025 | Initial audit report |
 | December 16, 2025 | Updated to reflect confirmed design intent: (1) `burn_for_project` is creator-only, not permissionless; (2) `burned_amount` uses `saturating_add` instead of `checked_add`; (3) Removed references to non-existent `clear_burn_leaderboard` instruction |
+| October 16, 2026 | Supply-scaled burn minimums (multiples of the memo-mint reward), whole-token requirement removed, new memo-mint crate dependency (see the revision note at the top) |
 

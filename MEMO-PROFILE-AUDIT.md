@@ -37,6 +37,16 @@ During this audit, the following improvements were implemented:
 
 ---
 
+## Revision Note (October 16, 2026): Supply-Scaled Burn Minimums
+
+Burn minimums are no longer fixed whole-token amounts. Each minimum is a multiple of the current memo-mint reward, computed from the live `mint.supply` before the burn: `min_burn_amount(MINTS, supply) = MINTS × memo_mint::mint_amount_at_supply(supply)` (saturating multiply; see MEMO-MINT-AUDIT.md). Multipliers (constants renamed from `*_BURN_TOKENS` / `*_BURN_AMOUNT` to `*_BURN_MINTS`): create `MIN_PROFILE_CREATION_BURN_MINTS = 420`, update `MIN_PROFILE_UPDATE_BURN_MINTS = 420`. The whole-token check (`amount % DECIMAL_FACTOR != 0` → `InvalidBurnAmount`) was removed, so fractional amounts are accepted. `InvalidBurnAmount` stays in the enum but is never returned, so later error codes are unchanged. `BurnAmountTooSmall` now has a generic message, and a failed check logs the actual and required amounts in units. Success logs report units instead of whole tokens.
+
+**New dependency**: memo-profile now depends on the memo-mint crate (`memo-mint = { path = "../memo-mint", features = ["cpi"] }`; the `mainnet` feature cascades as `mainnet = ["memo-burn/mainnet", "memo-mint/mainnet"]`). It is used only for the pure function `mint_amount_at_supply`: there is no CPI to memo-mint, and no new accounts, instructions or program ID checks. The curve is compiled into memo-profile, so if memo-mint's curve ever changes, memo-profile must be rebuilt and redeployed to keep its minimums in step with the actual mint reward.
+
+- **Why**: as supply grows the mint reward falls to as little as 1 unit (0.000001 token), so fixed whole-token thresholds would eventually be out of reach for users who earn by minting, and amounts that are not whole tokens could not be burned at all (memo-burn now accepts any amount of at least 1 unit). Up to and including 10M supply the reward is 1 token, so every minimum equals its previous value (mainnet supply was about 8.73M at the time of the change); above 10M the minimums fall with each curve step, down to `MINTS` units at the last step.
+- **Supply source**: the supply is read from the `mint` account, which is constrained to `AUTHORIZED_MINT_PUBKEY`, so a caller cannot pass a mint with a chosen supply.
+- **Boundary / front-running**: supply can change between building and executing a transaction. Mints raise it (the minimum can only fall); burns lower it, and a burn that moves supply back across a step boundary raises the reward, and so the minimum, by one step (relatively largest at the low end of a decade, e.g. 0.1 → 0.2 token per mint around 90M). Crossing a second boundary would take burning a whole step's width of supply (at least 10M tokens), so in practice the minimum can move by one step at most, and the only effect is that a transaction fails with `BurnAmountTooSmall` and rolls back; no tokens are lost. Burning more than the minimum is always accepted, so clients should compute the minimum from a fresh supply and may add a buffer (for example, one step).
+
 ## Revision Note (October 13, 2026): Global Burn Statistics
 
 memo-burn now records burn totals across all users in one `GlobalBurnStats` account (see MEMO-BURN-AUDIT.md, Revision 3), and `process_burn` requires it. Every instruction of this app that burns through memo-burn (`CreateProfile`, `UpdateProfile`) has a new **last** account, `global_burn_stats`: writable, typed as `memo_burn::GlobalBurnStats`, and checked against seeds `[b"global_burn_stats"]` and its stored bump under the memo-burn program. It is passed through to the burn CPI, where memo-burn checks it again. Existing accounts keep their order and this app's error codes are unchanged.
@@ -77,7 +87,7 @@ This contract no longer limits the memo's maximum length, matching memo-mint and
 | `AboutMeTooLong` | 6018 | 6017 |
 | `BurnAmountTooSmall` | 6019 | 6018 |
 | `BurnAmountTooLarge` | 6020 | 6019 |
-| `InvalidBurnAmount` | 6021 | 6020 |
+| `InvalidBurnAmount` | 6021 | 6020 (no longer returned since October 16, 2026) |
 | `BurnAmountMismatch` | 6022 | 6021 |
 | `PayloadTooLong` | 6023 | removed |
 
@@ -93,8 +103,8 @@ Code excerpts in the rest of this report reflect the code at the time of the ori
 The memo-profile contract enables users to create and manage on-chain profiles by burning MEMO tokens. Each profile operation (create/update) requires burning a minimum amount of tokens and attaching a structured memo payload. Profiles are stored as PDA accounts derived from user public keys, ensuring one profile per user.
 
 ### Key Features
-- **Profile Creation**: Users burn 420+ tokens to create a profile with username, image, and optional bio
-- **Profile Update**: Users burn 420+ tokens to update any profile fields
+- **Profile Creation**: Users burn at least 420 × the current mint reward (420 tokens while supply ≤ 10M) to create a profile with username, image, and optional bio
+- **Profile Update**: Users burn at least 420 × the current mint reward to update any profile fields
 - **Profile Deletion**: Users can delete their profile (free, returns rent)
 - **Memo Integration**: All operations validated through Base64 + Borsh encoded memos at index 0
 - **CPI to memo-burn**: Token burning handled through secure CPI calls
@@ -105,9 +115,10 @@ The memo-profile contract enables users to create and manage on-chain profiles b
 - **Username**: Required, 1-32 characters
 - **Image**: Optional, 0-256 characters
 - **About Me**: Optional, 0-128 characters
-- **Minimum Burn (Create)**: 420 tokens (420,000,000 units)
-- **Minimum Burn (Update)**: 420 tokens (420,000,000 units)
-- **Maximum Burn per TX**: 1,000,000,000,000 tokens (inherited from memo-burn)
+- **Minimum Burn (Create)**: 420 × the current mint reward (`min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, mint.supply)`): 420 tokens (420,000,000 units) while supply ≤ 10M, falling with the emission curve down to 420 units at the last step
+- **Minimum Burn (Update)**: 420 × the current mint reward (same formula, `MIN_PROFILE_UPDATE_BURN_MINTS`)
+- **Fractional amounts**: allowed (no whole-token requirement)
+- **Maximum Burn per burn instruction**: 1,000,000,000,000 tokens (inherited from memo-burn)
 - **Token Decimals**: 6 (DECIMAL_FACTOR = 1,000,000)
 
 ### Account Space
@@ -122,13 +133,15 @@ The memo-profile contract enables users to create and manage on-chain profiles b
 
 **Design Intent**: ✅ **CONFIRMED AS INTENTIONAL – DATA INTEGRITY & AUDITABILITY**
 
-```rust:320:345:programs/memo-profile/src/lib.rs
+```rust:284:345:programs/memo-profile/src/lib.rs
 pub fn create_profile(
     ctx: Context<CreateProfile>,
     burn_amount: u64,
 ) -> Result<()> {
-    // Validate burn amount - require at least 420 tokens for profile creation
-    if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
+    // Validate burn amount against the supply-scaled minimum
+    let min_required = min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+    if burn_amount < min_required {
+        msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
         return Err(ErrorCode::BurnAmountTooSmall.into());
     }
     
@@ -147,10 +160,10 @@ pub fn create_profile(
 **Transaction Structure Requirement**:
 - Instruction `0`: `MemoProgram::Memo` (at least 69 bytes, Base64-encoded Borsh data; no contract maximum)
 - Instruction `1+`: `memo_profile::create_profile` or `memo_profile::update_profile`
-- Compute budget instructions can appear anywhere (processed by runtime)
+- Compute budget instructions occupy an instruction index too, so they must be at index 1 or later; one at index 0 makes the instruction fail with `MemoRequired`. Durable nonce transactions are not supported (the nonce advance would have to be at index 0)
 
 **Why This Matters**:
-1. **Data Integrity** – Profile data and burn amounts are cryptographically linked through memo
+1. **Data Integrity** – Profile data and burn amounts are carried in the same memo; the app checks its payload and memo-burn checks that each burn instruction's amount equals the memo's `burn_amount` (an equality check per instruction, not a cryptographic or one-time binding)
 2. **Auditability** – All profile operations are permanently recorded on-chain
 3. **Consistency** – Aligns with memo-burn and memo-chat patterns across the ecosystem
 4. **Off-chain Indexing** – Easy to parse and index profile operations from transaction memos
@@ -251,32 +264,43 @@ if let Some(new_about_me) = profile_data.about_me {
 
 ---
 
-### ✅ DESIGN CONFIRMATION #3: 420 Token Burn Requirement
+### ✅ DESIGN CONFIRMATION #3: 420 × Mint Reward Burn Requirement
 
 **Design Intent**: ✅ **CONFIRMED AS INTENTIONAL – ANTI-SPAM & VALUE ALIGNMENT**
 
-```rust:33:41:programs/memo-profile/src/lib.rs
+```rust:31:46:programs/memo-profile/src/lib.rs
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile creation
-pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420; // Minimum burn for profile creation: 420x the current mint reward
+
+// Maximum burn per burn instruction (consistent with memo-burn)
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 
 // burn amount
-pub const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
-pub const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_UPDATE_BURN_MINTS: u64 = 420; // Minimum burn for profile update: 420x the current mint reward
 ```
 
 **Rationale**:
-1. **Spam Prevention** – 420 token cost deters frivolous profile creation/updates
+1. **Spam Prevention** – a cost of 420 mint rewards (420 tokens while supply ≤ 10M) deters frivolous profile creation/updates
 2. **Economic Alignment** – Burns reduce supply, benefiting all token holders
 3. **Fair Pricing** – Same cost for create and update operations
 4. **Meme Culture** – "420" aligns with crypto culture while being economically reasonable
 5. **Flexibility** – Users can burn more if they want to contribute more
+6. **Stays Reachable** – Pricing in mint rewards instead of whole tokens keeps the cost at "420 mints" as the reward falls toward 1 unit; a fixed 420-token minimum would eventually require hundreds of millions of mints. Fractional amounts are accepted, so the minimum is exact in units
 
 **Validation**:
-```rust:324:336:programs/memo-profile/src/lib.rs
-// Validate burn amount - require at least 420 tokens for profile creation
-if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
+```rust:288:298:programs/memo-profile/src/lib.rs
+// Validate burn amount against the supply-scaled minimum
+let min_required = min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
@@ -284,13 +308,9 @@ if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
 if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
-
-if burn_amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
-}
 ```
 
-**Verdict**: The 420 token requirement is well-considered, serving both economic and cultural purposes while preventing spam.
+**Verdict**: The 420 × mint reward requirement is well-considered, serving both economic and cultural purposes while preventing spam. The supply is read from the authorized mint; a burn by someone else between signing and execution can raise the minimum by at most one curve step, which only makes the transaction fail with `BurnAmountTooSmall` (see the October 16, 2026 revision note).
 
 ---
 
@@ -561,19 +581,17 @@ if let Some(ref about_me) = self.about_me {
 ```
 
 **Burn Amount Validation**:
-```rust:324:336:programs/memo-profile/src/lib.rs
-// Validate burn amount - require at least 420 tokens for profile creation
-if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
+```rust:288:298:programs/memo-profile/src/lib.rs
+// Validate burn amount against the supply-scaled minimum
+let min_required = min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
 // Check burn amount limit
 if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
-}
-
-if burn_amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
 }
 ```
 
@@ -717,14 +735,18 @@ pub user_token_account: InterfaceAccount<'info, TokenAccount>,
 **Bounded Values**:
 ```rust:33:41:programs/memo-profile/src/lib.rs
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
-pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420;
-pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420;
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 ```
 
-**No Arithmetic Operations**:
+**Minimal Arithmetic**:
 - No addition/subtraction on user-controlled values
-- Only validation comparisons
+- The only computation is the minimum: a constant multiplier times the mint reward (≤ 1 token), which uses `saturating_mul` and cannot get anywhere near `u64::MAX`
+- Otherwise only validation comparisons
 - Burn amount arithmetic handled in memo-burn contract
 
 **Verdict**: No integer overflow risks; all values are validated and bounded.
@@ -808,20 +830,25 @@ programs/memo-profile/src/
 - ✅ Function purposes are clear
 
 **Examples**:
-```rust:29:41:programs/memo-profile/src/lib.rs
+```rust:29:46:programs/memo-profile/src/lib.rs
 // ===== BUSINESS LOGIC CONSTANTS =====
 
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile creation
-pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420; // Minimum burn for profile creation: 420x the current mint reward
 
-// Maximum burn per transaction (consistent with memo-burn)
+// Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
+
 // burn amount
-pub const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
-pub const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_UPDATE_BURN_MINTS: u64 = 420; // Minimum burn for profile update: 420x the current mint reward
 ```
 
 **Documentation Score**: ⭐⭐⭐⭐⭐ (5/5)
@@ -977,14 +1004,17 @@ anchor-spl = "0.32.1"        # ✅ Latest stable Anchor SPL
 spl-memo = "6.0"             # ✅ Official SPL Memo
 base64 = "0.22"              # ✅ Widely used, well-maintained
 bs58 = "0.5.1"               # ✅ Standard base58 library
-memo-burn = { path = "../memo-burn", features = ["cpi"] }  # ✅ Internal dependency
+memo-burn = { path = "../memo-burn", features = ["cpi"] }  # ✅ Internal dependency (burn CPI)
+memo-mint = { path = "../memo-mint", features = ["cpi"] }  # ✅ Internal dependency (pure function only, no CPI)
 ```
+
+`mainnet = ["memo-burn/mainnet", "memo-mint/mainnet"]`: both internal crates follow the network feature, so a mainnet build uses mainnet IDs throughout. memo-mint is used only for `mint_amount_at_supply`, the emission curve value that sets the burn minimums; memo-profile never invokes memo-mint and holds no memo-mint accounts. Because the curve is compiled in, a change to memo-mint's curve requires rebuilding and redeploying memo-profile.
 
 **Dependency Security**:
 - ✅ All dependencies are from trusted sources
 - ✅ Versions are pinned (no wildcards)
 - ✅ No known vulnerabilities in used versions
-- ✅ Minimal dependency tree (6 direct dependencies)
+- ✅ Minimal dependency tree (7 direct dependencies)
 
 **Verdict**: Dependencies are well-chosen, up-to-date, and secure.
 
@@ -1094,10 +1124,10 @@ memo-burn = { path = "../memo-burn", features = ["cpi"] }  # ✅ Internal depend
 **Rationale**: Keep contract simple and focused
 **Workaround**: Additional metadata can go in image field (e.g., JSON)
 
-### 4. Fixed Burn Amounts
-**Limitation**: 420 token minimum for create and update
-**Rationale**: Spam prevention and economic alignment
-**Workaround**: None needed; users can burn more if desired
+### 4. Burn Minimums Follow the Mint Reward
+**Limitation**: Minimum for create and update is 420 × the current mint reward (420 tokens while supply ≤ 10M), so it changes with supply and is not a fixed token amount
+**Rationale**: Spam prevention and economic alignment, while staying reachable as the mint reward falls
+**Workaround**: None needed; clients compute the minimum from a fresh supply, and users can burn more if desired (a small buffer covers a one-step change near a curve boundary)
 
 ### 5. No Profile Transfer
 **Limitation**: Profiles cannot be transferred to another user
@@ -1181,10 +1211,8 @@ The memo-profile contract is ready for mainnet deployment. All critical security
 ```rust
 // Token Economics
 DECIMAL_FACTOR = 1,000,000
-MIN_PROFILE_CREATION_BURN_TOKENS = 420
-MIN_PROFILE_CREATION_BURN_AMOUNT = 420,000,000
-MIN_PROFILE_UPDATE_BURN_TOKENS = 420
-MIN_PROFILE_UPDATE_BURN_AMOUNT = 420,000,000
+MIN_PROFILE_CREATION_BURN_MINTS = 420   // minimum = 420 × mint_amount_at_supply(supply) units
+MIN_PROFILE_UPDATE_BURN_MINTS = 420     // (420,000,000 units while supply ≤ 10M)
 MAX_BURN_PER_INSTRUCTION = 1,000,000,000,000,000,000
 
 // String Lengths
@@ -1231,9 +1259,9 @@ EmptyUsername             // Username is empty string
 UsernameTooLong           // Username > 32 chars
 ProfileImageTooLong       // Image > 256 chars
 AboutMeTooLong            // About me > 128 chars
-BurnAmountTooSmall        // Burn < 420 tokens
+BurnAmountTooSmall        // Burn < 420 × current mint reward
 BurnAmountTooLarge        // Burn > 1T tokens
-InvalidBurnAmount         // Not a multiple of DECIMAL_FACTOR
+InvalidBurnAmount         // No longer returned (fractional amounts allowed); kept so later codes stay unchanged
 BurnAmountMismatch        // Memo amount != instruction amount
 ```
 

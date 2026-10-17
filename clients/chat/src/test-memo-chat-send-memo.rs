@@ -365,7 +365,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses

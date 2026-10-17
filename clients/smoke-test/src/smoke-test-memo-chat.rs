@@ -16,7 +16,7 @@ use chrono::Utc;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 // Borsh memo structures (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -83,10 +83,9 @@ const EXPECTED_CATEGORY: &str = "chat";
 const EXPECTED_CREATE_GROUP_OPERATION: &str = "create_group";
 const EXPECTED_SEND_MESSAGE_OPERATION: &str = "send_message";
 const EXPECTED_BURN_FOR_GROUP_OPERATION: &str = "burn_for_group";
-const GROUP_CREATION_BURN_TOKENS: u64 = 42069; // Minimum burn for group creation
-const BURN_FOR_GROUP_TOKENS: u64 = 1000; // Burn amount for group support
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const REQUIRED_TOKENS_FOR_TEST: u64 = 50000; // Need at least 50000 tokens for test
+// Minimum burns are N x the current mint reward (mirror the memo-chat constants)
+const MIN_GROUP_CREATION_BURN_MINTS: u64 = 42_069; // Minimum burn for group creation
+const MIN_GROUP_BURN_MINTS: u64 = 1; // Minimum burn for burn_tokens_for_group
 
 /// Get token balance in raw units
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -101,12 +100,6 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
         },
         Err(_) => 0,
     }
-}
-
-/// Format token amount for display
-fn format_token_amount(raw_amount: u64) -> String {
-    let tokens = raw_amount as f64 / DECIMAL_FACTOR as f64;
-    format!("{:.6}", tokens)
 }
 
 /// Generate exactly 69-byte ASCII memo for mint operations
@@ -223,7 +216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = RpcClient::new(rpc_url);
 
     // Load payer keypair
-    let payer_path = std::env::var("PAYER_KEYPAIR_PATH")
+    let payer_path = std::env::var("MEMO_WALLET")
+        .or_else(|_| std::env::var("PAYER_KEYPAIR_PATH"))
+        .map(|p| shellexpand::tilde(&p).to_string())
         .unwrap_or_else(|_| shellexpand::tilde("~/.config/solana/id.json").to_string());
     let payer = read_keypair_file(&payer_path)?;
     println!("  Payer: {}", payer.pubkey());
@@ -236,23 +231,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  Token Account: {}", token_account);
 
+    // Current minimum burns (depend on token supply)
+    let group_creation_burn = fetch_min_burn_amount(&client, &mint, MIN_GROUP_CREATION_BURN_MINTS)?;
+    let group_burn_min = fetch_min_burn_amount(&client, &mint, MIN_GROUP_BURN_MINTS)?;
+    // Small buffer: the creation burn lowers supply, which can raise the reward by one step
+    let required_balance = group_creation_burn
+        .saturating_add(group_burn_min.saturating_mul(2));
+    println!("  Group creation burn: {} tokens ({} x mint reward)",
+             format_token_amount(group_creation_burn), MIN_GROUP_CREATION_BURN_MINTS);
+
     // Check balance
     let balance_raw = get_token_balance_raw(&client, &token_account);
-    let balance_tokens = balance_raw / DECIMAL_FACTOR;
     println!("\n💰 Current Balance: {} tokens ({} raw units)", 
              format_token_amount(balance_raw), balance_raw);
 
     // Mint tokens if needed
-    if balance_tokens < REQUIRED_TOKENS_FOR_TEST {
+    if balance_raw < required_balance {
         println!("\n⚠️  Insufficient balance for test. Minting tokens...");
-        println!("  Required: {} tokens", REQUIRED_TOKENS_FOR_TEST);
-        println!("  Current: {} tokens", balance_tokens);
+        println!("  Required: {} tokens", format_token_amount(required_balance));
+        println!("  Current: {} tokens", format_token_amount(balance_raw));
         
         match execute_mint_operation(&client, &payer, &mint_program_id, &mint, &token_account) {
             Ok(new_balance) => {
-                let new_balance_tokens = new_balance / DECIMAL_FACTOR;
                 println!("✅ Tokens minted successfully!");
-                println!("  New balance: {} tokens", new_balance_tokens);
+                println!("  New balance: {} tokens", format_token_amount(new_balance));
             }
             Err(e) => {
                 eprintln!("❌ Failed to mint tokens: {:?}", e);
@@ -284,12 +286,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔥 Step 1: Creating Chat Group");
     println!("----------------------------------------");
 
-    let burn_amount = GROUP_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+    let burn_amount = group_creation_burn;
     let group_name = format!("Test Group {}", next_group_id);
     let group_description = format!("Smoke test group created at {}", Utc::now());
     
     println!("  Group Name: {}", group_name);
-    println!("  Burn Amount: {} tokens", GROUP_CREATION_BURN_TOKENS);
+    println!("  Burn Amount: {} tokens", format_token_amount(burn_amount));
 
     // Create ChatGroupCreationData
     let group_data = ChatGroupCreationData {
@@ -427,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("    Name: {}", chat_group.name);
                 println!("    Description: {}", chat_group.description);
                 println!("    Creator: {}", chat_group.creator);
-                println!("    Burned Amount: {} tokens", chat_group.burned_amount / DECIMAL_FACTOR);
+                println!("    Burned Amount: {} tokens", format_token_amount(chat_group.burned_amount));
                 println!("    Memo Count: {}", chat_group.memo_count);
                 println!("    Tags: {:?}", chat_group.tags);
                 println!("    Min Memo Interval: {} seconds", chat_group.min_memo_interval);
@@ -548,8 +550,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔥 Step 4: Burning Tokens for Group");
     println!("----------------------------------------");
 
-    let burn_for_group_amount = BURN_FOR_GROUP_TOKENS * DECIMAL_FACTOR;
-    println!("  Burn Amount: {} tokens", BURN_FOR_GROUP_TOKENS);
+    // Re-read the minimum: the creation burn lowered the supply
+    let burn_for_group_amount = fetch_min_burn_amount(&client, &mint, MIN_GROUP_BURN_MINTS)?;
+    println!("  Burn Amount: {} tokens ({} x mint reward)", format_token_amount(burn_for_group_amount), MIN_GROUP_BURN_MINTS);
 
     // Create ChatGroupBurnData
     let burn_data = ChatGroupBurnData {
@@ -651,9 +654,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  PDA: {}", chat_group_pda);
     println!("  Name: {}", group_name);
     println!("\nOperations Tested:");
-    println!("  1. create_chat_group - Burned {} tokens", GROUP_CREATION_BURN_TOKENS);
+    println!("  1. create_chat_group - Burned {} tokens", format_token_amount(burn_amount));
     println!("  2. send_memo_to_group - Sent message to group");
-    println!("  3. burn_tokens_for_group - Burned {} tokens", BURN_FOR_GROUP_TOKENS);
+    println!("  3. burn_tokens_for_group - Burned {} tokens", format_token_amount(burn_for_group_amount));
 
     Ok(())
 }

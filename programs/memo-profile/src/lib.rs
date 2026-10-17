@@ -30,15 +30,20 @@ pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24c
 
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-pub const MIN_PROFILE_CREATION_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile creation
-pub const MIN_PROFILE_CREATION_BURN_AMOUNT: u64 = MIN_PROFILE_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420; // Minimum burn for profile creation: 420x the current mint reward
 
 // Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
 
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
+
 // burn amount
-pub const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
-pub const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROFILE_UPDATE_BURN_MINTS: u64 = 420; // Minimum burn for profile update: 420x the current mint reward
 
 // ===== STRING LENGTH CONSTRAINTS =====
 
@@ -280,18 +285,16 @@ pub mod memo_profile {
         ctx: Context<CreateProfile>,
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 420 tokens for profile creation
-        if burn_amount < MIN_PROFILE_CREATION_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // Check burn amount limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction
@@ -338,8 +341,8 @@ pub mod memo_profile {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Profile created successfully for user {} with {} tokens burned", 
-             ctx.accounts.user.key(), burn_amount / DECIMAL_FACTOR);
+        msg!("Profile created successfully for user {} with {} units burned", 
+             ctx.accounts.user.key(), burn_amount);
 
         Ok(())
     }
@@ -349,18 +352,16 @@ pub mod memo_profile {
         ctx: Context<UpdateProfile>,
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount for profile update
-        if burn_amount < MIN_PROFILE_UPDATE_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_PROFILE_UPDATE_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // Check burn amount upper limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction
@@ -415,8 +416,8 @@ pub mod memo_profile {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Profile updated successfully for user {} with {} tokens burned", 
-             ctx.accounts.user.key(), burn_amount / DECIMAL_FACTOR);
+        msg!("Profile updated successfully for user {} with {} units burned", 
+             ctx.accounts.user.key(), burn_amount);
 
         Ok(())
     }
@@ -470,8 +471,9 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<(bool, Ve
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-profile::create_profile (other instructions)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 pushes the
+/// memo out of index 0 and makes this instruction fail with MemoRequired.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -879,13 +881,14 @@ pub enum ErrorCode {
     #[msg("About me too long: About me must be at most 128 characters.")]
     AboutMeTooLong,
     
-    #[msg("Burn amount too small. Must burn at least 420 tokens (420,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
 
     #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
-    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    /// No longer returned (fractional amounts are allowed); kept so later error codes stay unchanged
+    #[msg("Invalid burn amount.")]
     InvalidBurnAmount,
 
     #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]

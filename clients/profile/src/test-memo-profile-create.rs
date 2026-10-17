@@ -138,10 +138,13 @@ const BURN_MEMO_VERSION: u8 = 1;
 const PROFILE_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "profile";
 const EXPECTED_OPERATION: &str = "create_profile";
+// Profile creation burns at least this many times the current mint reward
+// (mirrors MIN_PROFILE_CREATION_BURN_MINTS in memo-profile)
+const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420;
 
 #[derive(Debug, Clone)]
 struct TestParams {
-    pub burn_amount: u64,           // Burn amount in tokens (not units)
+    pub burn_amount: u64,           // Burn amount in units (lamports, 6 decimals)
     pub username: String,           // Username
     pub image: String,              // Profile image
     pub about_me: Option<String>,   // About me text
@@ -149,7 +152,7 @@ struct TestParams {
     pub test_description: String,   // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -161,11 +164,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let test_case = &args[1];
+
+    // Minimum burn depends on the current mint reward, which depends on the token supply
+    let rpc_client = RpcClient::new(get_rpc_url());
+    let token_mint = get_token_mint("memo_token")?;
+    let min_burn = fetch_min_burn_amount(&rpc_client, &token_mint, MIN_PROFILE_CREATION_BURN_MINTS)?;
+    println!("Current minimum profile creation burn: {} tokens ({} x mint reward)",
+        format_token_amount(min_burn), MIN_PROFILE_CREATION_BURN_MINTS);
     
     // Define test cases
     let test_params = match test_case.as_str() {
         "valid-basic" => TestParams {
-            burn_amount: 420, // Minimum required amount
+            burn_amount: min_burn, // Dynamic minimum
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Hello, I'm Alice!".to_string()),
@@ -173,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Valid profile creation with all fields".to_string(),
         },
         "valid-minimal" => TestParams {
-            burn_amount: 420,
+            burn_amount: min_burn,
             username: "bob".to_string(),
             image: "".to_string(),
             about_me: None,
@@ -181,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Valid profile creation with minimal fields".to_string(),
         },
         "empty-username" => TestParams {
-            burn_amount: 420,
+            burn_amount: min_burn,
             username: "".to_string(),  // Empty username
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
@@ -189,7 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Invalid profile creation with empty username".to_string(),
         },
         "long-username" => TestParams {
-            burn_amount: 420,
+            burn_amount: min_burn,
             username: "a".repeat(33),  // Too long username
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
@@ -197,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Invalid profile creation with long username".to_string(),
         },
         "long-image" => TestParams {
-            burn_amount: 420,
+            burn_amount: min_burn,
             username: "alice".to_string(),
             image: "a".repeat(257),  // Too long image
             about_me: Some("Test".to_string()),
@@ -205,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Invalid profile creation with long image".to_string(),
         },
         "long-about-me" => TestParams {
-            burn_amount: 420,
+            burn_amount: min_burn,
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("a".repeat(129)),  // Too long about_me
@@ -213,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Invalid profile creation with long about_me".to_string(),
         },
         "low-burn" => TestParams {
-            burn_amount: 419,  // Below minimum
+            burn_amount: min_burn.saturating_sub(1),  // 1 unit below the dynamic minimum
             username: "alice".to_string(),
             image: "c:32x32:JY3LCsIwEEU/5rRTTYRgCq4Eq2bnskEECTRk/v8bnNi7OIuZ+8BPc2Iiw+g+A7zWdebCs9nxxhV0U1KLWvJStnc4P6gHcTkODEVykhDuyezWQvOAkwrCiS7PrtKhlYWoqjhDwlD4qjaOaBMrGNGetbERsXfunvbPZH4=".to_string(),
             about_me: Some("Test".to_string()),
@@ -234,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Constants
     let rpc_url = get_rpc_url();
-    let wallet_path = std::env::var("WALLET_PATH").unwrap_or_else(|_| {
+    let wallet_path = std::env::var("MEMO_WALLET").or_else(|_| std::env::var("WALLET_PATH")).unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME environment variable not set");
         format!("{}/.config/solana/id.json", home)
     });
@@ -296,9 +306,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let balance_tokens = balance.ui_amount.unwrap_or(0.0);
             println!("Token Balance: {} tokens", balance_tokens);
             
-            if balance_tokens < test_params.burn_amount as f64 {
+            let balance_units = balance.amount.parse::<u64>().unwrap_or(0);
+            if balance_units < test_params.burn_amount {
                 println!("❌ Insufficient token balance. Need {} tokens, have {}", 
-                         test_params.burn_amount, balance_tokens);
+                         format_token_amount(test_params.burn_amount), balance_tokens);
                 return Ok(());
             }
         }
@@ -338,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create the profile creation instruction using proper Anchor discriminator
-    let burn_amount_units = test_params.burn_amount * 1_000_000; // Convert to units
+    let burn_amount_units = test_params.burn_amount;
 
     let profile_instruction = create_profile_instruction(
         &memo_profile_program_id,
@@ -484,7 +495,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             if !test_params.should_succeed {
                 println!("✅ EXPECTED FAILURE: Test failed as expected");
-                analyze_expected_error(&err.to_string(), &test_params);
+                analyze_expected_error(&err.to_string(), &test_params, min_burn);
             } else {
                 println!("❌ UNEXPECTED FAILURE: Test should have succeeded");
                 analyze_unexpected_error(&err.to_string());
@@ -516,7 +527,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, user_pubkey: Pubkey) -> 
     // Create BurnMemo with the payload
     let burn_memo = BurnMemo {
         version: BURN_MEMO_VERSION,
-        burn_amount: params.burn_amount * 1_000_000, // Convert to units
+        burn_amount: params.burn_amount,
         payload,
     };
     
@@ -570,7 +581,7 @@ fn create_profile_instruction(
     Instruction::new_with_bytes(*program_id, &instruction_data, accounts)
 }
 
-fn analyze_expected_error(error_msg: &str, params: &TestParams) {
+fn analyze_expected_error(error_msg: &str, params: &TestParams, min_burn: u64) {
     if error_msg.contains("EmptyUsername") && params.username.is_empty() {
         println!("✅ Correct: Empty username detected");
     } else if error_msg.contains("UsernameTooLong") && params.username.len() > 32 {
@@ -579,8 +590,8 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Profile image too long detected");
     } else if error_msg.contains("AboutMeTooLong") && params.about_me.as_ref().map_or(false, |s| s.len() > 128) {
         println!("✅ Correct: About me too long detected");
-    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 420 {
-        println!("✅ Correct: Burn amount too small detected");
+    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < min_burn {
+        println!("✅ Correct: Burn amount too small detected (minimum {} tokens)", format_token_amount(min_burn));
     } else {
         println!("⚠️  Unexpected error type: {}", error_msg);
     }
@@ -598,8 +609,8 @@ fn analyze_unexpected_error(error_msg: &str) {
         println!("   Wrong mint address");
     } else if error_msg.contains("UnauthorizedTokenAccount") {
         println!("   Token account ownership issue");
-    } else if error_msg.contains("InvalidBurnAmount") {
-        println!("   Burn amount validation failed");
+    } else if error_msg.contains("BurnAmountTooSmall") {
+        println!("   Burn amount below the current minimum (supply may have changed)");
     } else if error_msg.contains("already in use") {
         println!("   Profile already exists for this user");
     } else {
@@ -617,7 +628,9 @@ fn print_usage() {
     println!("  long-username   - Invalid: Username too long (>32 chars)");
     println!("  long-image      - Invalid: Image too long (>256 chars)");
     println!("  long-about-me   - Invalid: About me too long (>128 chars)");
-    println!("  low-burn        - Invalid: Burn amount too low (<420 tokens)");
+    println!("  low-burn        - Invalid: Burn amount too low (current minimum - 1 unit)");
+    println!();
+    println!("Burn amounts default to the current minimum: 420 x the current mint reward.");
     println!();
     println!("Environment Variables:");
     println!("  RPC_URL      - Solana RPC endpoint (default: testnet)");

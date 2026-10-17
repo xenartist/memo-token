@@ -16,7 +16,7 @@ use base64::{Engine as _, engine::general_purpose};
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, parse_token_amount, format_token_amount};
 
 // Borsh memo structure (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, BorshSchema, Debug)]
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 3 {
         println!("Usage: cargo run -- <burn_amount> <test_type> [memo_length]");
         println!("Parameters:");
-        println!("  burn_amount   - Number of tokens to burn (decimal=6)");
+        println!("  burn_amount   - Number of tokens to burn, up to 6 decimals (minimum 0.000001)");
         println!("  test_type     - Type of memo test to perform");
         println!("  memo_length   - Custom memo length (only for custom-length test)");
         println!();
@@ -53,17 +53,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Examples:");
         println!("  cargo run -- 1 valid-memo           # Burn 1 token with valid memo");
         println!("  cargo run -- 2 custom-length 666    # Burn 2 tokens with 666-byte memo");
+        println!("  cargo run -- 0.000001 valid-memo    # Burn 1 unit (the minimum)");
         println!("  cargo run -- 10 long-memo           # Burn 10 tokens with an oversized memo (should fail at transaction size)");
         return Ok(());
     }
 
-    // Parse burn amount (first parameter)
-    let burn_amount_tokens = args[1].parse::<u64>().unwrap_or_else(|_| {
-        eprintln!("Error: Invalid burn amount '{}'", args[1]);
+    // Parse burn amount (first parameter, in tokens with up to 6 decimals; decimal=6)
+    let burn_amount = parse_token_amount(&args[1]).unwrap_or_else(|| {
+        eprintln!("Error: Invalid burn amount '{}' (up to 6 decimals)", args[1]);
         std::process::exit(1);
     });
-    // For decimal=6, multiply by 1,000,000 to get units
-    let burn_amount = burn_amount_tokens * 1_000_000;
+    let burn_amount_tokens = format_token_amount(burn_amount);
 
     // Parse test type (second parameter)
     let test_type = &args[2];
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program and token addresses
@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let current_balance = balance.ui_amount.unwrap_or(0.0);
             println!("Current token balance: {} tokens", current_balance);
             
-            if current_balance < burn_amount_tokens as f64 {
+            if balance.amount.parse::<u64>().unwrap_or(0) < burn_amount {
                 println!("ERROR: Insufficient token balance!");
                 println!("Requested burn: {} tokens", burn_amount_tokens);
                 println!("Available balance: {} tokens", current_balance);
@@ -197,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(borsh_memo) = BurnMemo::try_from_slice(&decoded_data) {
                             println!("Borsh memo structure:");
                             println!("  version: {}", borsh_memo.version);
-                            println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, borsh_memo.burn_amount / 1_000_000);
+                            println!("  burn_amount: {} units ({} tokens)", borsh_memo.burn_amount, format_token_amount(borsh_memo.burn_amount));
                             println!("  payload: {} bytes", borsh_memo.payload.len());
                             
                             // Show payload preview
@@ -286,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 recent_blockhash,
             );
 
-            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, memo_bytes.len());
+            send_and_check_transaction(&client, transaction, test_type, &token_account, &burn_amount_tokens, memo_bytes.len());
         },
         Err(_) => {
             // For no-memo test case
@@ -347,7 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 recent_blockhash,
             );
 
-            send_and_check_transaction(&client, transaction, test_type, &token_account, burn_amount_tokens, 0);
+            send_and_check_transaction(&client, transaction, test_type, &token_account, &burn_amount_tokens, 0);
         }
     }
 
@@ -442,7 +442,7 @@ fn send_and_check_transaction(
     transaction: Transaction,
     test_type: &str,
     token_account: &Pubkey,
-    burn_amount_tokens: u64,
+    burn_amount_tokens: &str,
     memo_length: usize
 ) {
     println!("Sending burn transaction...");

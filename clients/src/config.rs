@@ -56,9 +56,18 @@ fn effective_program_env(config: &AnchorToml) -> String {
     }
 }
 
-/// Get the RPC URL from Anchor.toml
+/// Get the RPC URL from Anchor.toml (the MEMO_RPC_URL environment variable overrides it,
+/// e.g. to point the clients at a local validator)
 /// This is the single source of truth for RPC configuration
 pub fn get_rpc_url() -> String {
+    if let Ok(url) = std::env::var("MEMO_RPC_URL") {
+        if !url.is_empty() {
+            println!("✓ Using RPC from MEMO_RPC_URL: {}", url);
+            return url;
+        }
+    }
+
+
     // Get project root (assuming we're in clients/ subdirectory)
     let anchor_toml_path = get_anchor_toml_path();
     
@@ -76,8 +85,16 @@ pub fn get_rpc_url() -> String {
     }
 }
 
-/// Get the wallet path from Anchor.toml
+/// Get the wallet path from Anchor.toml (the MEMO_WALLET environment variable overrides it)
 pub fn get_wallet_path() -> String {
+    if let Ok(wallet) = std::env::var("MEMO_WALLET") {
+        if !wallet.is_empty() {
+            let expanded = shellexpand::tilde(&wallet).to_string();
+            println!("✓ Using wallet from MEMO_WALLET: {}", expanded);
+            return expanded;
+        }
+    }
+
     let anchor_toml_path = get_anchor_toml_path();
     
     match read_anchor_config(&anchor_toml_path) {

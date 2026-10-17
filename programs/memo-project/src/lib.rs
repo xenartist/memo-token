@@ -40,19 +40,23 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxS
 
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-pub const MIN_PROJECT_CREATION_BURN_TOKENS: u64 = 42069; // Minimum tokens to burn for project creation
-pub const MIN_PROJECT_CREATION_BURN_AMOUNT: u64 = MIN_PROJECT_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROJECT_CREATION_BURN_MINTS: u64 = 42069; // Minimum burn for project creation: 42069x the current mint reward
 
 // Project burn constants
-pub const MIN_PROJECT_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for project
-pub const MIN_PROJECT_BURN_AMOUNT: u64 = MIN_PROJECT_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROJECT_BURN_MINTS: u64 = 420; // Minimum burn for burning for a project: 420x the current mint reward
 
 // Project update constants  
-pub const MIN_PROJECT_UPDATE_BURN_TOKENS: u64 = 42069; // Minimum tokens to burn for project update
-pub const MIN_PROJECT_UPDATE_BURN_AMOUNT: u64 = MIN_PROJECT_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_PROJECT_UPDATE_BURN_MINTS: u64 = 42069; // Minimum burn for project update: 42069x the current mint reward
 
 // Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 
 // ===== STRING LENGTH CONSTRAINTS =====
 
@@ -464,18 +468,16 @@ pub mod memo_project {
         expected_project_id: u64, // The project_id that client expects to create
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 69420 tokens for project creation
-        if burn_amount < MIN_PROJECT_CREATION_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_PROJECT_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // check burn amount limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Get the next project_id from global counter
@@ -557,11 +559,11 @@ pub mod memo_project {
             msg!("Project {} entered burn leaderboard", actual_project_id);
         } else {
             msg!("Project {} burn amount {} not sufficient for leaderboard", 
-                 actual_project_id, burn_amount / DECIMAL_FACTOR);
+                 actual_project_id, burn_amount);
         }
 
-        msg!("Project {} created successfully by {} with {} tokens burned", 
-             actual_project_id, ctx.accounts.creator.key(), burn_amount / DECIMAL_FACTOR);
+        msg!("Project {} created successfully by {} with {} units burned", 
+             actual_project_id, ctx.accounts.creator.key(), burn_amount);
         Ok(())
     }
 
@@ -571,18 +573,16 @@ pub mod memo_project {
         project_id: u64,
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 42069 tokens for project update
-        if burn_amount < MIN_PROJECT_UPDATE_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_PROJECT_UPDATE_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // check burn amount limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction
@@ -660,16 +660,16 @@ pub mod memo_project {
         let entered_leaderboard = leaderboard.update_leaderboard(project_id, total_burned)?;
 
         if entered_leaderboard {
-            msg!("Project {} updated in burn leaderboard with total {} tokens", 
-                 project_id, total_burned / DECIMAL_FACTOR);
+            msg!("Project {} updated in burn leaderboard with total {} units", 
+                 project_id, total_burned);
         } else {
             msg!("Project {} total burn amount {} not sufficient for leaderboard", 
-                 project_id, total_burned / DECIMAL_FACTOR);
+                 project_id, total_burned);
         }
 
-        msg!("Project {} updated successfully by {} with {} tokens burned (total: {})", 
-             project_id, ctx.accounts.updater.key(), burn_amount / DECIMAL_FACTOR, 
-             project.burned_amount / DECIMAL_FACTOR);
+        msg!("Project {} updated successfully by {} with {} units burned (total: {})", 
+             project_id, ctx.accounts.updater.key(), burn_amount, 
+             project.burned_amount);
         Ok(())
     }
 
@@ -693,18 +693,16 @@ pub mod memo_project {
         project_id: u64,
         amount: u64,
     ) -> Result<()> {
-        // Validate burn amount
-        if amount < MIN_PROJECT_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_PROJECT_BURN_MINTS, ctx.accounts.mint.supply);
+        if amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // Check burn amount limit
         if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction with enhanced validation
@@ -751,7 +749,7 @@ pub mod memo_project {
             msg!("Warning: burned_amount overflow detected for project {}", project_id);
         }
         
-        msg!("Successfully burned {} tokens for project {}", amount / DECIMAL_FACTOR, project_id);
+        msg!("Successfully burned {} units for project {}", amount, project_id);
         
         // Update burn leaderboard after successful burn
         let leaderboard = &mut ctx.accounts.burn_leaderboard;
@@ -759,11 +757,11 @@ pub mod memo_project {
         let entered_leaderboard = leaderboard.update_leaderboard(project_id, total_burned)?;
 
         if entered_leaderboard {
-            msg!("Project {} updated in burn leaderboard with total {} tokens", 
-                 project_id, total_burned / DECIMAL_FACTOR);
+            msg!("Project {} updated in burn leaderboard with total {} units", 
+                 project_id, total_burned);
         } else {
             msg!("Project {} total burn amount {} not sufficient for leaderboard", 
-                 project_id, total_burned / DECIMAL_FACTOR);
+                 project_id, total_burned);
         }
 
         // Emit burn event
@@ -959,8 +957,9 @@ fn parse_project_burn_borsh_memo(memo_data: &[u8], expected_project_id: u64, exp
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-project instructions (create_project, update_project, etc.)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 pushes the
+/// memo out of index 0 and makes this instruction fail with MemoRequired.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -1524,13 +1523,14 @@ pub enum ErrorCode {
     #[msg("Too many tags: Maximum 4 tags allowed.")]
     TooManyTags,
     
-    #[msg("Burn amount too small. Must burn at least 420 tokens (420,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
 
     #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
-    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    /// No longer returned (fractional amounts are allowed); kept so later error codes stay unchanged
+    #[msg("Invalid burn amount.")]
     InvalidBurnAmount,
 
     #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]

@@ -42,11 +42,9 @@ const BLOG_UPDATE_DATA_VERSION: u8 = 1;
 const BURN_MEMO_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "blog";
 const EXPECTED_OPERATION: &str = "update_blog";
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const MIN_BLOG_BURN_TOKENS: u64 = 1;
-const MIN_BLOG_BURN_AMOUNT: u64 = MIN_BLOG_BURN_TOKENS * DECIMAL_FACTOR;
+const MIN_BLOG_BURN_MINTS: u64 = 1; // Mirrors MIN_BLOG_BURN_MINTS in the contract: 1x the current mint reward
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BLOG UPDATE BLOG TEST ===");
@@ -59,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load user wallet
     let user = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses
@@ -99,11 +97,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Update details - only 1 token minimum!
-    let burn_amount_tokens = MIN_BLOG_BURN_TOKENS;
-    let burn_amount = burn_amount_tokens * DECIMAL_FACTOR;
+    // Update details
+    // Minimum burn is MIN_BLOG_BURN_MINTS x the current mint reward (depends on supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint_address, MIN_BLOG_BURN_MINTS)?;
 
-    println!("Updating blog with {} token burn (minimum required)", burn_amount_tokens);
+    println!("Updating blog with {} token burn (minimum required)", format_token_amount(burn_amount));
 
     // Create update data (update name and description as example)
     let update_data = BlogUpdateData {
@@ -144,12 +142,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check token balance
     match client.get_token_account(&user_token_account) {
         Ok(Some(token_account)) => {
-            let balance = token_account.token_amount.ui_amount.unwrap_or(0.0);
-            println!("User token balance: {} tokens", balance);
+            let balance: u64 = token_account.token_amount.amount.parse().unwrap_or(0);
+            println!("User token balance: {} tokens", format_token_amount(balance));
             
-            if balance < burn_amount_tokens as f64 {
+            if balance < burn_amount {
                 return Err(format!("Insufficient token balance. Need {} tokens, have {}", 
-                                 burn_amount_tokens, balance).into());
+                                 format_token_amount(burn_amount), format_token_amount(balance)).into());
             }
         },
         Ok(None) => {
@@ -252,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("✅ Blog updated successfully!");
             println!("   Updater: {}", user.pubkey());
-            println!("   Tokens burned: {} token(s)", burn_amount_tokens);
+            println!("   Tokens burned: {} token(s)", format_token_amount(burn_amount));
         },
         Err(err) => {
             println!("❌ BLOG UPDATE FAILED!");

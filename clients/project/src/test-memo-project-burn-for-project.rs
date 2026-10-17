@@ -127,17 +127,21 @@ const BURN_MEMO_VERSION: u8 = 1;
 const PROJECT_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "project";
 const EXPECTED_BURN_OPERATION: &str = "burn_for_project";
+// Burning for a project requires at least this many times the current mint reward
+// (mirrors MIN_PROJECT_BURN_MINTS in memo-project)
+const MIN_PROJECT_BURN_MINTS: u64 = 420;
 
 #[derive(Debug, Clone)]
 struct TestParams {
     pub project_id: u64,           // Target project ID
-    pub burn_amount: u64,          // Burn amount in tokens (not units)
+    pub burn_amount: u64,          // Burn amount in units (lamports, 6 decimals)
     pub message: String,           // Burn message (optional, max 696 characters)
     pub should_succeed: bool,      // Whether the test should succeed
     pub test_description: String,  // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount, parse_token_amount};
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -152,54 +156,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_id_str = &args[2];
     let project_id = project_id_str.parse::<u64>()
         .map_err(|_| format!("Invalid project_id: {}", project_id_str))?;
+
+    // Minimum burn depends on the current mint reward, which depends on the token supply
+    let rpc_client = RpcClient::new(get_rpc_url());
+    let token_mint = get_token_mint("memo_token")?;
+    let min_burn = fetch_min_burn_amount(&rpc_client, &token_mint, MIN_PROJECT_BURN_MINTS)?;
+    let mint_reward = min_burn / MIN_PROJECT_BURN_MINTS;
+    println!("Current minimum burn for project: {} tokens ({} x mint reward)",
+        format_token_amount(min_burn), MIN_PROJECT_BURN_MINTS);
     
     // Define test cases
     let test_params = match test_case.as_str() {
         "valid-basic" => TestParams {
             project_id,
-            burn_amount: 420, // 420 tokens (minimum)
+            burn_amount: min_burn, // Dynamic minimum (420 x mint reward)
             message: "Basic burn test for project support".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with minimum amount and basic message".to_string(),
         },
         "valid-large" => TestParams {
             project_id,
-            burn_amount: 10000, // 10,000 tokens
+            burn_amount: mint_reward.saturating_mul(10_000), // 10,000 x mint reward
             message: "Large amount burn for project development and growth".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with large amount and detailed message".to_string(),
         },
         "valid-empty-message" => TestParams {
             project_id,
-            burn_amount: 1000, // 1,000 tokens
+            burn_amount: mint_reward.saturating_mul(1_000), // 1,000 x mint reward
             message: "".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with empty message".to_string(),
         },
         "valid-long-message" => TestParams {
             project_id,
-            burn_amount: 5000, // 5,000 tokens
+            burn_amount: mint_reward.saturating_mul(5_000), // 5,000 x mint reward
             message: "This is a very long burn message to test the maximum message length validation for project burning. With the increased limit of 696 characters, we can include much more detailed information about why this burn operation is being performed, what the expected outcomes are, how this supports the project's goals and development roadmap, and provide comprehensive context for the community to understand the reasoning behind this significant token burn. This extended message length allows for better communication and transparency in project support activities, enabling project creators and supporters to document their contributions and intentions more thoroughly than ever before.".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with long message (near 696 char limit)".to_string(),
         },
         "small-amount" => TestParams {
             project_id,
-            burn_amount: 100, // 100 tokens (below minimum 420)
+            burn_amount: min_burn.saturating_sub(1), // 1 unit below the dynamic minimum
             message: "Testing small amount".to_string(),
             should_succeed: false,
             test_description: "Test burn amount too small (should fail)".to_string(),
         },
         "invalid-project" => TestParams {
             project_id: 999999, // Non-existent project
-            burn_amount: 420,
+            burn_amount: min_burn,
             message: "Testing invalid project".to_string(),
             should_succeed: false,
             test_description: "Test burn for non-existent project (should fail)".to_string(),
         },
         "too-long-message" => TestParams {
             project_id,
-            burn_amount: 420,
+            burn_amount: min_burn,
             message: "A".repeat(697), // 697 characters (should fail)
             should_succeed: false,
             test_description: "Test message too long (should fail)".to_string(),
@@ -210,13 +222,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print_usage();
                 return Ok(());
             }
-            let custom_burn_amount = args[3].parse::<u64>()
-                .map_err(|_| format!("Invalid burn amount: {}", args[3]))?;
+            let custom_burn_amount = parse_token_amount(&args[3])
+                .ok_or_else(|| format!("Invalid burn amount: {}", args[3]))?;
             
             let custom_message = if args.len() >= 5 {
                 args[4].clone()
             } else {
-                format!("Custom burn: {} tokens for project {}", custom_burn_amount, project_id)
+                format!("Custom burn: {} tokens for project {}", format_token_amount(custom_burn_amount), project_id)
             };
             
             TestParams {
@@ -224,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 burn_amount: custom_burn_amount,
                 message: custom_message,
                 should_succeed: true,
-                test_description: format!("Custom burn test: {} tokens for project {} with message", custom_burn_amount, project_id),
+                test_description: format!("Custom burn test: {} tokens for project {} with message", format_token_amount(custom_burn_amount), project_id),
             }
         },
         _ => {
@@ -243,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rpc_url = get_rpc_url();
     let client = RpcClient::new(rpc_url.to_string());
     
-    let payer_path = std::env::var("SOLANA_KEYPAIR_PATH")
+    let payer_path = std::env::var("MEMO_WALLET").or_else(|_| std::env::var("SOLANA_KEYPAIR_PATH"))
         .unwrap_or_else(|_| format!("{}/.config/solana/id.json", std::env::var("HOME").unwrap()));
     let payer = read_keypair_file(&payer_path)?;
 
@@ -251,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
     println!("Project ID: {}", test_params.project_id);
-    println!("Burn amount: {} tokens", test_params.burn_amount);
+    println!("Burn amount: {} tokens", format_token_amount(test_params.burn_amount));
     println!("Burn message: \"{}\" ({} chars)", test_params.message, test_params.message.len());
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
     println!();
@@ -344,9 +356,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let current_balance = balance.ui_amount.unwrap_or(0.0);
                 println!("Current token balance: {} tokens", current_balance);
                 
-                if current_balance < test_params.burn_amount as f64 {
+                let current_balance_units = balance.amount.parse::<u64>().unwrap_or(0);
+                if current_balance_units < test_params.burn_amount {
                     println!("❌ ERROR: Insufficient token balance!");
-                    println!("   Required: {} tokens", test_params.burn_amount);
+                    println!("   Required: {} tokens", format_token_amount(test_params.burn_amount));
                     println!("   Available: {} tokens", current_balance);
                     return Ok(());
                 }
@@ -414,7 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &memo_burn_program_id,
         &user_global_burn_stats_pda,
         test_params.project_id,
-        test_params.burn_amount * 1_000_000, // Convert to units
+        test_params.burn_amount,
     );
 
     // First, simulate transaction to get optimal CU limit
@@ -510,7 +523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 analyze_unexpected_error(&err.to_string());
             } else {
                 println!("✅ EXPECTED FAILURE: Test failed as expected");
-                analyze_expected_error(&err.to_string(), &test_params);
+                analyze_expected_error(&err.to_string(), &test_params, min_burn);
             }
         }
     }
@@ -538,7 +551,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, burner_pubkey: &Pubkey) 
     // Create BurnMemo structure
     let burn_memo = BurnMemo {
         version: BURN_MEMO_VERSION,
-        burn_amount: params.burn_amount * 1_000_000, // Convert to units
+        burn_amount: params.burn_amount,
         payload,
     };
     
@@ -567,9 +580,9 @@ fn parse_project_creator(data: &[u8]) -> Result<Pubkey, Box<dyn std::error::Erro
     Ok(Pubkey::from(creator_bytes))
 }
 
-fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 420 {
-        println!("✅ Correct: Burn amount too small detected (minimum 420 tokens required)");
+fn analyze_expected_error(error_msg: &str, params: &TestParams, min_burn: u64) {
+    if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < min_burn {
+        println!("✅ Correct: Burn amount too small detected (minimum {} tokens required)", format_token_amount(min_burn));
     } else if error_msg.contains("ProjectNotFound") || error_msg.contains("InvalidProjectPDA") {
         println!("✅ Correct: Invalid project detected");
     } else if error_msg.contains("insufficient funds") {
@@ -653,11 +666,11 @@ fn print_usage() {
     println!("Usage: cargo run --bin test-memo-project-burn-for-project -- <test_case> <project_id> [amount] [message]");
     println!();
     println!("Available test cases:");
-    println!("  valid-basic         - Valid burn operation with 420 tokens (minimum) and basic message");
-    println!("  valid-large         - Valid burn operation with 10,000 tokens and detailed message");
+    println!("  valid-basic         - Valid burn operation with the current minimum (420 x mint reward) and basic message");
+    println!("  valid-large         - Valid burn operation with 10,000 x mint reward and detailed message");
     println!("  valid-empty-message - Valid burn operation with empty message");
     println!("  valid-long-message  - Valid burn operation with long message (near 696 char limit)");
-    println!("  small-amount        - Test burn amount too small (should fail)");
+    println!("  small-amount        - Test burn amount too small: minimum - 1 unit (should fail)");
     println!("  invalid-project     - Test burn for non-existent project (should fail)");
     println!("  too-long-message    - Test message too long (should fail)");
     println!("  custom              - Custom test with specified amount and message");
@@ -671,5 +684,6 @@ fn print_usage() {
     println!();
     println!("Note: Make sure the specified project_id exists and you are the project creator.");
     println!("      Messages are optional and limited to 696 characters.");
-    println!("      Minimum burn amount is 420 tokens.");
+    println!("      Minimum burn amount is 420 x the current mint reward (420 tokens while supply <= 10M).");
+    println!("      Custom amounts are in tokens and may be fractional (up to 6 decimals).");
 }

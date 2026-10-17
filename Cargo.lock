@@ -2239,6 +2239,8 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "base64 0.22.1",
+ "solana-instruction",
+ "solana-instructions-sysvar",
  "spl-memo",
 ]
 
@@ -2291,6 +2293,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "memo-burn",
+ "memo-mint",
  "spl-memo",
 ]
 
@@ -2303,6 +2306,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "memo-burn",
+ "memo-mint",
  "spl-memo",
 ]
 

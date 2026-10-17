@@ -40,7 +40,7 @@ mod validate_memo_amount_tests {
 
     #[test]
     fn test_valid_memo_minimum_burn() {
-        let burn_amount = DECIMAL_FACTOR; // 1 token
+        let burn_amount = MIN_BURN_AMOUNT; // 1 unit (0.000001 token)
         let payload = b"Valid burn operation".to_vec();
         let memo_data = create_valid_memo(burn_amount, payload);
         
@@ -786,25 +786,9 @@ mod user_global_burn_stats_tests {
         assert_eq!(UserGlobalBurnStats::SPACE, 65);
     }
 
-    #[test]
-    fn test_saturating_add_at_max() {
-        let current = MAX_USER_GLOBAL_BURN_AMOUNT;
-        let to_add = 1_000_000;
-        let result = current.saturating_add(to_add);
-        
-        // Should not overflow, should cap at u64::MAX
-        assert_eq!(result, MAX_USER_GLOBAL_BURN_AMOUNT + to_add);
-    }
-
-    #[test]
-    fn test_saturating_add_near_u64_max() {
-        let current = u64::MAX - 1000;
-        let to_add = 2000;
-        let result = current.saturating_add(to_add);
-        
-        // Should saturate at u64::MAX
-        assert_eq!(result, u64::MAX);
-    }
+    // The user stats update (18T cap, burn_count, last_burn_time) is inline in process_burn and
+    // cannot be unit-tested without changing lib.rs. It is checked exactly on-chain by
+    // clients/regression/src/regression-memo-curve.rs (cap) and regression-memo-burn.rs (deltas).
 }
 
 // ============================================================================
@@ -821,8 +805,8 @@ mod constants_tests {
     }
 
     #[test]
-    fn test_min_burn_tokens() {
-        assert_eq!(MIN_BURN_TOKENS, 1, "Minimum burn should be 1 token");
+    fn test_min_burn_amount() {
+        assert_eq!(MIN_BURN_AMOUNT, 1, "Minimum burn should be 1 unit");
     }
 
     #[test]
@@ -876,17 +860,11 @@ mod constants_tests {
     }
 
     #[test]
-    fn test_min_burn_amount_in_units() {
-        let min_units = DECIMAL_FACTOR * MIN_BURN_TOKENS;
-        assert_eq!(min_units, 1_000_000, "Minimum burn in units should be 1,000,000");
-    }
-
-    #[test]
     fn test_constants_relationships() {
         // Verify logical relationships between constants
         assert!(MEMO_MIN_LENGTH > BORSH_FIXED_OVERHEAD, 
             "Min memo length should be greater than Borsh overhead");
-        assert!(MIN_BURN_TOKENS * DECIMAL_FACTOR <= MAX_BURN_PER_INSTRUCTION, 
+        assert!(MIN_BURN_AMOUNT <= MAX_BURN_PER_INSTRUCTION, 
             "Min burn should be less than or equal to max burn");
     }
 }
@@ -935,31 +913,23 @@ mod integration_tests {
 
     #[test]
     fn test_memo_size_boundaries() {
-        // Test that we can create memos at exact boundaries
+        // An empty payload gives a 20-byte memo: a valid BurnMemo but below the 69-byte minimum
         let burn_amount = 1 * DECIMAL_FACTOR;
-        
-        // Minimum Base64 memo size
-        let min_payload = vec![];
-        let memo = BurnMemo {
-            version: BURN_MEMO_VERSION,
-            burn_amount,
-            payload: min_payload,
-        };
-        let borsh_data = borsh::to_vec(&memo).unwrap();
-        let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
-        let memo_bytes = base64_encoded.into_bytes();
-        
-        assert!(memo_bytes.len() >= MEMO_MIN_LENGTH || memo_bytes.len() < MEMO_MIN_LENGTH, 
-            "Empty payload memo size: {}", memo_bytes.len());
+        let memo = BurnMemo { version: BURN_MEMO_VERSION, burn_amount, payload: vec![] };
+        let memo_bytes = general_purpose::STANDARD.encode(borsh::to_vec(&memo).unwrap()).into_bytes();
+        assert_eq!(memo_bytes.len(), 20);
+        assert!(validate_memo_amount(&memo_bytes, burn_amount).is_ok());
+        assert!(validate_memo_length(&memo_bytes, MEMO_MIN_LENGTH).is_err());
     }
 
     #[test]
     fn test_various_burn_scenarios() {
+        // Payloads of at least 39 bytes so every memo also passes the 69-byte minimum
         let scenarios = vec![
-            (1 * DECIMAL_FACTOR, b"Burn 1 token".to_vec()),
-            (10 * DECIMAL_FACTOR, b"Burn 10 tokens".to_vec()),
-            (100 * DECIMAL_FACTOR, b"Burn 100 tokens".to_vec()),
-            (1_000 * DECIMAL_FACTOR, b"Burn 1,000 tokens".to_vec()),
+            (1, b"Burn 1 unit (0.000001 token), padded to the minimum".to_vec()),
+            (1_234_567, b"Burn 1.234567 tokens, a fractional amount, padded".to_vec()),
+            (1 * DECIMAL_FACTOR, b"Burn 1 token, padded up to the minimum memo length".to_vec()),
+            (1_000 * DECIMAL_FACTOR, b"Burn 1,000 tokens, padded up to the minimum length".to_vec()),
         ];
 
         for (burn_amount, payload) in scenarios {
@@ -972,10 +942,9 @@ mod integration_tests {
             let base64_encoded = general_purpose::STANDARD.encode(&borsh_data);
             let memo_bytes = base64_encoded.into_bytes();
             
-            if memo_bytes.len() >= MEMO_MIN_LENGTH {
-                let result = validate_memo_amount(&memo_bytes, burn_amount);
-                assert!(result.is_ok(), "Scenario with {} tokens should succeed", burn_amount / DECIMAL_FACTOR);
-            }
+            assert!(validate_memo_length(&memo_bytes, MEMO_MIN_LENGTH).is_ok(), "memo for {} units is too short", burn_amount);
+            assert!(validate_memo_amount(&memo_bytes, burn_amount).is_ok(), "Scenario with {} units should succeed", burn_amount);
+            assert!(validate_memo_amount(&memo_bytes, burn_amount + 1).is_err(), "memo for {} units must not match +1", burn_amount);
         }
     }
 
@@ -1032,52 +1001,22 @@ mod integration_tests {
 #[cfg(test)]
 mod test_coverage_summary {
     // This module serves as documentation for test coverage
-    
-    // validate_memo_amount: 50+ tests
-    // - Valid memos (various burn amounts, payload sizes)
-    // - Invalid format (not Base64, not UTF-8, not Borsh)
-    // - Version mismatches (0, 2, 255)
-    // - Burn amount mismatches (higher, lower, off-by-one, zero)
-    // - Long payloads accepted (no maximum; the transaction size limit applies)
-    // - Payload length prefix checks (forged, too small, shorter than header)
-    // - Edge cases (maximum burn, special characters, binary data)
-    
-    // validate_memo_length: 35+ tests
-    // - Valid lengths (minimum, mid-range, long memos with no maximum)
-    // - Too short (empty, 1 byte, just below minimum, various)
-    // - Content types (ASCII, UTF-8, Base64, binary, zeros, ones, 255s)
-    
-    // BurnMemo structure: 8+ tests
-    // - Serialization/deserialization
-    // - Empty payload
-    // - Large payload
-    // - Large payload (587 bytes, fits an 800-byte memo)
-    // - Borsh size calculation
-    // - Various burn amounts
-    // - Binary payload
-    
-    // UserGlobalBurnStats: 3+ tests
-    // - SPACE constant verification
-    // - Saturating add at max
-    // - Saturating add near u64::MAX
-    
-    // Constants: 15+ tests
-    // - All constant values verified
-    // - Relationships between constants
-    // - No overflow conditions
-    // - Arithmetic operations
-    
-    // Integration tests: 5+ tests
-    // - Full validation flow
-    // - Memo size boundaries
-    // - Various burn scenarios
-    // - Payload size calculation
-    // - Base64 encoding overhead
-    
-    // Total: 115+ comprehensive unit tests
-    // Coverage: All public and private functions
-    // Edge cases: Extensively covered
-    // Error paths: All tested
+    //
+    // Unit-tested here (run `cargo test -p memo-burn --lib` for the exact count):
+    // - validate_memo_amount: strict Base64 (standard alphabet, padding required, canonical
+    //   trailing bits, no whitespace), payload length prefix, version, exact amount binding
+    //   (fractional amounts included), differential check against BurnMemo::try_from_slice
+    // - validate_memo_length (minimum 69 bytes, no maximum) and the effective 72-byte minimum
+    // - check_memo_instruction against real instructions-sysvar data (memo position rules)
+    // - GlobalBurnStats::record_burn (accumulation and saturation)
+    // - constants and error code numbering
+    //
+    // Not unit-testable without changing lib.rs, covered by the on-chain regression suite
+    // (scripts/run-regression-tests.sh, clients/regression/src/):
+    // - process_burn amount bounds (0, 1 unit, fractional, 1T, 1T + 1, u64::MAX)
+    // - user stats update (total, 18T cap, burn_count, last_burn_time) and GlobalBurnStats deltas
+    // - Accounts constraints (owner, delegate, mint, stats seeds, sysvar address)
+    // - initialize_global_burn_stats admin check (fresh state)
 }
 
 
@@ -1146,5 +1085,354 @@ mod global_burn_stats_tests {
         assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
         #[cfg(feature = "mainnet")]
         assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
+    }
+}
+
+// ============================================================================
+// Tests for check_memo_instruction (memo position rules)
+// ============================================================================
+
+#[cfg(test)]
+mod check_memo_instruction_tests {
+    use super::*;
+    use solana_instruction::{AccountMeta as Meta, BorrowedAccountMeta, BorrowedInstruction};
+    use solana_instructions_sysvar::{construct_instructions_data, store_current_index_checked};
+
+    const LEGACY_MEMO_V1: Pubkey = pubkey!("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo");
+    const COMPUTE_BUDGET: Pubkey = pubkey!("ComputeBudget111111111111111111111111111111");
+
+    struct Ix {
+        program_id: Pubkey,
+        accounts: Vec<Meta>,
+        data: Vec<u8>,
+    }
+
+    /// Instructions sysvar data exactly as the runtime builds it, with the current index set
+    fn sysvar_data(ixs: &[Ix], current_index: u16) -> Vec<u8> {
+        let borrowed: Vec<BorrowedInstruction> = ixs
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: ix.accounts.iter().map(|m| BorrowedAccountMeta {
+                    pubkey: &m.pubkey,
+                    is_signer: m.is_signer,
+                    is_writable: m.is_writable,
+                }).collect(),
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        store_current_index_checked(&mut data, current_index).unwrap();
+        data
+    }
+
+    fn check_with_key(key: Pubkey, ixs: &[Ix], current_index: u16) -> Result<Option<Vec<u8>>> {
+        let mut data = sysvar_data(ixs, current_index);
+        let owner = anchor_lang::solana_program::sysvar::ID;
+        let mut lamports = 0u64;
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false, 0);
+        check_memo_instruction(&info)
+    }
+
+    fn check(ixs: &[Ix], current_index: u16) -> Result<Option<Vec<u8>>> {
+        check_with_key(INSTRUCTIONS_ID, ixs, current_index)
+    }
+
+    fn burn_memo_bytes(amount: u64) -> Vec<u8> {
+        let memo = BurnMemo { version: BURN_MEMO_VERSION, burn_amount: amount, payload: vec![b'p'; 60] };
+        general_purpose::STANDARD.encode(borsh::to_vec(&memo).unwrap()).into_bytes()
+    }
+
+    fn memo(data: Vec<u8>) -> Ix {
+        Ix { program_id: MEMO_PROGRAM_ID, accounts: vec![], data }
+    }
+
+    fn burn() -> Ix {
+        Ix { program_id: crate::ID, accounts: vec![Meta::new(Pubkey::new_unique(), true)], data: vec![0; 16] }
+    }
+
+    fn other(program_id: Pubkey, data: Vec<u8>) -> Ix {
+        Ix { program_id, accounts: vec![], data }
+    }
+
+    fn is_memo_too_short(result: Result<Option<Vec<u8>>>) -> bool {
+        matches!(result, Err(e) if e.to_string().contains("MemoTooShort"))
+    }
+
+    #[test]
+    fn test_memo_at_index_0_returned_exactly() {
+        let good = burn_memo_bytes(7);
+        assert!(good.len() >= MEMO_MIN_LENGTH);
+        assert_eq!(check(&[memo(good.clone()), burn()], 1).unwrap(), Some(good.clone()));
+        // burn later than index 1, with other instructions in between
+        assert_eq!(check(&[memo(good.clone()), other(COMPUTE_BUDGET, vec![2; 5]), burn(), burn()], 3).unwrap(), Some(good));
+    }
+
+    #[test]
+    fn test_memo_only_right_before_the_burn_rejected() {
+        let good = burn_memo_bytes(7);
+        // the memo must be at index 0, not at current_index - 1
+        assert_eq!(check(&[other(COMPUTE_BUDGET, vec![2; 5]), memo(good.clone()), burn()], 2).unwrap(), None);
+        // and the memo at index 0 is used even when the instruction right before the burn is something else
+        assert_eq!(check(&[memo(good.clone()), other(COMPUTE_BUDGET, vec![2; 5]), burn()], 2).unwrap(), Some(good));
+    }
+
+    #[test]
+    fn test_index_0_must_be_spl_memo_v3() {
+        let good = burn_memo_bytes(7);
+        assert_eq!(check(&[other(LEGACY_MEMO_V1, good.clone()), burn()], 1).unwrap(), None);
+        assert_eq!(check(&[other(COMPUTE_BUDGET, good.clone()), burn()], 1).unwrap(), None);
+        assert_eq!(check(&[other(crate::ID, good), burn()], 1).unwrap(), None);
+    }
+
+    #[test]
+    fn test_burn_at_index_0_rejected() {
+        assert_eq!(check(&[burn()], 0).unwrap(), None);
+        assert_eq!(check(&[burn(), memo(burn_memo_bytes(7))], 0).unwrap(), None);
+    }
+
+    #[test]
+    fn test_short_memo_at_index_0_is_an_error() {
+        assert!(is_memo_too_short(check(&[memo(vec![b'x'; MEMO_MIN_LENGTH - 1]), burn()], 1)));
+        assert!(is_memo_too_short(check(&[memo(vec![]), burn()], 1)));
+        assert!(is_memo_too_short(check(&[memo(vec![b'x'; 10]), memo(burn_memo_bytes(7)), burn()], 2)));
+        assert!(check(&[memo(vec![b'x'; MEMO_MIN_LENGTH]), burn()], 1).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_wrong_sysvar_account_is_an_error() {
+        assert!(check_with_key(Pubkey::new_unique(), &[memo(burn_memo_bytes(7)), burn()], 1).is_err());
+    }
+}
+
+// ============================================================================
+// Strict Base64, amount binding and memo length boundaries
+// ============================================================================
+
+#[cfg(test)]
+mod strict_memo_format_tests {
+    use super::*;
+
+    fn raw(version: u8, amount: u64, declared_len: u32, payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![version];
+        v.extend(amount.to_le_bytes());
+        v.extend(declared_len.to_le_bytes());
+        v.extend(payload);
+        v
+    }
+
+    fn valid_raw(amount: u64, payload_len: usize) -> Vec<u8> {
+        let payload: Vec<u8> = (0..payload_len).map(|i| (i * 7 + 3) as u8).collect();
+        raw(BURN_MEMO_VERSION, amount, payload_len as u32, &payload)
+    }
+
+    fn is_invalid_format(result: Result<()>) -> bool {
+        matches!(result, Err(e) if e.to_string().contains("InvalidMemoFormat"))
+    }
+
+    #[test]
+    fn test_padding_is_required() {
+        // 13 + 58 = 71 decoded bytes: the standard encoding ends with one '='
+        let r = valid_raw(5, 58);
+        let padded = general_purpose::STANDARD.encode(&r);
+        let unpadded = general_purpose::STANDARD_NO_PAD.encode(&r);
+        assert!(padded.ends_with('='));
+        assert_ne!(padded, unpadded);
+        assert!(validate_memo_amount(padded.as_bytes(), 5).is_ok());
+        assert!(is_invalid_format(validate_memo_amount(unpadded.as_bytes(), 5)));
+        // extra padding is rejected too
+        assert!(is_invalid_format(validate_memo_amount(format!("{}==", padded).as_bytes(), 5)));
+    }
+
+    #[test]
+    fn test_non_canonical_trailing_bits_rejected() {
+        let r = valid_raw(5, 58);
+        let mut enc = general_purpose::STANDARD.encode(&r).into_bytes();
+        let pad = enc.iter().filter(|&&c| c == b'=').count();
+        assert!(pad > 0);
+        let idx = enc.len() - pad - 1;
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let pos = alphabet.iter().position(|&c| c == enc[idx]).unwrap();
+        enc[idx] = alphabet[pos ^ 1]; // flips an unused low bit: decodes to the same bytes in a lenient engine
+        assert!(is_invalid_format(validate_memo_amount(&enc, 5)));
+    }
+
+    #[test]
+    fn test_url_safe_alphabet_rejected() {
+        // bytes FB EF BE encode to "++++" (standard) / "----" (URL-safe)
+        let mut payload = vec![b'p'; 60];
+        payload[2] = 0xFB;
+        payload[3] = 0xEF;
+        payload[4] = 0xBE;
+        let r = raw(BURN_MEMO_VERSION, 5, 60, &payload);
+        let std_enc = general_purpose::STANDARD.encode(&r);
+        let url_enc = general_purpose::URL_SAFE.encode(&r);
+        assert!(std_enc.contains('+') && url_enc.contains('-'));
+        assert!(validate_memo_amount(std_enc.as_bytes(), 5).is_ok());
+        assert!(is_invalid_format(validate_memo_amount(url_enc.as_bytes(), 5)));
+    }
+
+    #[test]
+    fn test_whitespace_and_trailing_data_rejected() {
+        let enc = general_purpose::STANDARD.encode(valid_raw(5, 60));
+        assert!(validate_memo_amount(enc.as_bytes(), 5).is_ok());
+        for bad in [
+            format!("{}\n{}", &enc[..40], &enc[40..]),
+            format!("{}\n", enc),
+            format!(" {}", enc),
+            format!("{} ", enc),
+            format!("{}AAAA", enc),
+            format!("{}!!", enc),
+        ] {
+            assert!(is_invalid_format(validate_memo_amount(bad.as_bytes(), 5)), "accepted {:?}", bad);
+        }
+    }
+
+    #[test]
+    fn test_amount_binding_is_exact_in_units() {
+        for amount in [1u64, 2, 999_999, 1_000_000, 1_000_001, 1_234_567, MAX_BURN_PER_INSTRUCTION, MAX_BURN_PER_INSTRUCTION + 1, u64::MAX] {
+            let enc = general_purpose::STANDARD.encode(valid_raw(amount, 60));
+            assert!(validate_memo_amount(enc.as_bytes(), amount).is_ok(), "amount {}", amount);
+            if amount > 0 {
+                let r = validate_memo_amount(enc.as_bytes(), amount - 1);
+                assert!(matches!(r, Err(e) if e.to_string().contains("BurnAmountMismatch")), "amount {} - 1", amount);
+            }
+            if amount < u64::MAX {
+                let r = validate_memo_amount(enc.as_bytes(), amount + 1);
+                assert!(matches!(r, Err(e) if e.to_string().contains("BurnAmountMismatch")), "amount {} + 1", amount);
+            }
+            // a memo for the whole-token rounding of a fractional amount does not match
+            let rounded = amount / DECIMAL_FACTOR * DECIMAL_FACTOR;
+            if rounded != amount {
+                let enc_rounded = general_purpose::STANDARD.encode(valid_raw(rounded, 60));
+                assert!(validate_memo_amount(enc_rounded.as_bytes(), amount).is_err(), "rounded memo for {}", amount);
+            }
+        }
+    }
+
+    #[test]
+    fn test_effective_minimum_memo_length_is_72() {
+        // validate_memo_length accepts 69..=71 bytes, but no canonical padded Base64 string has that
+        // length, so such memos fail validate_memo_amount; 72 is the shortest memo passing both
+        let canonical = |payload_len: usize| general_purpose::STANDARD.encode(valid_raw(5, payload_len)).into_bytes();
+        let m68 = canonical(38);
+        assert_eq!(m68.len(), 68);
+        assert!(validate_memo_length(&m68, MEMO_MIN_LENGTH).is_err());
+
+        let mut m69 = canonical(38);
+        m69.push(b'=');
+        let m70 = general_purpose::STANDARD_NO_PAD.encode(valid_raw(5, 39)).into_bytes();
+        let m71 = general_purpose::STANDARD_NO_PAD.encode(valid_raw(5, 40)).into_bytes();
+        for (len, m) in [(69, &m69), (70, &m70), (71, &m71)] {
+            assert_eq!(m.len(), len);
+            assert!(validate_memo_length(m, MEMO_MIN_LENGTH).is_ok());
+            assert!(is_invalid_format(validate_memo_amount(m, 5)), "{}-byte memo accepted", len);
+        }
+
+        let m72 = canonical(39);
+        assert_eq!(m72.len(), 72);
+        assert!(validate_memo_length(&m72, MEMO_MIN_LENGTH).is_ok());
+        assert!(validate_memo_amount(&m72, 5).is_ok());
+    }
+
+    /// Reference semantics: strict standard Base64, then BurnMemo::try_from_slice, version and amount
+    fn reference(memo: &[u8], expected: u64) -> bool {
+        let Ok(s) = std::str::from_utf8(memo) else { return false };
+        let Ok(decoded) = general_purpose::STANDARD.decode(s) else { return false };
+        // a declared payload length beyond the bytes present can never deserialize (and would
+        // make Borsh try to allocate it)
+        if decoded.len() >= BORSH_FIXED_OVERHEAD {
+            let declared = u32::from_le_bytes(decoded[BORSH_PAYLOAD_LEN_OFFSET..BORSH_FIXED_OVERHEAD].try_into().unwrap()) as usize;
+            if declared > decoded.len() - BORSH_FIXED_OVERHEAD {
+                return false;
+            }
+        }
+        match BurnMemo::try_from_slice(&decoded) {
+            Ok(m) => m.version == BURN_MEMO_VERSION && m.burn_amount == expected,
+            Err(_) => false,
+        }
+    }
+
+    #[test]
+    fn test_differential_against_borsh_deserialization() {
+        // xorshift64: deterministic, no extra dependency
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (mut accepted, mut rejected) = (0u32, 0u32);
+        for i in 0..100_000u32 {
+            let amount = match i % 4 {
+                0 => next(),
+                1 => next() % 10,
+                2 => MAX_BURN_PER_INSTRUCTION,
+                _ => next() % (u32::MAX as u64),
+            };
+            let payload_len = (next() % 120) as usize;
+            let mut r = valid_raw(amount, payload_len);
+            let mut expected = amount;
+            match next() % 10 {
+                0 => {}
+                1 => { let j = (next() as usize) % r.len(); r[j] = next() as u8; }
+                2 => { r[0] = next() as u8; }
+                3 => {
+                    let d = (next() % 7) as i64 - 3;
+                    let l = (payload_len as i64 + d).max(0) as u32;
+                    r[9..13].copy_from_slice(&l.to_le_bytes());
+                }
+                4 => r.push(next() as u8),
+                5 => { let l = (next() as usize) % r.len(); r.truncate(l); }
+                6 => expected = expected.wrapping_add(1 + next() % 2),
+                7 => r[9..13].copy_from_slice(&(next() as u32).to_le_bytes()),
+                8 => { let j = 1 + (next() as usize) % 8; r[j] ^= 1 << (next() % 8); }
+                _ => { r = (0..(next() % 40)).map(|_| next() as u8).collect(); }
+            }
+            let mut memo = general_purpose::STANDARD.encode(&r).into_bytes();
+            match next() % 12 {
+                0 => if !memo.is_empty() { let j = (next() as usize) % memo.len(); memo[j] = next() as u8; },
+                1 => while memo.last() == Some(&b'=') { memo.pop(); },
+                2 => { let j = (next() as usize) % (memo.len() + 1); memo.insert(j, b'\n'); }
+                3 => { let j = (next() as usize) % (memo.len() + 1); memo.insert(j, b' '); }
+                4 => for c in memo.iter_mut() { if *c == b'+' { *c = b'-' } else if *c == b'/' { *c = b'_' } },
+                5 => memo.extend_from_slice(b"=="),
+                _ => {}
+            }
+            let real = validate_memo_amount(&memo, expected).is_ok();
+            assert_eq!(real, reference(&memo, expected), "divergence on {:?} (expected {})", String::from_utf8_lossy(&memo), expected);
+            if real { accepted += 1 } else { rejected += 1 }
+        }
+        assert!(accepted > 5_000 && rejected > 5_000, "accepted {} rejected {}", accepted, rejected);
+    }
+}
+
+// ============================================================================
+// Error code numbering
+// ============================================================================
+
+#[cfg(test)]
+mod error_code_tests {
+    use super::*;
+
+    /// Clients match error codes by number, so variants may only be appended.
+    /// InvalidBurnAmount (6005) is no longer returned but must keep its slot.
+    #[test]
+    fn test_error_codes_unchanged_and_appended() {
+        let code = |e: ErrorCode| u32::from(e);
+        assert_eq!(code(ErrorCode::MemoRequired), 6000);
+        assert_eq!(code(ErrorCode::InvalidMemoFormat), 6001);
+        assert_eq!(code(ErrorCode::UnsupportedMemoVersion), 6002);
+        assert_eq!(code(ErrorCode::BurnAmountTooSmall), 6003);
+        assert_eq!(code(ErrorCode::BurnAmountTooLarge), 6004);
+        assert_eq!(code(ErrorCode::InvalidBurnAmount), 6005);
+        assert_eq!(code(ErrorCode::InvalidTokenAccount), 6006);
+        assert_eq!(code(ErrorCode::UnauthorizedMint), 6007);
+        assert_eq!(code(ErrorCode::UnauthorizedTokenAccount), 6008);
+        assert_eq!(code(ErrorCode::BurnAmountMismatch), 6009);
+        assert_eq!(code(ErrorCode::MemoTooShort), 6010);
+        assert_eq!(code(ErrorCode::UnauthorizedUser), 6011);
+        assert_eq!(code(ErrorCode::UnauthorizedAdmin), 6012);
     }
 }

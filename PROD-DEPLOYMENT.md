@@ -131,6 +131,8 @@ New clients also work against the old programs (Anchor ignores extra trailing ac
    `memo_mint` → `memo_burn` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
    Between the `memo_mint` / `memo_burn` upgrade and the upgrade of the dependent programs,
    mint/burn through those dependent programs fails. Do not stop halfway.
+   **Never upgrade only the apps.** They depend on the current memo-mint / memo-burn (for example, fractional
+   burn amounts need the new memo-burn), so a partial run must always include `memo_burn` and `memo_mint`.
 3. `mint_state` and `global_burn_stats` are created automatically by the deploy script right after
    `memo_mint` / `memo_burn` are deployed or upgraded. The init clients are idempotent.
    If that step fails, the script stops and prints the retry command. Until both accounts exist, every mint/burn fails.

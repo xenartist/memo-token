@@ -267,6 +267,38 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
     Ok(true)
 }
 
+/// Emission curve value (in lamports) at the given supply, without the hard cap check.
+///
+/// Public so other programs can use the current mint reward as the unit for supply-scaled
+/// burn thresholds. At or above the max supply it returns the last step (1 lamport), so the
+/// result is always >= 1.
+pub fn mint_amount_at_supply(current_supply: u64) -> u64 {
+    if current_supply >= MAX_SUPPLY_LAMPORTS {
+        return BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES);
+    }
+
+    if current_supply <= CURVE_START_LAMPORTS {
+        return BASE_MINT_AMOUNT;
+    }
+
+    // Steps take effect just above each round number, so locate the step from one lamport below:
+    // supply in (d * 10^k, (d+1) * 10^k] has `below` in [d * 10^k, (d+1) * 10^k)
+    let below = current_supply - 1; // >= CURVE_START_LAMPORTS here
+
+    // Find the decade: magnitude <= below < magnitude * 10
+    // (at most CURVE_DECADES - 1 iterations; magnitude * 10 <= below < MAX_SUPPLY, so no overflow)
+    let mut magnitude = CURVE_START_LAMPORTS;
+    let mut decade_base = BASE_MINT_AMOUNT;
+    while below / 10 >= magnitude {
+        magnitude *= 10;
+        decade_base /= 10;
+    }
+
+    // Leading digit, always 1..=9 here
+    let digit = below / magnitude;
+    decade_base * (10 - digit) / 10
+}
+
 /// Calculate dynamic mint amount based on current supply with hard cap
 fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
     // Check hard limit first
@@ -275,27 +307,8 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
     }
     
     // Mint amount based on the emission curve (comparing lamports directly)
-    let amount = if current_supply <= CURVE_START_LAMPORTS {
-        BASE_MINT_AMOUNT
-    } else {
-        // Steps take effect just above each round number, so locate the step from one lamport below:
-        // supply in (d * 10^k, (d+1) * 10^k] has `below` in [d * 10^k, (d+1) * 10^k)
-        let below = current_supply - 1; // >= CURVE_START_LAMPORTS here
+    let amount = mint_amount_at_supply(current_supply);
 
-        // Find the decade: magnitude <= below < magnitude * 10
-        // (at most CURVE_DECADES - 1 iterations; magnitude * 10 <= below < MAX_SUPPLY, so no overflow)
-        let mut magnitude = CURVE_START_LAMPORTS;
-        let mut decade_base = BASE_MINT_AMOUNT;
-        while below / 10 >= magnitude {
-            magnitude *= 10;
-            decade_base /= 10;
-        }
-
-        // Leading digit, always 1..=9 here
-        let digit = below / magnitude;
-        decade_base * (10 - digit) / 10
-    };
-    
     // use checked_add to prevent overflow
     let new_supply = current_supply.checked_add(amount)
         .ok_or(ErrorCode::ArithmeticOverflow)?;

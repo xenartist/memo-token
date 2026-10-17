@@ -67,9 +67,9 @@ const PROJECT_CREATION_DATA_VERSION: u8 = 1;
 const BURN_MEMO_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "project";
 const EXPECTED_OPERATION: &str = "create_project";
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const MIN_PROJECT_CREATION_BURN_TOKENS: u64 = 42_069;
-const MIN_PROJECT_CREATION_BURN_AMOUNT: u64 = MIN_PROJECT_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
+// Project creation burns at least this many times the current mint reward
+// (mirrors MIN_PROJECT_CREATION_BURN_MINTS in memo-project)
+const MIN_PROJECT_CREATION_BURN_MINTS: u64 = 42069;
 
 impl ProjectCreationData {
     /// Validate the structure fields
@@ -144,7 +144,7 @@ impl ProjectCreationData {
     }
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-PROJECT CREATE PROJECT TEST ===");
@@ -157,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load user wallet
     let user = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses
@@ -195,10 +195,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Next project ID will be: {}", next_project_id);
 
     // Project details
-    let burn_amount_tokens = MIN_PROJECT_CREATION_BURN_TOKENS; // 42,069 tokens
-    let burn_amount = burn_amount_tokens * DECIMAL_FACTOR;
+    // Minimum is 42,069 x the current mint reward (depends on token supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint_address, MIN_PROJECT_CREATION_BURN_MINTS)?;
 
-    println!("Creating project with {} tokens burn (minimum required)", burn_amount_tokens);
+    println!("Creating project with {} tokens burn (minimum required: {} x mint reward)",
+             format_token_amount(burn_amount), MIN_PROJECT_CREATION_BURN_MINTS);
 
     // Create project data
     let project_data = ProjectCreationData {
@@ -247,9 +248,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let balance = token_account.token_amount.ui_amount.unwrap_or(0.0);
             println!("User token balance: {} tokens", balance);
             
-            if balance < burn_amount_tokens as f64 {
+            let balance_units = token_account.token_amount.amount.parse::<u64>().unwrap_or(0);
+            if balance_units < burn_amount {
                 return Err(format!("Insufficient token balance. Need {} tokens, have {}", 
-                                 burn_amount_tokens, balance).into());
+                                 format_token_amount(burn_amount), balance).into());
             }
         },
         Ok(None) => {
@@ -385,7 +387,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!();
                     println!("✅ Project {} created successfully!", next_project_id);
                     println!("   Creator: {}", user.pubkey());
-                    println!("   Tokens burned: {} tokens", burn_amount_tokens);
+                    println!("   Tokens burned: {} tokens", format_token_amount(burn_amount));
                     println!("   Project name: {}", project_data.name);
                     println!("   Tags: {:?}", project_data.tags);
                 },
@@ -401,7 +403,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Provide helpful error analysis
             let error_msg = err.to_string();
             if error_msg.contains("BurnAmountTooSmall") {
-                println!("💡 The burn amount is too small. Minimum required: {} tokens", MIN_PROJECT_CREATION_BURN_TOKENS);
+                println!("💡 The burn amount is too small. Minimum required: {} tokens ({} x mint reward; supply may have changed)",
+                         format_token_amount(burn_amount), MIN_PROJECT_CREATION_BURN_MINTS);
             } else if error_msg.contains("insufficient funds") || error_msg.contains("0x1") {
                 println!("💡 Insufficient token balance or SOL balance for transaction fees.");
             } else if error_msg.contains("InvalidProjectDataFormat") {

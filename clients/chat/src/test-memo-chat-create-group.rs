@@ -156,10 +156,13 @@ const BURN_MEMO_VERSION: u8 = 1;
 const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "chat";
 const EXPECTED_OPERATION: &str = "create_group";
+// Group creation burns at least this many times the current mint reward
+// (mirrors MIN_GROUP_CREATION_BURN_MINTS in memo-chat)
+const MIN_GROUP_CREATION_BURN_MINTS: u64 = 42_069;
 
 #[derive(Debug, Clone)]
 struct TestParams {
-    pub burn_amount: u64,           // Burn amount in tokens (not units)
+    pub burn_amount: u64,           // Burn amount in units (lamports, 6 decimals)
     pub name: String,               // Group name
     pub description: String,        // Group description
     pub image: String,              // Group image
@@ -169,7 +172,8 @@ struct TestParams {
     pub test_description: String,   // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount, parse_token_amount};
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -181,11 +185,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let test_case = &args[1];
+
+    // Minimum burn depends on the current mint reward, which depends on the token supply
+    let rpc_client = RpcClient::new(get_rpc_url());
+    let mint = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
+    let min_burn = fetch_min_burn_amount(&rpc_client, &mint, MIN_GROUP_CREATION_BURN_MINTS)?;
+    println!("Current minimum group creation burn: {} tokens ({} x mint reward)",
+        format_token_amount(min_burn), MIN_GROUP_CREATION_BURN_MINTS);
     
     // Define test cases (removed category field since it's no longer needed)
     let test_params = match test_case.as_str() {
         "valid-basic" => TestParams {
-            burn_amount: 50000, // Increased to meet minimum requirement
+            burn_amount: min_burn, // Dynamic minimum
             name: "Basic Test Group".to_string(),
             description: "A basic test group".to_string(),
             image: "avatar_001.png".to_string(),
@@ -195,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Valid group creation with all required fields".to_string(),
         },
         "empty-name" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "".to_string(),  // Empty name
             description: "Testing empty name".to_string(),
             image: "test.png".to_string(),
@@ -205,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Empty group name (should fail)".to_string(),
         },
         "long-name" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "x".repeat(65),  // Name too long (>64 chars)
             description: "Testing long name".to_string(),
             image: "test.png".to_string(),
@@ -215,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group name too long (>64 characters)".to_string(),
         },
         "long-description" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "x".repeat(129),  // Description too long (>128 chars)
             image: "test.png".to_string(),
@@ -225,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group description too long (>128 characters)".to_string(),
         },
         "long-image" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "Testing long image".to_string(),
             image: "x".repeat(257),  // Image too long (>256 chars)
@@ -235,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Group image info too long (>256 characters)".to_string(),
         },
         "too-many-tags" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "Testing too many tags".to_string(),
             image: "test.png".to_string(),
@@ -245,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Too many tags (>4 tags)".to_string(),
         },
         "long-tag" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "Testing long tag".to_string(),
             image: "test.png".to_string(),
@@ -255,17 +266,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Tag too long (>32 characters)".to_string(),
         },
         "small-burn-amount" => TestParams {
-            burn_amount: 10000,  // Less than required 42069 tokens
+            burn_amount: min_burn.saturating_sub(1),  // 1 unit below the dynamic minimum
             name: "Test Group".to_string(),
             description: "Testing small burn amount".to_string(),
             image: "test.png".to_string(),
             tags: vec!["test".to_string()],
             min_memo_interval: Some(60),
             should_succeed: false,
-            test_description: "Burn amount too small (<42069 tokens)".to_string(),
+            test_description: "Burn amount too small (minimum - 1 unit)".to_string(),
         },
         "minimal-valid" => TestParams {
-            burn_amount: 42069,  // Minimum required amount
+            burn_amount: min_burn,  // Minimum required amount
             name: "T".to_string(),  // Minimal name
             description: "".to_string(),  // Empty description (allowed)
             image: "".to_string(),  // Empty image (allowed)
@@ -275,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Minimal valid group creation".to_string(),
         },
         "max-valid" => TestParams {
-            burn_amount: 100000,
+            burn_amount: min_burn,
             name: "x".repeat(64),  // Max name length
             description: "x".repeat(128),  // Max description length
             image: "x".repeat(256),  // Max image length
@@ -287,12 +298,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "custom" => {
             if args.len() < 8 {
                 println!("Custom test requires additional parameters:");
-                println!("Usage: cargo run --bin test-memo-chat-create-group -- custom <burn_amount> <name> <description> <image> <tags_csv> <min_interval>");
+                println!("Usage: cargo run --bin test-memo-chat-create-group -- custom <burn_amount_tokens> <name> <description> <image> <tags_csv> <min_interval>");
                 println!("Example: cargo run --bin test-memo-chat-create-group -- custom 50000 \"My Group\" \"Description\" \"image.png\" \"tag1,tag2\" 60");
                 return Ok(());
             }
             
-            let burn_amount = args[2].parse::<u64>().unwrap_or(42069);
+            let burn_amount = parse_token_amount(&args[2]).unwrap_or(min_burn);
             let name = args[3].clone();
             let description = args[4].clone();
             let image = args[5].clone();
@@ -319,7 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         "invalid-category" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "Testing invalid category".to_string(),
             image: "test.png".to_string(),
@@ -329,7 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_description: "Invalid category (should fail)".to_string(),
         },
         "invalid-operation" => TestParams {
-            burn_amount: 50000,
+            burn_amount: min_burn,
             name: "Test Group".to_string(),
             description: "Testing invalid operation".to_string(),
             image: "test.png".to_string(),
@@ -351,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
     println!();
     println!("Test parameters:");
-    println!("  Burn amount: {} tokens", test_params.burn_amount);
+    println!("  Burn amount: {} tokens", format_token_amount(test_params.burn_amount));
     println!("  Name: {} (length: {})", test_params.name, test_params.name.len());
     println!("  Description: {} (length: {})", 
         if test_params.description.len() > 50 { 
@@ -373,11 +384,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Min memo interval: {:?}", test_params.min_memo_interval);
     println!();
 
-    run_test(test_params)?;
+    run_test(test_params, min_burn)?;
     Ok(())
 }
 
-fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
+fn run_test(params: TestParams, min_burn: u64) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to network
     let rpc_url = get_rpc_url();
     println!("🔍 Connecting to: {}", rpc_url);
@@ -385,7 +396,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses
@@ -466,9 +477,10 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
                 let current_balance = balance.ui_amount.unwrap_or(0.0);
                 println!("Current token balance: {} tokens", current_balance);
                 
-                if current_balance < params.burn_amount as f64 {
+                let current_balance_units = balance.amount.parse::<u64>().unwrap_or(0);
+                if current_balance_units < params.burn_amount {
                     println!("❌ ERROR: Insufficient token balance!");
-                    println!("   Required: {} tokens", params.burn_amount);
+                    println!("   Required: {} tokens", format_token_amount(params.burn_amount));
                     println!("   Available: {} tokens", current_balance);
                     return Ok(());
                 }
@@ -536,7 +548,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
         &memo_burn_program_id,
         &user_global_burn_stats_pda,
         next_group_id,
-        params.burn_amount * 1_000_000, // Convert to units
+        params.burn_amount,
     );
 
     // First, simulate transaction to get optimal CU limit
@@ -629,7 +641,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
             
             if !params.should_succeed {
                 println!("✅ EXPECTED FAILURE: Test failed as expected");
-                analyze_expected_error(&err.to_string(), &params);
+                analyze_expected_error(&err.to_string(), &params, min_burn);
             } else {
                 println!("❌ UNEXPECTED FAILURE: Test should have succeeded");
                 analyze_unexpected_error(&err.to_string());
@@ -674,7 +686,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result
     // Create BurnMemo with the payload
     let burn_memo = BurnMemo {
         version: BURN_MEMO_VERSION,
-        burn_amount: params.burn_amount * 1_000_000, // Convert to units
+        burn_amount: params.burn_amount,
         payload,
     };
     
@@ -693,7 +705,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, group_id: u64) -> Result
     Ok(memo_bytes)
 }
 
-fn analyze_expected_error(error_msg: &str, params: &TestParams) {
+fn analyze_expected_error(error_msg: &str, params: &TestParams, min_burn: u64) {
     if error_msg.contains("InvalidGroupName") && (params.name.is_empty() || params.name.len() > 64) {
         println!("✅ Correct: Invalid group name detected");
     } else if error_msg.contains("InvalidGroupDescription") && params.description.len() > 128 {
@@ -704,8 +716,8 @@ fn analyze_expected_error(error_msg: &str, params: &TestParams) {
         println!("✅ Correct: Too many tags detected");
     } else if error_msg.contains("InvalidTag") && params.tags.iter().any(|tag| tag.is_empty() || tag.len() > 32) {
         println!("✅ Correct: Invalid tag detected");
-    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < 42069 {
-        println!("✅ Correct: Burn amount too small detected");
+    } else if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < min_burn {
+        println!("✅ Correct: Burn amount too small detected (minimum {} tokens)", format_token_amount(min_burn));
     } else if error_msg.contains("InvalidCategory") && params.test_description.contains("invalid category") {
         println!("✅ Correct: Invalid category detected");
     } else if error_msg.contains("InvalidOperation") && params.test_description.contains("invalid operation") {
@@ -789,12 +801,15 @@ fn print_usage() {
     println!("  long-image        - Test image info too long (>256 chars)");
     println!("  too-many-tags     - Test too many tags (>4 tags)");
     println!("  long-tag          - Test tag too long (>32 chars)");
-    println!("  small-burn-amount - Test burn amount too small (<42069 tokens)");
+    println!("  small-burn-amount - Test burn amount too small (current minimum - 1 unit)");
     println!("  minimal-valid     - Test minimal valid parameters");
     println!("  max-valid         - Test maximum valid field lengths");
     println!("  custom            - Custom test with specified parameters");
     println!("  invalid-category  - Test invalid category (should fail)");
     println!("  invalid-operation - Test invalid operation (should fail)");
+    println!();
+    println!("Burn amounts default to the current minimum: 42,069 x the current mint reward.");
+    println!("Custom burn_amount is in tokens and may be fractional (up to 6 decimals).");
     println!();
     println!("Examples:");
     println!("  cargo run --bin test-memo-chat-create-group -- valid-basic");

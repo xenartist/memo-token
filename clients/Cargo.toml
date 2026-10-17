@@ -132,6 +132,10 @@ name = "test-memo-project-burn-for-project"
 path = "project/src/test-memo-project-burn-for-project.rs"
 
 [[bin]]
+name = "prepare-local-validator"
+path = "smoke-test/src/prepare-local-validator.rs"
+
+[[bin]]
 name = "smoke-test-memo-mint"
 path = "smoke-test/src/smoke-test-memo-mint.rs"
 
@@ -196,6 +200,23 @@ path = "smoke-test/src/smoke-test-memo-forum.rs"
 [[bin]]
 name = "verify-deployment"
 path = "smoke-test/src/verify-deployment.rs"
+
+# On-chain regression suites (local validator only, see scripts/run-regression-tests.sh)
+[[bin]]
+name = "regression-memo-mint"
+path = "regression/src/regression-memo-mint.rs"
+
+[[bin]]
+name = "regression-memo-burn"
+path = "regression/src/regression-memo-burn.rs"
+
+[[bin]]
+name = "regression-memo-curve"
+path = "regression/src/regression-memo-curve.rs"
+
+[[bin]]
+name = "regression-admin-init"
+path = "regression/src/regression-admin-init.rs"
 
 [dependencies]
 solana-client = "^2"

@@ -592,7 +592,7 @@ fn create_rpc_client() -> RpcClient {
 
 fn load_payer_keypair() -> solana_sdk::signature::Keypair {
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read payer keypair file");
     println!("Using payer: {}", payer.pubkey());
     payer

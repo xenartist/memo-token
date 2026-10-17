@@ -41,12 +41,18 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxS
 
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-pub const MIN_GROUP_CREATION_BURN_TOKENS: u64 = 42_069; // Minimum tokens to burn for group creation
-pub const MIN_GROUP_CREATION_BURN_AMOUNT: u64 = MIN_GROUP_CREATION_BURN_TOKENS * DECIMAL_FACTOR;
-pub const MIN_BURN_AMOUNT: u64 = 1 * DECIMAL_FACTOR; // Minimum burn amount (1 token)
+pub const MIN_GROUP_CREATION_BURN_MINTS: u64 = 42_069; // Minimum burn for group creation: 42_069x the current mint reward
+pub const MIN_GROUP_BURN_MINTS: u64 = 1; // Minimum burn for burn_tokens_for_group: 1x the current mint reward
 
 // Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 
 // Time limits  
 pub const DEFAULT_MEMO_INTERVAL_SECONDS: i64 = 60; // Default memo interval (1 minute)
@@ -427,18 +433,16 @@ pub mod memo_chat {
         expected_group_id: u64, // The group_id that client expects to create
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 42069 tokens for group creation
-        if burn_amount < MIN_GROUP_CREATION_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // check burn amount limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Get the next group_id from global counter
@@ -518,11 +522,11 @@ pub mod memo_chat {
             msg!("Group {} entered burn leaderboard", actual_group_id);
         } else {
             msg!("Group {} burn amount {} not sufficient for leaderboard", 
-                 actual_group_id, burn_amount / DECIMAL_FACTOR);
+                 actual_group_id, burn_amount);
         }
 
-        msg!("Chat group {} created successfully by {} with {} tokens burned", 
-             actual_group_id, ctx.accounts.creator.key(), burn_amount / DECIMAL_FACTOR);
+        msg!("Chat group {} created successfully by {} with {} units burned", 
+             actual_group_id, ctx.accounts.creator.key(), burn_amount);
         Ok(())
     }
 
@@ -598,18 +602,16 @@ pub mod memo_chat {
         group_id: u64,
         amount: u64,
     ) -> Result<()> {
-        // Validate burn amount
-        if amount < MIN_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_GROUP_BURN_MINTS, ctx.accounts.mint.supply);
+        if amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // check burn amount limit
         if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction with enhanced validation
@@ -650,7 +652,7 @@ pub mod memo_chat {
             msg!("Warning: burned_amount overflow detected for group {}", group_id);
         }
         
-        msg!("Successfully burned {} tokens for group {}", amount / DECIMAL_FACTOR, group_id);
+        msg!("Successfully burned {} units for group {}", amount, group_id);
         
         // Update burn leaderboard after successful burn
         let leaderboard = &mut ctx.accounts.burn_leaderboard;
@@ -658,11 +660,11 @@ pub mod memo_chat {
         let entered_leaderboard = leaderboard.update_leaderboard(group_id, total_burned)?;
 
         if entered_leaderboard {
-            msg!("Group {} updated in burn leaderboard with total {} tokens", 
-                 group_id, total_burned / DECIMAL_FACTOR);
+            msg!("Group {} updated in burn leaderboard with total {} units", 
+                 group_id, total_burned);
         } else {
             msg!("Group {} total burn amount {} not sufficient for leaderboard", 
-                 group_id, total_burned / DECIMAL_FACTOR);
+                 group_id, total_burned);
         }
 
         // Emit burn event
@@ -859,8 +861,9 @@ fn parse_message_borsh_memo(memo_data: &[u8], expected_group_id: u64, expected_s
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-chat instructions (create_chat_group, send_memo_to_group, etc.)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 pushes the
+/// memo out of index 0 and makes this instruction fail with MemoRequired.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -1381,10 +1384,11 @@ pub enum ErrorCode {
     #[msg("Invalid group ID format: Group ID must be a valid u64 number.")]
     InvalidGroupIdFormat,
 
-    #[msg("Burn amount too small. Must burn at least 42069 tokens (42,069,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
 
-    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    /// No longer returned (fractional amounts are allowed); kept so later error codes stay unchanged
+    #[msg("Invalid burn amount.")]
     InvalidBurnAmount,
 
     #[msg("Missing burn_amount field in memo.")]

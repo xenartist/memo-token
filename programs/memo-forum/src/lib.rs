@@ -43,11 +43,17 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxS
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
 
 // Post creation/update/burn constants - all require at least 1 MEMO token
-pub const MIN_POST_BURN_TOKENS: u64 = 1; // Minimum tokens to burn for any post operation
-pub const MIN_POST_BURN_AMOUNT: u64 = MIN_POST_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_POST_BURN_MINTS: u64 = 1; // Minimum burn for any post operation: 1x the current mint reward
 
 // Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 
 // ===== STRING LENGTH CONSTRAINTS =====
 
@@ -409,18 +415,16 @@ pub mod memo_forum {
         expected_post_id: u64,
         burn_amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 1 token for post creation
-        if burn_amount < MIN_POST_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_POST_BURN_MINTS, ctx.accounts.mint.supply);
+        if burn_amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // check burn amount limit
         if burn_amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if burn_amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Get the next post_id from global counter
@@ -491,8 +495,8 @@ pub mod memo_forum {
             timestamp,
         });
 
-        msg!("Post {} created successfully by {} with {} tokens burned (total posts: {})", 
-             actual_post_id, ctx.accounts.creator.key(), burn_amount / DECIMAL_FACTOR, 
+        msg!("Post {} created successfully by {} with {} units burned (total posts: {})", 
+             actual_post_id, ctx.accounts.creator.key(), burn_amount, 
              global_counter.total_posts);
         Ok(())
     }
@@ -504,18 +508,16 @@ pub mod memo_forum {
         post_id: u64,
         amount: u64,
     ) -> Result<()> {
-        // Validate burn amount - require at least 1 token
-        if amount < MIN_POST_BURN_AMOUNT {
+        // Validate burn amount against the supply-scaled minimum
+        let min_required = min_burn_amount(MIN_POST_BURN_MINTS, ctx.accounts.mint.supply);
+        if amount < min_required {
+            msg!("Burn amount too small: {} units (minimum: {} units)", amount, min_required);
             return Err(ErrorCode::BurnAmountTooSmall.into());
         }
         
         // Check burn amount limit
         if amount > MAX_BURN_PER_INSTRUCTION {
             return Err(ErrorCode::BurnAmountTooLarge.into());
-        }
-        
-        if amount % DECIMAL_FACTOR != 0 {
-            return Err(ErrorCode::InvalidBurnAmount.into());
         }
 
         // Check memo instruction with enhanced validation
@@ -563,8 +565,8 @@ pub mod memo_forum {
             msg!("Warning: burned_amount overflow detected for post {}", post_id);
         }
         
-        msg!("Successfully burned {} tokens for post {} by user {}", 
-             amount / DECIMAL_FACTOR, post_id, ctx.accounts.user.key());
+        msg!("Successfully burned {} units for post {} by user {}", 
+             amount, post_id, ctx.accounts.user.key());
         
         // Emit burn event
         emit!(TokensBurnedForPostEvent {
@@ -810,8 +812,9 @@ fn parse_post_mint_borsh_memo(memo_data: &[u8], expected_user: Pubkey, expected_
 /// - Index 0: SPL Memo instruction (REQUIRED)
 /// - Index 1+: memo-forum instructions (create_post, update_post, etc.)
 /// 
-/// Compute budget instructions can be placed anywhere in the transaction
-/// as they are processed by Solana runtime before instruction execution.
+/// Compute budget instructions also occupy an instruction index, so they must be
+/// placed at index 1 or later; a compute budget instruction at index 0 pushes the
+/// memo out of index 0 and makes this instruction fail with MemoRequired.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -1222,13 +1225,14 @@ pub enum ErrorCode {
     #[msg("Invalid post image: Image must be at most 256 characters.")]
     InvalidPostImage,
     
-    #[msg("Burn amount too small. Must burn at least 1 token (1,000,000 units for decimal=6).")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
 
     #[msg("Burn amount too large. Maximum allowed: 1,000,000,000,000 tokens per burn instruction.")]
     BurnAmountTooLarge,
 
-    #[msg("Invalid burn amount. Amount must be a multiple of 1,000,000 units (whole tokens only).")]
+    /// No longer returned (fractional amounts are allowed); kept so later error codes stay unchanged
+    #[msg("Invalid burn amount.")]
     InvalidBurnAmount,
 
     #[msg("Burn amount mismatch. The burn_amount in memo must match the burn amount (in units).")]

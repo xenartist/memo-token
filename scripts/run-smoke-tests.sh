@@ -6,6 +6,7 @@
 #   ./scripts/run-smoke-tests.sh                      # Run all smoke tests
 #   ./scripts/run-smoke-tests.sh memo-mint            # Run single smoke test
 #   ./scripts/run-smoke-tests.sh memo-mint memo-burn  # Run multiple smoke tests
+#   ./scripts/run-smoke-tests.sh --local memo-chat    # Run against ./scripts/local-validator.sh
 #   ./scripts/run-smoke-tests.sh --help               # Show help
 
 set -e
@@ -75,6 +76,7 @@ ${BOLD}OPTIONS:${NC}
     --help, -h          Show this help message
     --list, -l          List all available smoke tests
     --verbose, -v       Show verbose output
+    --local             Run against the local validator (./scripts/local-validator.sh start)
 
 ${BOLD}TESTS:${NC}
     memo-mint                Run memo-mint smoke test
@@ -188,6 +190,7 @@ run_smoke_test() {
 
 # Parse command line arguments
 VERBOSE=false
+LOCAL=false
 TESTS_TO_RUN=()
 
 while [[ $# -gt 0 ]]; do
@@ -202,6 +205,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --verbose|-v)
             VERBOSE=true
+            shift
+            ;;
+        --local)
+            LOCAL=true
             shift
             ;;
         --*)
@@ -226,6 +233,20 @@ echo ""
 # Get current environment configuration from Anchor.toml
 PROGRAM_ENV=$(grep 'program_env' Anchor.toml | awk -F'"' '{print $2}')
 RPC_URL=$(grep -A 5 '\[provider\]' Anchor.toml | grep 'cluster' | awk -F'"' '{print $2}')
+
+# Local validator (scripts/local-validator.sh): testnet program IDs, local RPC and wallet
+if [ "$LOCAL" = true ]; then
+    LOCAL_DIR="target/local-validator"
+    if ! [ -f "$LOCAL_DIR/validator.pid" ] || ! kill -0 "$(cat "$LOCAL_DIR/validator.pid")" 2>/dev/null; then
+        print_message "$RED" "❌ Local validator is not running. Start it with: ./scripts/local-validator.sh start"
+        exit 1
+    fi
+    PROGRAM_ENV="testnet"
+    RPC_URL="http://127.0.0.1:8899"
+    export MEMO_PROGRAM_ENV="testnet"
+    export MEMO_RPC_URL="$RPC_URL"
+    export MEMO_WALLET="$(pwd)/$LOCAL_DIR/wallet.json"
+fi
 
 # Detect cluster type from RPC URL
 CLUSTER_TYPE="unknown"
@@ -268,6 +289,7 @@ print_message "$BLUE" "Environment: $ENV_NAME"
 
 # The test clients pay with Anchor.toml's wallet, which is stored encrypted (scripts/keys.sh)
 WALLET_PATH=$(grep -A 5 '\[provider\]' Anchor.toml | grep '^wallet' | awk -F'"' '{print $2}')
+[ -n "$MEMO_WALLET" ] && WALLET_PATH="$MEMO_WALLET"
 WALLET_PATH="${WALLET_PATH/#\~/$HOME}"
 if [ ! -f "$WALLET_PATH" ]; then
     if [ -f "$WALLET_PATH.gpg" ]; then
@@ -299,8 +321,8 @@ for test in "${TESTS_TO_RUN[@]}"; do
     if run_smoke_test "$test"; then
         PASSED_TESTS+=("$test")
     else
-        local test_normalized=$(normalize_test_name "$test")
-        local bin_path="clients/smoke-test/src/smoke-test-${test_normalized}.rs"
+        test_normalized=$(normalize_test_name "$test")
+        bin_path="clients/smoke-test/src/smoke-test-${test_normalized}.rs"
         
         if [ ! -f "$bin_path" ]; then
             SKIPPED_TESTS+=("$test")

@@ -16,7 +16,7 @@ use chrono::Utc;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 // Borsh memo structures (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -79,9 +79,8 @@ const EXPECTED_CATEGORY: &str = "forum";
 const EXPECTED_CREATE_OPERATION: &str = "create_post";
 const EXPECTED_BURN_OPERATION: &str = "burn_for_post";
 const EXPECTED_MINT_OPERATION: &str = "mint_for_post";
-const BURN_AMOUNT_TOKENS: u64 = 1;
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const REQUIRED_TOKENS_FOR_TEST: u64 = 10;
+const MIN_POST_BURN_MINTS: u64 = 1; // Mirrors MIN_POST_BURN_MINTS in the contract: 1x the current mint reward
+const REQUIRED_BURNS_FOR_TEST: u64 = 10; // Balance for 10 minimum burns (covers all burns + buffer)
 
 /// Get token balance in raw units
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -96,12 +95,6 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
         },
         Err(_) => 0,
     }
-}
-
-/// Format token amount for display
-fn format_token_amount(raw_amount: u64) -> String {
-    let tokens = raw_amount as f64 / DECIMAL_FACTOR as f64;
-    format!("{:.6}", tokens)
 }
 
 /// Generate exactly 69-byte ASCII memo for mint operations
@@ -285,8 +278,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
     
-    let burn_amount = BURN_AMOUNT_TOKENS * DECIMAL_FACTOR;
-    
     // Connect to network
     let rpc_url = get_rpc_url();
     println!("─────────────────────────────────────────────────────────────────");
@@ -298,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
     
     println!("Payer:          {}", payer.pubkey());
@@ -317,6 +308,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Burn Program:   {}", burn_program_id);
     println!("Mint Program:   {}", mint_program_id);
     println!("Mint Address:   {}", mint);
+
+    // Burn amount = current minimum (MIN_POST_BURN_MINTS x the current mint reward, depends on supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint, MIN_POST_BURN_MINTS)?;
+    println!("Min Burn:       {} token(s)", format_token_amount(burn_amount));
 
     // Get user's token account
     let token_account = get_associated_token_address_with_program_id(
@@ -367,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Calculate required balance (2 burns + buffer)
-    let required_balance = REQUIRED_TOKENS_FOR_TEST * DECIMAL_FACTOR;
+    let required_balance = REQUIRED_BURNS_FOR_TEST.saturating_mul(burn_amount);
     
     // Ensure sufficient balance before starting tests
     ensure_sufficient_balance(
@@ -394,7 +389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Post ID:        {}", post_id);
     println!("Title:          {}", post_title);
     println!("Content:        {} chars", post_content.len());
-    println!("Burning:        {} token(s) ({} units)", BURN_AMOUNT_TOKENS, burn_amount);
+    println!("Burning:        {} token(s) ({} units)", format_token_amount(burn_amount), burn_amount);
     
     create_post(
         &client,
@@ -454,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let burn_message = "This is a burn reply - supporting this post!";
     
-    println!("Burning {} token(s) to reply to post", BURN_AMOUNT_TOKENS);
+    println!("Burning {} token(s) to reply to post", format_token_amount(burn_amount));
     println!("Message: {}", burn_message);
     println!("Note: Anyone can burn for any post (not just creator)");
     
@@ -489,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Last Reply:     {}", post.last_reply_time);
     
     // Verify burn tracking
-    assert_eq!(post.burned_amount, initial_burned_amount + burn_amount, "Total burned should increase by 1 token");
+    assert_eq!(post.burned_amount, initial_burned_amount + burn_amount, "Total burned should increase by the burn amount");
     assert_eq!(post.reply_count, initial_reply_count + 1, "Reply count should increase by 1");
     assert!(post.last_reply_time > 0, "Last reply time should be set");
     

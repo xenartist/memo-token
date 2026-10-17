@@ -98,9 +98,9 @@ const BURN_MEMO_VERSION: u8 = 1;
 const PROFILE_UPDATE_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "profile";
 const EXPECTED_UPDATE_OPERATION: &str = "update_profile";
-const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
-const MIN_PROFILE_UPDATE_BURN_TOKENS: u64 = 420; // Minimum tokens to burn for profile update
-const MIN_PROFILE_UPDATE_BURN_AMOUNT: u64 = MIN_PROFILE_UPDATE_BURN_TOKENS * DECIMAL_FACTOR;
+// Profile update burns at least this many times the current mint reward
+// (mirrors MIN_PROFILE_UPDATE_BURN_MINTS in memo-profile)
+const MIN_PROFILE_UPDATE_BURN_MINTS: u64 = 420;
 
 #[derive(Debug, Clone)]
 struct UpdateParams {
@@ -111,7 +111,7 @@ struct UpdateParams {
     pub test_description: String,         // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -206,12 +206,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO PROFILE UPDATE TEST ===");
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
-    println!("Burn amount: {} tokens", MIN_PROFILE_UPDATE_BURN_TOKENS);
     println!();
 
     // Constants
     let rpc_url = get_rpc_url();
-    let wallet_path = std::env::var("WALLET_PATH").unwrap_or_else(|_| {
+    let wallet_path = std::env::var("MEMO_WALLET").or_else(|_| std::env::var("WALLET_PATH")).unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME environment variable not set");
         format!("{}/.config/solana/id.json", home)
     });
@@ -237,6 +236,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo Profile Program: {}", memo_profile_program_id);
     println!("Memo Burn Program: {}", memo_burn_program_id);
     println!("Token Mint: {}", mint_pubkey);
+
+    // Burn the current minimum: 420 x the current mint reward (depends on token supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint_pubkey, MIN_PROFILE_UPDATE_BURN_MINTS)?;
+    println!("Burn amount: {} tokens ({} x mint reward)", format_token_amount(burn_amount), MIN_PROFILE_UPDATE_BURN_MINTS);
 
     // Derive profile PDA
     let (profile_pda, profile_bump) = Pubkey::find_program_address(
@@ -273,8 +276,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let balance_tokens = balance.ui_amount.unwrap_or(0.0);
             println!("Token Balance: {} MEMO", balance_tokens);
             
-            if balance_tokens < MIN_PROFILE_UPDATE_BURN_TOKENS as f64 {
-                println!("❌ Insufficient token balance. Need at least {} MEMO tokens.", MIN_PROFILE_UPDATE_BURN_TOKENS);
+            let balance_units = balance.amount.parse::<u64>().unwrap_or(0);
+            if balance_units < burn_amount {
+                println!("❌ Insufficient token balance. Need at least {} MEMO tokens.", format_token_amount(burn_amount));
                 return Ok(());
             }
         }
@@ -304,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Generate memo content
-    let memo_content = generate_profile_update_memo(&payer.pubkey(), &test_params)?;
+    let memo_content = generate_profile_update_memo(&payer.pubkey(), &test_params, burn_amount)?;
     println!("Generated memo ({} bytes)", memo_content.len());
 
     // Create the profile update instruction
@@ -318,6 +322,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &user_token_account,
         &user_global_burn_stats_pda,
         &test_params,
+        burn_amount,
     )?;
 
     // Prepare instructions for simulation
@@ -454,7 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams) -> Result<String, Box<dyn std::error::Error>> {
+fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams, burn_amount: u64) -> Result<String, Box<dyn std::error::Error>> {
     println!("=== MEMO GENERATION ===");
     
     // Create ProfileUpdateData structure
@@ -478,7 +483,7 @@ fn generate_profile_update_memo(user: &Pubkey, params: &UpdateParams) -> Result<
     // Create BurnMemo structure
     let burn_memo = BurnMemo {
         version: BURN_MEMO_VERSION,
-        burn_amount: MIN_PROFILE_UPDATE_BURN_AMOUNT,
+        burn_amount,
         payload: profile_data_bytes,
     };
     
@@ -519,6 +524,7 @@ fn create_update_profile_instruction(
     user_token_account: &Pubkey,
     user_global_burn_stats: &Pubkey,
     _params: &UpdateParams,
+    burn_amount: u64,
 ) -> Result<Instruction, Box<dyn std::error::Error>> {
     // Calculate Anchor instruction sighash for "update_profile"
     let mut hasher = Sha256::new();
@@ -527,7 +533,6 @@ fn create_update_profile_instruction(
     let mut instruction_data = result[..8].to_vec();
     
     // Serialize only burn_amount parameter (all data now comes from memo)
-    let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
     instruction_data.extend(burn_amount.try_to_vec()?);
     
     let accounts = vec![
@@ -619,6 +624,6 @@ fn print_usage() {
     println!();
     println!("Prerequisites:");
     println!("  A profile must already exist for the user");
-    println!("  User must have at least {} MEMO tokens", MIN_PROFILE_UPDATE_BURN_TOKENS);
+    println!("  User must have at least {} x the current mint reward in MEMO tokens (420 while supply <= 10M)", MIN_PROFILE_UPDATE_BURN_MINTS);
     println!("  Use test-memo-profile-create to create a profile first");
 }

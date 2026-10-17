@@ -25,3 +25,8 @@ anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
 spl-memo = "6.0"
 base64 = "0.22"
+
+[dev-dependencies]
+# Runtime serializer for the instructions sysvar, used to test check_memo_instruction
+solana-instructions-sysvar = "2.2.2"
+solana-instruction = "2.3.0"

@@ -9,6 +9,8 @@ source "${SCRIPT_DIR}/deploy-common.sh"
 
 ENV="testnet"
 FEATURE_FLAG=""  # No feature flag for testnet (default)
+# Testnet deploys run unattended: answer the confirmation prompts automatically
+export ASSUME_YES=1
 
 # Environment validation checks
 echo ""

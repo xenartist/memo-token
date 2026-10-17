@@ -39,6 +39,14 @@ During this audit, the following improvements were implemented:
 
 ---
 
+## Revision Note (October 16, 2026): Supply-Scaled Burn Minimums
+
+Burn minimums are no longer fixed whole-token amounts. Each minimum is a multiple of the current memo-mint reward, computed from the live `mint.supply` before the burn: `min_burn_amount(MINTS, supply) = MINTS × memo_mint::mint_amount_at_supply(supply)` (saturating multiply; see MEMO-MINT-AUDIT.md). Multipliers (constants renamed from `*_BURN_TOKENS` / `*_BURN_AMOUNT` to `*_BURN_MINTS`): `MIN_BLOG_BURN_MINTS = 1` for `create_blog`, `update_blog` and `burn_for_blog`. The whole-token check (`amount % DECIMAL_FACTOR != 0` → `InvalidBurnAmount`) was removed, so fractional amounts are accepted. `InvalidBurnAmount` stays in the enum but is never returned, so later error codes are unchanged. `BurnAmountTooSmall` now has a generic message, and a failed check logs the actual and required amounts in units. Success logs report units instead of whole tokens. memo-blog already depended on the memo-mint crate for the `mint_for_blog` CPI, so no new dependency was added.
+
+- **Why**: as supply grows the mint reward falls to as little as 1 unit (0.000001 token), so fixed whole-token thresholds would eventually be out of reach for users who earn by minting, and amounts that are not whole tokens could not be burned at all (memo-burn now accepts any amount of at least 1 unit). Up to and including 10M supply the reward is 1 token, so every minimum equals its previous value (mainnet supply was about 8.73M at the time of the change); above 10M the minimums fall with each curve step, down to `MINTS` units at the last step.
+- **Supply source**: the supply is read from the `mint` account, which is constrained to `AUTHORIZED_MINT_PUBKEY`, so a caller cannot pass a mint with a chosen supply.
+- **Boundary / front-running**: supply can change between building and executing a transaction. Mints raise it (the minimum can only fall); burns lower it, and a burn that moves supply back across a step boundary raises the reward, and so the minimum, by one step (relatively largest at the low end of a decade, e.g. 0.1 → 0.2 token per mint around 90M). Crossing a second boundary would take burning a whole step's width of supply (at least 10M tokens), so in practice the minimum can move by one step at most, and the only effect is that a transaction fails with `BurnAmountTooSmall` and rolls back; no tokens are lost. Burning more than the minimum is always accepted, so clients should compute the minimum from a fresh supply and may add a buffer (for example, one step).
+
 ## Revision Note (October 14, 2026): One Mint per Transaction
 
 memo-mint 0.3.0 allows exactly one mint per transaction (see MEMO-MINT-AUDIT.md, Revision 3) and requires its `MintState` account. `mint_for_blog` has a new **last** account, `mint_state`: writable, typed as `memo_mint::MintState`, and checked against seeds `[b"mint_state"]` and its stored bump under the memo-mint program. It is passed through to the `process_mint` CPI, where memo-mint checks it again. Existing accounts keep their order and this app's error codes are unchanged.
@@ -93,7 +101,7 @@ This contract no longer limits the memo's maximum length, matching memo-mint and
 | `InvalidBlogImage` | 6024 | 6023 |
 | `BurnAmountTooSmall` | 6025 | 6024 |
 | `BurnAmountTooLarge` | 6026 | 6025 |
-| `InvalidBurnAmount` | 6027 | 6026 |
+| `InvalidBurnAmount` | 6027 | 6026 (no longer returned since October 16, 2026) |
 | `BurnAmountMismatch` | 6028 | 6027 |
 | `PayloadTooLong` | 6029 | removed |
 | `InvalidCreatorPubkeyFormat` | 6030 | 6028 |
@@ -134,10 +142,11 @@ The memo-blog contract enables users to create and manage personal on-chain blog
 - **Name**: Required, 1-64 characters
 - **Description**: Optional, 0-256 characters
 - **Image**: Optional, 0-256 characters
-- **Minimum Burn (Create)**: 1 token (1,000,000 units)
-- **Minimum Burn (Update)**: 1 token (1,000,000 units)
-- **Minimum Burn (burn_for_blog)**: 1 token (1,000,000 units)
-- **Maximum Burn per TX**: 1,000,000,000,000 tokens (inherited from memo-burn)
+- **Minimum Burn (Create)**: 1 × the current mint reward (`min_burn_amount(MIN_BLOG_BURN_MINTS, mint.supply)`): 1 token (1,000,000 units) while supply ≤ 10M, falling with the emission curve down to 1 unit at the last step
+- **Minimum Burn (Update)**: 1 × the current mint reward
+- **Minimum Burn (burn_for_blog)**: 1 × the current mint reward
+- **Fractional amounts**: allowed (no whole-token requirement)
+- **Maximum Burn per burn instruction**: 1,000,000,000,000 tokens (inherited from memo-burn)
 - **Token Decimals**: 6 (DECIMAL_FACTOR = 1,000,000)
 
 ### Account Space
@@ -184,10 +193,10 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
 **Transaction Structure Requirement**:
 - Instruction `0`: `MemoProgram::Memo` (at least 69 bytes, Base64-encoded Borsh data; no contract maximum)
 - Instruction `1+`: `memo_blog::create_blog`, `memo_blog::update_blog`, etc.
-- Compute budget instructions can appear anywhere (processed by runtime)
+- Compute budget instructions occupy an instruction index too, so they must be at index 1 or later; one at index 0 makes the instruction fail with `MemoRequired`. Durable nonce transactions are not supported (the nonce advance would have to be at index 0)
 
 **Why This Matters**:
-1. **Data Integrity** – Blog data and burn amounts are cryptographically linked through memo
+1. **Data Integrity** – Blog data and burn amounts are carried in the same memo; the app checks its payload and memo-burn checks that each burn instruction's amount equals the memo's `burn_amount` (an equality check per instruction, not a cryptographic or one-time binding)
 2. **Auditability** – All blog operations are permanently recorded on-chain
 3. **Consistency** – Aligns with memo-burn, memo-mint, memo-profile, memo-project patterns
 4. **Off-chain Indexing** – Easy to parse and index blog operations from transaction memos
@@ -285,7 +294,7 @@ pub blog: Account<'info, Blog>,
 - ✅ Creator authorization enforced via Anchor constraint
 - ✅ PDA seeds ensure blog is derived from creator's pubkey
 - ✅ Double validation (PDA + explicit constraint)
-- ✅ Burn/mint amounts validated (minimum 1 token for burn operations)
+- ✅ Burn/mint amounts validated (minimum 1 × the current mint reward for burn operations)
 - ✅ User pubkey in memo must match transaction signer
 
 **Verdict**: Creator-only design ensures blog owners have exclusive control over their blog's operations and statistics.
@@ -440,29 +449,33 @@ blog.last_memo_time = timestamp; // ✅ Updated
 
 ---
 
-### ✅ DESIGN CONFIRMATION #8: 1 Token Minimum Burn (Lower than Project)
+### ✅ DESIGN CONFIRMATION #8: 1 × Mint Reward Minimum Burn (Lower than Project)
 
 **Design Intent**: ✅ **CONFIRMED AS INTENTIONAL – ACCESSIBILITY**
 
 ```rust
 // Blog burn constants
-pub const MIN_BLOG_BURN_TOKENS: u64 = 1;
-pub const MIN_BLOG_BURN_AMOUNT: u64 = MIN_BLOG_BURN_TOKENS * DECIMAL_FACTOR;
+pub const MIN_BLOG_BURN_MINTS: u64 = 1; // Minimum burn for any blog operation: 1x the current mint reward
+
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 ```
 
-**Comparison with Other Contracts**:
+**Comparison with Other Contracts** (minimums are multiples of the current mint reward, which is 1 MEMO while supply ≤ 10M):
 | Contract | Minimum Burn | Purpose |
 |----------|--------------|---------|
-| memo-blog | 1 MEMO | Accessible personal blogs |
-| memo-profile | 420 MEMO | Spam prevention for profiles |
-| memo-project | 42,069 MEMO | Serious project commitment |
-| memo-chat | 420 MEMO | Spam prevention for groups |
+| memo-blog | 1 × mint reward | Accessible personal blogs |
+| memo-profile | 420 × mint reward | Spam prevention for profiles |
+| memo-project | 42,069 × mint reward (create/update), 420 × (burn_for_project) | Serious project commitment |
+| memo-chat | 42,069 × mint reward (group creation), 1 × (burn for group) | Spam prevention for groups |
 
 **Why Lower Minimum**:
 1. **Accessibility** – Personal blogs should be accessible to all users
 2. **Lower Barrier** – Encourages blog creation and updates
 3. **Personal Use** – Blogs are personal, not community resources
-4. **Still Anti-Spam** – 1 token cost still prevents zero-cost spam
+4. **Still Anti-Spam** – a cost of one mint reward still prevents zero-cost spam
+5. **Stays Reachable** – Pricing in mint rewards keeps the cost at "one mint" as the reward falls toward 1 unit; a fixed 1-token minimum would eventually require up to a million mints. Fractional amounts are accepted
 
 **Verdict**: Lower minimum burn for blogs is intentional to encourage personal expression while maintaining basic spam prevention.
 
@@ -537,18 +550,18 @@ if self.image.len() > MAX_BLOG_IMAGE_LENGTH {
 
 **Burn Amount Validation**:
 ```rust
-if burn_amount < MIN_BLOG_BURN_AMOUNT {
+let min_required = min_burn_amount(MIN_BLOG_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
 if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
-
-if burn_amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
-}
 ```
+
+The supply is read from the `mint` account (constrained to `AUTHORIZED_MINT_PUBKEY`) before the burn. A burn by someone else between signing and execution can raise the minimum by at most one curve step; the transaction then fails with `BurnAmountTooSmall` and nothing is lost (see the October 16, 2026 revision note).
 
 **Verdict**: All user inputs are thoroughly validated with appropriate bounds checking.
 
@@ -706,8 +719,9 @@ if blog.burned_amount == u64::MAX && old_amount < u64::MAX {
 **Bounded Values**:
 ```rust
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
-pub const MIN_BLOG_BURN_TOKENS: u64 = 1;
+pub const MIN_BLOG_BURN_MINTS: u64 = 1;
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+// minimum = MIN_BLOG_BURN_MINTS.saturating_mul(mint reward), mint reward ≤ 1 token
 ```
 
 **Verdict**: No integer overflow risks; saturating arithmetic ensures safe behavior at extreme values.
@@ -824,12 +838,18 @@ programs/memo-blog/src/
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
 
-// Blog creation/update/burn constants - all require at least 1 MEMO token
-pub const MIN_BLOG_BURN_TOKENS: u64 = 1;
-pub const MIN_BLOG_BURN_AMOUNT: u64 = MIN_BLOG_BURN_TOKENS * DECIMAL_FACTOR;
+// Blog creation/update/burn constants
+pub const MIN_BLOG_BURN_MINTS: u64 = 1; // Minimum burn for any blog operation: 1x the current mint reward
 
-// Maximum burn per transaction (consistent with memo-burn)
-pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+// Maximum burn per burn instruction (consistent with memo-burn)
+pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 ```
 
 **Documentation Score**: ⭐⭐⭐⭐⭐ (5/5)
@@ -959,7 +979,7 @@ pub enum ErrorCode {
 |--------|-----------|--------------|
 | PDA Strategy | `[b"blog", creator.key()]` | `[b"profile", user.key()]` |
 | Multiple Per User | No | No |
-| Minimum Burn | 1 MEMO | 420 MEMO |
+| Minimum Burn | 1 × mint reward | 420 × mint reward |
 | Fields | name, description, image | username, image, about_me |
 | CPI to | memo-burn, memo-mint | memo-burn |
 | Test Coverage | 91 tests | 65 tests |
@@ -970,7 +990,7 @@ pub enum ErrorCode {
 |--------|-----------|--------------|
 | PDA Strategy | `[b"blog", creator.key()]` | `[b"project", project_id]` |
 | Multiple Per User | No | Yes |
-| Minimum Burn | 1 MEMO | 42,069 MEMO |
+| Minimum Burn | 1 × mint reward | 42,069 × mint reward |
 | Global Counter | No | Yes |
 | Leaderboard | No | Yes |
 | Additional Fields | None | website, tags |
@@ -990,7 +1010,7 @@ anchor-spl = "0.32.1"       # ✅ Latest stable Anchor SPL
 spl-memo = "6.0"            # ✅ Official SPL Memo
 base64 = "0.22"             # ✅ Widely used, well-maintained
 memo-burn = { path = "../memo-burn", features = ["cpi"] }  # ✅ Internal dependency
-memo-mint = { path = "../memo-mint", features = ["cpi"] }  # ✅ Internal dependency
+memo-mint = { path = "../memo-mint", features = ["cpi"] }  # ✅ Internal dependency (mint CPI + `mint_amount_at_supply` for burn minimums)
 ```
 
 **Dependency Security**:
@@ -1201,8 +1221,7 @@ The memo-blog contract is ready for mainnet deployment. All critical security pr
 ```rust
 // Token Economics
 DECIMAL_FACTOR = 1,000,000
-MIN_BLOG_BURN_TOKENS = 1
-MIN_BLOG_BURN_AMOUNT = 1,000,000
+MIN_BLOG_BURN_MINTS = 1   // minimum = 1 × mint_amount_at_supply(supply) units (1,000,000 while supply ≤ 10M)
 MAX_BURN_PER_INSTRUCTION = 1,000,000,000,000,000,000
 
 // String Lengths
@@ -1270,9 +1289,9 @@ BlogDescriptionTooLong    // Description > 256 chars
 InvalidBlogDescription    // Description validation failed
 BlogImageTooLong          // Image > 256 chars
 InvalidBlogImage          // Image validation failed
-BurnAmountTooSmall        // Burn < 1 token
+BurnAmountTooSmall        // Burn < 1 × current mint reward
 BurnAmountTooLarge        // Burn > 1T tokens
-InvalidBurnAmount         // Not a multiple of DECIMAL_FACTOR
+InvalidBurnAmount         // No longer returned (fractional amounts allowed); kept so later codes stay unchanged
 BurnAmountMismatch        // Memo amount != instruction amount
 MessageTooLong            // Message > 696 chars
 ```

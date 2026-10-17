@@ -30,6 +30,14 @@ The memo-forum contract implements a decentralized forum system where users can 
 
 ---
 
+## Revision Note (October 16, 2026): Supply-Scaled Burn Minimums
+
+Burn minimums are no longer fixed whole-token amounts. Each minimum is a multiple of the current memo-mint reward, computed from the live `mint.supply` before the burn: `min_burn_amount(MINTS, supply) = MINTS × memo_mint::mint_amount_at_supply(supply)` (saturating multiply; see MEMO-MINT-AUDIT.md). Multipliers (constants renamed from `*_BURN_TOKENS` / `*_BURN_AMOUNT` to `*_BURN_MINTS`): `MIN_POST_BURN_MINTS = 1` for `create_post` and `burn_for_post`. The whole-token check (`amount % DECIMAL_FACTOR != 0` → `InvalidBurnAmount`) was removed, so fractional amounts are accepted. `InvalidBurnAmount` stays in the enum but is never returned, so later error codes are unchanged. `BurnAmountTooSmall` now has a generic message, and a failed check logs the actual and required amounts in units. Success logs report units instead of whole tokens. memo-forum already depended on the memo-mint crate for the `mint_for_post` CPI, so no new dependency was added.
+
+- **Why**: as supply grows the mint reward falls to as little as 1 unit (0.000001 token), so fixed whole-token thresholds would eventually be out of reach for users who earn by minting, and amounts that are not whole tokens could not be burned at all (memo-burn now accepts any amount of at least 1 unit). Up to and including 10M supply the reward is 1 token, so every minimum equals its previous value (mainnet supply was about 8.73M at the time of the change); above 10M the minimums fall with each curve step, down to `MINTS` units at the last step.
+- **Supply source**: the supply is read from the `mint` account, which is constrained to `AUTHORIZED_MINT_PUBKEY`, so a caller cannot pass a mint with a chosen supply.
+- **Boundary / front-running**: supply can change between building and executing a transaction. Mints raise it (the minimum can only fall); burns lower it, and a burn that moves supply back across a step boundary raises the reward, and so the minimum, by one step (relatively largest at the low end of a decade, e.g. 0.1 → 0.2 token per mint around 90M). Crossing a second boundary would take burning a whole step's width of supply (at least 10M tokens), so in practice the minimum can move by one step at most, and the only effect is that a transaction fails with `BurnAmountTooSmall` and rolls back; no tokens are lost. Burning more than the minimum is always accepted, so clients should compute the minimum from a fresh supply and may add a buffer (for example, one step).
+
 ## Revision Note (October 14, 2026): One Mint per Transaction
 
 memo-mint 0.3.0 allows exactly one mint per transaction (see MEMO-MINT-AUDIT.md, Revision 3) and requires its `MintState` account. `mint_for_post` has a new **last** account, `mint_state`: writable, typed as `memo_mint::MintState`, and checked against seeds `[b"mint_state"]` and its stored bump under the memo-mint program. It is passed through to the `process_mint` CPI, where memo-mint checks it again. Existing accounts keep their order and this app's error codes are unchanged.
@@ -85,7 +93,7 @@ This contract no longer limits the memo's maximum length, matching memo-mint and
 | `InvalidPostImage` | 6025 | 6024 |
 | `BurnAmountTooSmall` | 6026 | 6025 |
 | `BurnAmountTooLarge` | 6027 | 6026 |
-| `InvalidBurnAmount` | 6028 | 6027 |
+| `InvalidBurnAmount` | 6028 | 6027 (no longer returned since October 16, 2026) |
 | `BurnAmountMismatch` | 6029 | 6028 |
 | `PayloadTooLong` | 6030 | removed |
 | `UnsupportedPostBurnDataVersion` | 6031 | 6029 |
@@ -121,8 +129,9 @@ The memo-forum contract enables users to create and interact with forum posts on
 - **Content**: Required, 1-512 characters
 - **Image**: Optional, 0-256 characters
 - **Reply Message**: Optional, 0-512 characters (for burn_for_post/mint_for_post)
-- **Minimum Burn**: 1 token (1,000,000 units)
-- **Maximum Burn per TX**: 1,000,000,000,000 tokens
+- **Minimum Burn**: 1 × the current mint reward (`min_burn_amount(MIN_POST_BURN_MINTS, mint.supply)`): 1 token (1,000,000 units) while supply ≤ 10M, falling with the emission curve down to 1 unit at the last step
+- **Fractional amounts**: allowed (no whole-token requirement)
+- **Maximum Burn per burn instruction**: 1,000,000,000,000 tokens
 - **Token Decimals**: 6 (DECIMAL_FACTOR = 1,000,000)
 
 ### Account Space
@@ -167,10 +176,10 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<(bool, Vec<u8>)>
 **Transaction Structure Requirement**:
 - Instruction `0`: `MemoProgram::Memo` (at least 69 bytes, Base64-encoded Borsh data; no contract maximum)
 - Instruction `1+`: `memo_forum::create_post`, `memo_forum::burn_for_post`, etc.
-- Compute budget instructions can appear anywhere (processed by runtime)
+- Compute budget instructions occupy an instruction index too, so they must be at index 1 or later; one at index 0 makes the instruction fail with `MemoRequired`. Durable nonce transactions are not supported (the nonce advance would have to be at index 0)
 
 **Why This Matters**:
-1. **Data Integrity** – Post data and burn amounts are cryptographically linked through memo
+1. **Data Integrity** – Post data and burn amounts are carried in the same memo; the app checks its payload and memo-burn checks that each burn instruction's amount equals the memo's `burn_amount` (an equality check per instruction, not a cryptographic or one-time binding)
 2. **Auditability** – All forum operations are permanently recorded on-chain
 3. **Consistency** – Aligns with memo-burn, memo-mint, memo-blog, memo-chat patterns
 4. **Off-chain Indexing** – Easy to parse and index forum operations from transaction memos
@@ -219,7 +228,7 @@ pub post: Account<'info, Post>,
 - ✅ Other contracts (via CPI)
 
 **Security Analysis**:
-- ✅ Burn amount validated (minimum 1 token)
+- ✅ Burn amount validated (minimum 1 × the current mint reward)
 - ✅ Maximum burn enforced (1 trillion tokens)
 - ✅ Post existence validated (PDA must exist)
 - ✅ Memo validated and tracked
@@ -429,8 +438,10 @@ impl PostCreationData {
 
 **Burn Amount Validation**:
 ```rust
-// Minimum burn: 1 token
-if burn_amount < MIN_POST_BURN_AMOUNT {
+// Minimum burn: 1 × the current mint reward (supply-scaled)
+let min_required = min_burn_amount(MIN_POST_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
@@ -439,11 +450,10 @@ if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
 
-// Must be whole tokens (multiple of DECIMAL_FACTOR)
-if burn_amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
-}
+// Fractional amounts are accepted (no whole-token check)
 ```
+
+The supply is read from the `mint` account (constrained to `AUTHORIZED_MINT_PUBKEY`) before the burn. Pricing in mint rewards keeps the minimum at "one mint" as the reward falls toward 1 unit, where a fixed 1-token minimum would eventually require up to a million mints. A burn by someone else between signing and execution can raise the minimum by at most one curve step; the transaction then fails with `BurnAmountTooSmall` and nothing is lost (see the October 16, 2026 revision note).
 
 **Verdict**: All user inputs are thoroughly validated with appropriate bounds checking.
 
@@ -602,8 +612,9 @@ if post.burned_amount == u64::MAX && old_amount < u64::MAX {
 **Bounded Values**:
 ```rust
 pub const DECIMAL_FACTOR: u64 = 1_000_000;
-pub const MIN_POST_BURN_TOKENS: u64 = 1;
+pub const MIN_POST_BURN_MINTS: u64 = 1;
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
+// minimum = MIN_POST_BURN_MINTS.saturating_mul(mint reward), mint reward ≤ 1 token
 ```
 
 **Verdict**: No integer overflow risks; saturating arithmetic ensures safe behavior at extreme values.
@@ -823,12 +834,18 @@ programs/memo-forum/src/
 // Token economics
 pub const DECIMAL_FACTOR: u64 = 1_000_000; // Token decimals (6)
 
-// Post creation/update/burn constants - all require at least 1 MEMO token
-pub const MIN_POST_BURN_TOKENS: u64 = 1; // Minimum tokens to burn for any post operation
-pub const MIN_POST_BURN_AMOUNT: u64 = MIN_POST_BURN_TOKENS * DECIMAL_FACTOR;
+// Post creation/burn constants
+pub const MIN_POST_BURN_MINTS: u64 = 1; // Minimum burn for any post operation: 1x the current mint reward
 
-// Maximum burn per transaction (consistent with memo-burn)
+// Maximum burn per burn instruction (consistent with memo-burn)
 pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR; // 1 trillion tokens
+
+/// Minimum burn in units for an operation priced at `mints` times the current mint reward.
+/// The mint reward follows the memo-mint emission curve, so thresholds shrink as supply grows
+/// (at supply <= 10M tokens the reward is 1 token, i.e. `mints` whole tokens).
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
 ```
 
 **Documentation Score**: ⭐⭐⭐⭐⭐ (5/5)
@@ -956,7 +973,7 @@ pub enum ErrorCode {
 | **PDA Strategy** | `[b"post", post_id]` | `[b"blog", creator.key()]` |
 | **Multiple Per User** | Yes | No |
 | **Who Can Reply** | Anyone | Creator only |
-| **Minimum Burn** | 1 MEMO | 1 MEMO |
+| **Minimum Burn** | 1 × mint reward | 1 × mint reward |
 | **Global Counter** | Yes | No |
 | **Update Operation** | No | Yes |
 | **Reply Rate Limiting** | No | N/A |
@@ -967,8 +984,8 @@ pub enum ErrorCode {
 |--------|------------|-----------|
 | **Purpose** | Forum posts | Chat groups |
 | **PDA Strategy** | `[b"post", post_id]` | `[b"group", group_id]` |
-| **Creation Cost** | 1 MEMO | 42,069 MEMO |
-| **Reply Cost** | 1 MEMO (burn) or free (mint) | Free (mint) |
+| **Creation Cost** | 1 × mint reward | 42,069 × mint reward |
+| **Reply Cost** | 1 × mint reward (burn) or free (mint) | Free (mint) |
 | **Who Can Reply** | Anyone | Anyone |
 | **Leaderboard** | No | Yes |
 | **Reply Rate Limiting** | No | Yes (configurable) |
@@ -979,8 +996,8 @@ pub enum ErrorCode {
 |--------|------------|--------------|
 | **Purpose** | Forum posts | Project registry |
 | **PDA Strategy** | `[b"post", post_id]` | `[b"project", project_id]` |
-| **Creation Cost** | 1 MEMO | 42,069 MEMO |
-| **Support Cost** | 1 MEMO | 420 MEMO |
+| **Creation Cost** | 1 × mint reward | 42,069 × mint reward |
+| **Support Cost** | 1 × mint reward | 420 × mint reward |
 | **Who Can Support** | Anyone | Anyone |
 | **Global Counter** | Yes | Yes |
 | **Leaderboard** | No | Yes |
@@ -1001,7 +1018,7 @@ anchor-spl = "0.32.1"       # ✅ Latest stable Anchor SPL
 spl-memo = "6.0"            # ✅ Official SPL Memo
 base64 = "0.22"             # ✅ Widely used, well-maintained
 memo-burn = { path = "../memo-burn", features = ["cpi"] }  # ✅ Internal dependency
-memo-mint = { path = "../memo-mint", features = ["cpi"] }  # ✅ Internal dependency
+memo-mint = { path = "../memo-mint", features = ["cpi"] }  # ✅ Internal dependency (mint CPI + `mint_amount_at_supply` for burn minimums)
 ```
 
 **Dependency Security**:
@@ -1190,8 +1207,7 @@ The memo-forum contract is ready for mainnet deployment. All critical security p
 ```rust
 // Token Economics
 DECIMAL_FACTOR = 1,000,000
-MIN_POST_BURN_TOKENS = 1
-MIN_POST_BURN_AMOUNT = 1,000,000
+MIN_POST_BURN_MINTS = 1   // minimum = 1 × mint_amount_at_supply(supply) units (1,000,000 while supply ≤ 10M)
 MAX_BURN_PER_INSTRUCTION = 1,000,000,000,000,000,000
 
 // String Lengths
@@ -1253,9 +1269,9 @@ PostIdMismatch            // Memo post_id != expected
 InvalidPostTitle          // Title validation failed
 InvalidPostContent        // Content validation failed
 InvalidPostImage          // Image validation failed
-BurnAmountTooSmall        // Burn < 1 token
+BurnAmountTooSmall        // Burn < 1 × current mint reward
 BurnAmountTooLarge        // Burn > 1T tokens
-InvalidBurnAmount         // Not a multiple of DECIMAL_FACTOR
+InvalidBurnAmount         // No longer returned (fractional amounts allowed); kept so later codes stay unchanged
 BurnAmountMismatch        // Memo amount != instruction amount
 ReplyMessageTooLong       // Message > 512 chars
 ```

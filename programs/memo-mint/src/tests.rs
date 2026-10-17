@@ -260,6 +260,25 @@ mod calculate_dynamic_mint_amount_tests {
     fn test_overflow_protection_at_u64_max() {
         assert!(calculate_dynamic_mint_amount(u64::MAX).is_err());
     }
+
+    // ------------------------------------------------------------------------
+    // mint_amount_at_supply (public curve value, used for burn thresholds)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_mint_amount_at_supply_matches_mint_below_cap() {
+        for supply in [0, CURVE_START_LAMPORTS, CURVE_START_LAMPORTS + 1, 55_555_555 * M,
+                       1_000_000_000 * M + 1, MAX_SUPPLY_LAMPORTS - 1] {
+            assert_eq!(mint_amount_at_supply(supply), calculate_dynamic_mint_amount(supply).unwrap());
+        }
+    }
+
+    #[test]
+    fn test_mint_amount_at_supply_is_last_step_at_and_above_cap() {
+        assert_eq!(mint_amount_at_supply(MAX_SUPPLY_LAMPORTS), 1);
+        assert_eq!(mint_amount_at_supply(MAX_SUPPLY_LAMPORTS + 1), 1);
+        assert_eq!(mint_amount_at_supply(u64::MAX), 1);
+    }
 }
 
 // ============================================================================
@@ -531,34 +550,21 @@ mod integration_tests {
 #[cfg(test)]
 mod test_coverage_summary {
     // This module serves as documentation for test coverage
-    
-    // calculate_dynamic_mint_amount
-    // - Below curve start, every round number (54) and one lamport below each
-    // - Decade starts, monotonicity, minimum reward
-    // - Max supply edge cases
-    // - Overflow protection
-    // - Arithmetic safety
-    
-    // validate_memo_length: 35+ tests
-    // - Empty memo
-    // - Below minimum (various lengths)
-    // - At minimum boundary
-    // - Mid-range valid lengths
-    // - At maximum boundary
-    // - Above maximum (various lengths)
-    // - Binary data handling
-    // - Data integrity
-    // - Different content types (ASCII, UTF-8, Base64)
-    
-    // Integration tests: 7+ tests
-    // - Cross-function consistency
-    // - Constants verification
-    // - Mathematical relationships
-    
-    // Total: 110+ comprehensive unit tests
-    // Coverage: All public and private functions
-    // Edge cases: Extensively covered
-    // Error paths: All tested
+    //
+    // Unit-tested here (run `cargo test -p memo-mint --lib` for the exact count):
+    // - calculate_dynamic_mint_amount / mint_amount_at_supply against two references that do not
+    //   share code with the program (interval search and decimal-digit oracle), cap and overflow
+    // - validate_memo_length (minimum 69 bytes, no maximum)
+    // - check_memo_instruction against real instructions-sysvar data (memo position rules)
+    // - transaction_fingerprint and MintState::record_mint (one mint per transaction)
+    // - error code numbering
+    //
+    // Not unit-testable without changing lib.rs, covered by the on-chain regression suite
+    // (scripts/run-regression-tests.sh, clients/regression/src/):
+    // - process_mint / process_mint_to handlers and Accounts constraints (mint, owner, recipient,
+    //   sysvar address, mint_state seeds), one mint per transaction across CPI (app + top-level)
+    // - exact minted amounts at several supply tiers and at the 10T cap
+    // - initialize_mint_state admin check (fresh state)
 }
 
 // ============================================================================
@@ -749,8 +755,12 @@ mod one_mint_per_transaction_tests {
         assert_eq!(results, vec![true, false, false]);
     }
 
+    /// Only shows that record_mint rejects a repeated (fingerprint, slot) pair when it is fed the
+    /// same sysvar bytes 30 times. It does NOT prove that the runtime hands a CPI the same sysvar
+    /// bytes as the top-level instruction; that is covered on-chain by the regression suite
+    /// (clients/regression/src/regression-memo-mint.rs, app CPI double-mint cases).
     #[test]
-    fn test_cpi_loop_mints_once() {
+    fn test_repeated_record_with_same_sysvar_mints_once() {
         // a program at index 1 calling memo-mint N times via CPI: every call sees index 1
         let ixs = vec![memo_ix(MEMO), Ix { program_id: Pubkey::new_unique(), accounts: vec![], data: vec![30] }];
         let data = sysvar_data(&ixs, 1);
@@ -793,5 +803,225 @@ mod one_mint_per_transaction_tests {
         assert_eq!(code(ErrorCode::ArithmeticOverflow), 6006);
         assert_eq!(code(ErrorCode::UnauthorizedAdmin), 6007);
         assert_eq!(code(ErrorCode::OneMintPerTransaction), 6008);
+    }
+}
+
+// ============================================================================
+// Tests for check_memo_instruction (memo position rules)
+// ============================================================================
+
+#[cfg(test)]
+mod check_memo_instruction_tests {
+    use super::*;
+    use solana_instruction::{AccountMeta as Meta, BorrowedAccountMeta, BorrowedInstruction};
+    use solana_instructions_sysvar::{construct_instructions_data, store_current_index_checked};
+
+    const LEGACY_MEMO_V1: Pubkey = pubkey!("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo");
+    const COMPUTE_BUDGET: Pubkey = pubkey!("ComputeBudget111111111111111111111111111111");
+
+    struct Ix {
+        program_id: Pubkey,
+        accounts: Vec<Meta>,
+        data: Vec<u8>,
+    }
+
+    /// Instructions sysvar data exactly as the runtime builds it, with the current index set
+    fn sysvar_data(ixs: &[Ix], current_index: u16) -> Vec<u8> {
+        let borrowed: Vec<BorrowedInstruction> = ixs
+            .iter()
+            .map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: ix.accounts.iter().map(|m| BorrowedAccountMeta {
+                    pubkey: &m.pubkey,
+                    is_signer: m.is_signer,
+                    is_writable: m.is_writable,
+                }).collect(),
+                data: &ix.data,
+            })
+            .collect();
+        let mut data = construct_instructions_data(&borrowed);
+        store_current_index_checked(&mut data, current_index).unwrap();
+        data
+    }
+
+    /// Run check_memo_instruction on an AccountInfo with the given key and sysvar data
+    fn check_with_key(key: Pubkey, ixs: &[Ix], current_index: u16) -> Result<bool> {
+        let mut data = sysvar_data(ixs, current_index);
+        let owner = anchor_lang::solana_program::sysvar::ID;
+        let mut lamports = 0u64;
+        let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false, 0);
+        check_memo_instruction(&info)
+    }
+
+    fn check(ixs: &[Ix], current_index: u16) -> Result<bool> {
+        check_with_key(INSTRUCTIONS_ID, ixs, current_index)
+    }
+
+    fn is_memo_too_short(result: Result<bool>) -> bool {
+        matches!(result, Err(e) if e.to_string().contains("MemoTooShort"))
+    }
+
+    fn memo(len: usize) -> Ix {
+        Ix { program_id: MEMO_PROGRAM_ID, accounts: vec![], data: vec![b'm'; len] }
+    }
+
+    fn mint() -> Ix {
+        Ix { program_id: crate::ID, accounts: vec![Meta::new(Pubkey::new_unique(), true)], data: vec![0; 8] }
+    }
+
+    fn other(program_id: Pubkey, len: usize) -> Ix {
+        Ix { program_id, accounts: vec![], data: vec![b'x'; len] }
+    }
+
+    #[test]
+    fn test_memo_at_index_0_and_mint_at_index_1_accepted() {
+        assert_eq!(check(&[memo(MEMO_MIN_LENGTH), mint()], 1).unwrap(), true);
+        assert_eq!(check(&[memo(5000), mint()], 1).unwrap(), true);
+    }
+
+    #[test]
+    fn test_mint_later_than_index_1_accepted() {
+        // compute budget (or anything else) between the memo and the mint is fine
+        assert_eq!(check(&[memo(MEMO_MIN_LENGTH), other(COMPUTE_BUDGET, 5), mint()], 2).unwrap(), true);
+        assert_eq!(check(&[memo(MEMO_MIN_LENGTH), mint(), mint(), mint()], 3).unwrap(), true);
+    }
+
+    #[test]
+    fn test_mint_at_index_0_rejected() {
+        assert_eq!(check(&[mint()], 0).unwrap(), false);
+        assert_eq!(check(&[mint(), memo(MEMO_MIN_LENGTH)], 0).unwrap(), false);
+    }
+
+    #[test]
+    fn test_memo_only_right_before_the_mint_rejected() {
+        // the memo must be at index 0, not at current_index - 1
+        assert_eq!(check(&[other(COMPUTE_BUDGET, 5), memo(MEMO_MIN_LENGTH), mint()], 2).unwrap(), false);
+        // and a memo at index 0 is found even when the instruction before the mint is not a memo
+        assert_eq!(check(&[memo(MEMO_MIN_LENGTH), other(COMPUTE_BUDGET, 5), mint()], 2).unwrap(), true);
+    }
+
+    #[test]
+    fn test_non_memo_program_at_index_0_rejected() {
+        assert_eq!(check(&[other(COMPUTE_BUDGET, 80), mint()], 1).unwrap(), false);
+        assert_eq!(check(&[other(Pubkey::new_unique(), 80), mint()], 1).unwrap(), false);
+        assert_eq!(check(&[other(crate::ID, 80), mint()], 1).unwrap(), false);
+    }
+
+    #[test]
+    fn test_legacy_memo_v1_rejected() {
+        assert_eq!(check(&[other(LEGACY_MEMO_V1, 80), mint()], 1).unwrap(), false);
+    }
+
+    #[test]
+    fn test_short_or_empty_memo_at_index_0_is_an_error() {
+        assert!(is_memo_too_short(check(&[memo(MEMO_MIN_LENGTH - 1), mint()], 1)));
+        assert!(is_memo_too_short(check(&[memo(0), mint()], 1)));
+        // a valid memo later does not help
+        assert!(is_memo_too_short(check(&[memo(10), memo(MEMO_MIN_LENGTH), mint()], 2)));
+    }
+
+    #[test]
+    fn test_wrong_sysvar_account_is_an_error() {
+        // on-chain the address constraint fires first; the function itself also refuses
+        assert!(check_with_key(Pubkey::new_unique(), &[memo(MEMO_MIN_LENGTH), mint()], 1).is_err());
+    }
+}
+
+// ============================================================================
+// Emission curve against a decimal-digit oracle
+// ============================================================================
+
+#[cfg(test)]
+mod curve_digit_oracle_tests {
+    use super::*;
+
+    /// Reference written from the documented curve using the decimal representation of the
+    /// supply (shares no code or loop structure with the program).
+    /// None at or above the 10T cap.
+    fn digit_oracle(supply: u64) -> Option<u64> {
+        const START: u64 = 10_000_000_000_000; // 10M tokens in units (14 digits)
+        const MAX: u64 = 10_000_000_000_000_000_000; // 10T tokens in units
+        if supply >= MAX {
+            return None;
+        }
+        if supply <= START {
+            return Some(1_000_000);
+        }
+        let below = (supply - 1).to_string();
+        let decade = below.len() as u32 - 14; // 0..=5
+        let digit = (below.as_bytes()[0] - b'0') as u64; // 1..=9
+        Some(10u64.pow(6 - decade) * (10 - digit) / 10)
+    }
+
+    fn compare(supply: u64) {
+        match digit_oracle(supply) {
+            Some(expected) => {
+                assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), expected, "supply {}", supply);
+                assert_eq!(mint_amount_at_supply(supply), expected, "supply {}", supply);
+            }
+            None => {
+                assert!(calculate_dynamic_mint_amount(supply).is_err(), "supply {}", supply);
+                assert_eq!(mint_amount_at_supply(supply), 1, "supply {}", supply);
+            }
+        }
+    }
+
+    #[test]
+    fn test_round_numbers_and_neighbours() {
+        let mut power: u64 = 1;
+        for _ in 0..20 {
+            for d in 1..=9u64 {
+                if let Some(x) = power.checked_mul(d) {
+                    for delta in [-2i128, -1, 0, 1, 2] {
+                        let v = x as i128 + delta;
+                        if v >= 0 && v <= u64::MAX as i128 {
+                            compare(v as u64);
+                        }
+                    }
+                }
+            }
+            power = power.saturating_mul(10);
+        }
+        compare(0);
+        compare(u64::MAX);
+    }
+
+    #[test]
+    fn test_pseudo_random_supplies() {
+        // xorshift64: deterministic, no extra dependency
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in 0..200_000u32 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let supply = if i % 2 == 0 { x % (MAX_SUPPLY_LAMPORTS + 1000) } else { x >> (i % 64) };
+            compare(supply);
+        }
+    }
+
+    #[test]
+    fn test_hard_coded_tier_values() {
+        // Values written out by hand (units), independent of any formula
+        let m = DECIMAL_FACTOR;
+        let cases: &[(u64, u64)] = &[
+            (5_000_000 * m, 1_000_000),
+            (10_000_000 * m, 1_000_000),
+            (10_000_000 * m + 1, 900_000),
+            (20_000_000 * m, 900_000),
+            (20_000_000 * m + 1, 800_000),
+            (100_000_000 * m, 100_000),
+            (100_000_000 * m + 1, 90_000),
+            (1_000_000_000 * m, 10_000),
+            (1_000_000_000 * m + 1, 9_000),
+            (1_000_000_000_000 * m + 1, 9),
+            (5_000_000_000_000 * m, 6),
+            (5_000_000_000_000 * m + 1, 5),
+            (9_000_000_000_000 * m, 2),
+            (9_000_000_000_000 * m + 1, 1),
+            (10_000_000_000_000 * m - 1, 1),
+        ];
+        for &(supply, expected) in cases {
+            assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), expected, "supply {}", supply);
+        }
     }
 }

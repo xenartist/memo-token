@@ -14,10 +14,21 @@ mod tests {
 
     #[test]
     fn test_burn_amount_constants() {
-        assert_eq!(MIN_GROUP_CREATION_BURN_TOKENS, 42_069);
-        assert_eq!(MIN_GROUP_CREATION_BURN_AMOUNT, 42_069 * 1_000_000);
-        assert_eq!(MIN_BURN_AMOUNT, 1 * 1_000_000);
+        assert_eq!(MIN_GROUP_CREATION_BURN_MINTS, 42_069);
+        assert_eq!(MIN_GROUP_BURN_MINTS, 1);
         assert_eq!(MAX_BURN_PER_INSTRUCTION, 1_000_000_000_000 * 1_000_000);
+    }
+
+    #[test]
+    fn test_min_burn_amount_scales_with_mint_reward() {
+        // Up to 10M supply the mint reward is 1 token
+        assert_eq!(min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, 0), 42_069 * DECIMAL_FACTOR);
+        assert_eq!(min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR), 42_069 * DECIMAL_FACTOR);
+        // Above 10M: 0.9 token; above 100M: 0.09 token
+        assert_eq!(min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR + 1), 42_069 * 900_000);
+        assert_eq!(min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, 100_000_000 * DECIMAL_FACTOR + 1), 42_069 * 90_000);
+        // Last step and at the cap: 1 unit per mint
+        assert_eq!(min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, memo_mint::MAX_SUPPLY_LAMPORTS), 42_069);
     }
 
     #[test]

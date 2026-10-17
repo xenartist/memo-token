@@ -16,7 +16,7 @@ use chrono::Utc;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 // Borsh memo structures (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -87,9 +87,8 @@ const EXPECTED_CREATE_OPERATION: &str = "create_blog";
 const EXPECTED_UPDATE_OPERATION: &str = "update_blog";
 const EXPECTED_BURN_OPERATION: &str = "burn_for_blog";
 const EXPECTED_MINT_OPERATION: &str = "mint_for_blog";
-const BURN_AMOUNT_TOKENS: u64 = 1; // Only 1 token for blog operations!
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const REQUIRED_TOKENS_FOR_TEST: u64 = 10; // Need at least 10 tokens for full test
+const MIN_BLOG_BURN_MINTS: u64 = 1; // Mirrors MIN_BLOG_BURN_MINTS in the contract: 1x the current mint reward
+const REQUIRED_BURNS_FOR_TEST: u64 = 10; // Balance for 10 minimum burns (covers all burns + buffer)
 
 /// Get token balance in raw units
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -104,12 +103,6 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
         },
         Err(_) => 0,
     }
-}
-
-/// Format token amount for display
-fn format_token_amount(raw_amount: u64) -> String {
-    let tokens = raw_amount as f64 / DECIMAL_FACTOR as f64;
-    format!("{:.6}", tokens)
 }
 
 /// Generate exactly 69-byte ASCII memo for mint operations
@@ -270,8 +263,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
     
-    let burn_amount = BURN_AMOUNT_TOKENS * DECIMAL_FACTOR;
-    
     // Connect to network
     let rpc_url = get_rpc_url();
     println!("─────────────────────────────────────────────────────────────────");
@@ -283,7 +274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
     
     println!("Payer:          {}", payer.pubkey());
@@ -302,6 +293,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Burn Program:   {}", burn_program_id);
     println!("Mint Program:   {}", mint_program_id);
     println!("Mint Address:   {}", mint);
+
+    // Burn amount = current minimum (MIN_BLOG_BURN_MINTS x the current mint reward, depends on supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint, MIN_BLOG_BURN_MINTS)?;
+    println!("Min Burn:       {} token(s)", format_token_amount(burn_amount));
 
     // Get user's token account
     let token_account = get_associated_token_address_with_program_id(
@@ -342,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Calculate required balance (3 burns + buffer)
-    let required_balance = REQUIRED_TOKENS_FOR_TEST * DECIMAL_FACTOR;
+    let required_balance = REQUIRED_BURNS_FOR_TEST.saturating_mul(burn_amount);
     
     // Ensure sufficient balance before starting tests
     ensure_sufficient_balance(
@@ -369,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Name:           {}", blog_name);
     println!("Description:    {}", blog_description);
     println!("Image:          {}", blog_image);
-    println!("Burning:        {} token(s) ({} units)", BURN_AMOUNT_TOKENS, burn_amount);
+    println!("Burning:        {} token(s) ({} units)", format_token_amount(burn_amount), burn_amount);
     
     if blog_exists {
         println!("⚠️  Blog already exists for this user, skipping creation");
@@ -435,7 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Updating blog with:");
     println!("  New Name:        {}", updated_name);
     println!("  New Description: {}", updated_description);
-    println!("  Burning:         {} token(s)", BURN_AMOUNT_TOKENS);
+    println!("  Burning:         {} token(s)", format_token_amount(burn_amount));
     
     update_blog(
         &client,
@@ -472,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify updated fields
     assert_eq!(blog.name, updated_name, "Name should be updated");
     assert_eq!(blog.description, updated_description, "Description should be updated");
-    assert_eq!(blog.burned_amount, initial_burned_amount + burn_amount, "Total burned should increase by 1 token");
+    assert_eq!(blog.burned_amount, initial_burned_amount + burn_amount, "Total burned should increase by the burn amount");
     
     let burned_after_update = blog.burned_amount;
     
@@ -488,7 +483,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let burn_message = "Supporting this awesome blog!";
     
-    println!("Burning {} token(s) for blog", BURN_AMOUNT_TOKENS);
+    println!("Burning {} token(s) for blog", format_token_amount(burn_amount));
     println!("Message: {}", burn_message);
     
     burn_for_blog(
@@ -521,7 +516,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Last Memo Time: {}", blog.last_memo_time);
     
     // Verify burn tracking
-    assert_eq!(blog.burned_amount, burned_after_update + burn_amount, "Total burned should increase by 1 token");
+    assert_eq!(blog.burned_amount, burned_after_update + burn_amount, "Total burned should increase by the burn amount");
     assert!(blog.last_memo_time > 0, "Last memo time should be set");
     
     let memo_count_after_burn = blog.memo_count;

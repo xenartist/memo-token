@@ -16,7 +16,7 @@ use chrono::Utc;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 // Borsh memo structures (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -65,9 +65,10 @@ const PROFILE_UPDATE_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "profile";
 const EXPECTED_OPERATION_CREATE: &str = "create_profile";
 const EXPECTED_OPERATION_UPDATE: &str = "update_profile";
-const BURN_AMOUNT_TOKENS: u64 = 420; // Minimum burn for profile operations
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const REQUIRED_TOKENS_FOR_TEST: u64 = 1000; // Need at least 1000 tokens (create 420 + update 420 + buffer)
+// Profile create/update burn at least this many times the current mint reward
+// (mirror MIN_PROFILE_CREATION_BURN_MINTS / MIN_PROFILE_UPDATE_BURN_MINTS in memo-profile)
+const MIN_PROFILE_CREATION_BURN_MINTS: u64 = 420;
+const MIN_PROFILE_UPDATE_BURN_MINTS: u64 = 420;
 
 /// Get token balance in raw units
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -82,12 +83,6 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
         },
         Err(_) => 0,
     }
-}
-
-/// Format token amount for display
-fn format_token_amount(raw_amount: u64) -> String {
-    let tokens = raw_amount as f64 / DECIMAL_FACTOR as f64;
-    format!("{:.6}", tokens)
 }
 
 /// Generate exactly 69-byte ASCII memo for mint operations
@@ -248,8 +243,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
     
-    let burn_amount = BURN_AMOUNT_TOKENS * DECIMAL_FACTOR;
-    
     // Connect to network
     let rpc_url = get_rpc_url();
     println!("─────────────────────────────────────────────────────────────────");
@@ -261,7 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
     
     println!("Payer:          {}", payer.pubkey());
@@ -326,8 +319,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_program_id = get_program_id("memo_mint")
         .expect("Failed to get memo_mint program ID");
     
-    // Calculate required balance (create + update + safety margin)
-    let required_balance = REQUIRED_TOKENS_FOR_TEST * DECIMAL_FACTOR;
+    // Burn the current minimums: 420 x the current mint reward (depends on token supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint, MIN_PROFILE_CREATION_BURN_MINTS)?;
+    let update_burn_amount = fetch_min_burn_amount(&client, &mint, MIN_PROFILE_UPDATE_BURN_MINTS)?;
+    
+    // Calculate required balance (create + update + safety margin of one extra update)
+    let required_balance = burn_amount
+        .saturating_add(update_burn_amount.saturating_mul(2));
     
     // Ensure sufficient balance before starting tests
     ensure_sufficient_balance(
@@ -351,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Username:  {}", username);
     println!("Image:     {}", image);
     println!("About Me:  {:?}", about_me);
-    println!("Burning:   {} tokens ({} units)", BURN_AMOUNT_TOKENS, burn_amount);
+    println!("Burning:   {} tokens ({} units, {} x mint reward)", format_token_amount(burn_amount), burn_amount, MIN_PROFILE_CREATION_BURN_MINTS);
     
     create_profile(
         &client,
@@ -406,7 +404,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("New Username:  {}", new_username);
     println!("New Image:     {}", new_image);
     println!("New About Me:  {:?}", new_about_me);
-    println!("Burning:       {} tokens ({} units)", BURN_AMOUNT_TOKENS, burn_amount);
+    // Re-read the minimum: the creation burn lowered the supply
+    let update_burn_amount = fetch_min_burn_amount(&client, &mint, MIN_PROFILE_UPDATE_BURN_MINTS)
+        .unwrap_or(update_burn_amount);
+    println!("Burning:       {} tokens ({} units, {} x mint reward)", format_token_amount(update_burn_amount), update_burn_amount, MIN_PROFILE_UPDATE_BURN_MINTS);
     
     update_profile(
         &client,
@@ -417,7 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &token_account,
         &profile_pda,
         &user_global_burn_stats_pda,
-        burn_amount,
+        update_burn_amount,
         Some(new_username.to_string()),
         Some(new_image.to_string()),
         new_about_me.clone(),
@@ -484,7 +485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Profile deletion verification");
     println!();
     println!("Total profile operations: 6 (create + verify + update + verify + delete + verify)");
-    println!("Total tokens burned: {} tokens", BURN_AMOUNT_TOKENS * 2);
+    println!("Total tokens burned: {} tokens", format_token_amount(burn_amount.saturating_add(update_burn_amount)));
     println!();
 
     Ok(())

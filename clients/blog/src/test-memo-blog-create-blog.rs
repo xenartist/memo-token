@@ -61,9 +61,7 @@ const BLOG_CREATION_DATA_VERSION: u8 = 1;
 const BURN_MEMO_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "blog";
 const EXPECTED_OPERATION: &str = "create_blog";
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const MIN_BLOG_BURN_TOKENS: u64 = 1; // Only 1 MEMO token minimum!
-const MIN_BLOG_BURN_AMOUNT: u64 = MIN_BLOG_BURN_TOKENS * DECIMAL_FACTOR;
+const MIN_BLOG_BURN_MINTS: u64 = 1; // Mirrors MIN_BLOG_BURN_MINTS in the contract: 1x the current mint reward
 
 impl BlogCreationData {
     /// Validate the structure fields
@@ -121,7 +119,7 @@ impl BlogCreationData {
     }
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-BLOG CREATE BLOG TEST ===");
@@ -134,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load user wallet
     let user = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses
@@ -149,11 +147,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Token mint: {}", mint_address);
     println!();
 
-    // Blog details - only 1 token minimum!
-    let burn_amount_tokens = MIN_BLOG_BURN_TOKENS; // 1 token (minimum)
-    let burn_amount = burn_amount_tokens * DECIMAL_FACTOR;
+    // Blog details
+    // Minimum burn is MIN_BLOG_BURN_MINTS x the current mint reward (depends on supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint_address, MIN_BLOG_BURN_MINTS)?;
 
-    println!("Creating blog with {} token burn (minimum required)", burn_amount_tokens);
+    println!("Creating blog with {} token burn (minimum required)", format_token_amount(burn_amount));
 
     // Create blog data
     let blog_data = BlogCreationData {
@@ -197,12 +195,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check token balance
     match client.get_token_account(&user_token_account) {
         Ok(Some(token_account)) => {
-            let balance = token_account.token_amount.ui_amount.unwrap_or(0.0);
-            println!("User token balance: {} tokens", balance);
+            let balance: u64 = token_account.token_amount.amount.parse().unwrap_or(0);
+            println!("User token balance: {} tokens", format_token_amount(balance));
             
-            if balance < burn_amount_tokens as f64 {
+            if balance < burn_amount {
                 return Err(format!("Insufficient token balance. Need {} tokens, have {}", 
-                                 burn_amount_tokens, balance).into());
+                                 format_token_amount(burn_amount), format_token_amount(balance)).into());
             }
         },
         Ok(None) => {
@@ -326,7 +324,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!();
                     println!("✅ Blog created successfully!");
                     println!("   Creator: {}", user.pubkey());
-                    println!("   Tokens burned: {} token(s)", burn_amount_tokens);
+                    println!("   Tokens burned: {} token(s)", format_token_amount(burn_amount));
                     println!("   Blog name: {}", blog_data.name);
                 },
                 Err(e) => {
@@ -341,7 +339,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Provide helpful error analysis
             let error_msg = err.to_string();
             if error_msg.contains("BurnAmountTooSmall") {
-                println!("💡 The burn amount is too small. Minimum required: {} token(s)", MIN_BLOG_BURN_TOKENS);
+                println!("💡 The burn amount is too small. Minimum required: {} token(s)", format_token_amount(burn_amount));
             } else if error_msg.contains("insufficient funds") || error_msg.contains("0x1") {
                 println!("💡 Insufficient token balance or SOL balance for transaction fees.");
             } else if error_msg.contains("InvalidBlogDataFormat") {

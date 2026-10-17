@@ -127,17 +127,21 @@ const BURN_MEMO_VERSION: u8 = 1;
 const CHAT_GROUP_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "chat";
 const EXPECTED_BURN_OPERATION: &str = "burn_for_group";
+// Burning for a group requires at least this many times the current mint reward
+// (mirrors MIN_GROUP_BURN_MINTS in memo-chat)
+const MIN_GROUP_BURN_MINTS: u64 = 1;
 
 #[derive(Debug, Clone)]
 struct TestParams {
     pub group_id: u64,              // Target group ID
-    pub burn_amount: u64,           // Burn amount in tokens (not units)
+    pub burn_amount: u64,           // Burn amount in units (lamports, 6 decimals)
     pub message: String,            // Burn message (optional, max 512 characters)
     pub should_succeed: bool,       // Whether the test should succeed
     pub test_description: String,   // Description of what this test validates
 }
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount, parse_token_amount};
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get command line arguments
@@ -152,54 +156,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let group_id_str = &args[2];
     let group_id = group_id_str.parse::<u64>()
         .map_err(|_| format!("Invalid group_id: {}", group_id_str))?;
+
+    // Minimum burn depends on the current mint reward, which depends on the token supply
+    let rpc_client = RpcClient::new(get_rpc_url());
+    let token_mint = get_token_mint("memo_token")?;
+    let min_burn = fetch_min_burn_amount(&rpc_client, &token_mint, MIN_GROUP_BURN_MINTS)?;
+    println!("Current minimum burn for group: {} tokens ({} x mint reward)",
+        format_token_amount(min_burn), MIN_GROUP_BURN_MINTS);
     
     // Define test cases
     let test_params = match test_case.as_str() {
         "valid-basic" => TestParams {
             group_id,
-            burn_amount: 1, // 1 token
+            burn_amount: min_burn, // Dynamic minimum
             message: "Basic burn test".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with minimum amount and basic message".to_string(),
         },
         "valid-large" => TestParams {
             group_id,
-            burn_amount: 10000, // 10,000 tokens
+            burn_amount: min_burn.saturating_mul(10_000), // 10,000 x minimum
             message: "Large amount burn for group development".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with large amount and detailed message".to_string(),
         },
         "valid-empty-message" => TestParams {
             group_id,
-            burn_amount: 5, // 5 tokens
+            burn_amount: min_burn.saturating_mul(5), // 5 x minimum
             message: "".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with empty message".to_string(),
         },
         "valid-long-message" => TestParams {
             group_id,
-            burn_amount: 100, // 100 tokens
+            burn_amount: min_burn.saturating_mul(100), // 100 x minimum
             message: "This is a very long burn message to test the maximum message length validation. It should contain detailed information about why this burn operation is being performed and what the expected outcomes are. This message is designed to be close to but not exceed the 512 character limit for burn messages in the memo chat system.".to_string(),
             should_succeed: true,
             test_description: "Valid burn operation with long message (near 512 char limit)".to_string(),
         },
         "small-amount" => TestParams {
             group_id,
-            burn_amount: 0, // 0 tokens (should fail)
+            burn_amount: min_burn.saturating_sub(1), // 1 unit below minimum (should fail)
             message: "Testing small amount".to_string(),
             should_succeed: false,
             test_description: "Test burn amount too small (should fail)".to_string(),
         },
         "invalid-group" => TestParams {
             group_id: 999999, // Non-existent group
-            burn_amount: 1,
+            burn_amount: min_burn,
             message: "Testing invalid group".to_string(),
             should_succeed: false,
             test_description: "Test burn for non-existent group (should fail)".to_string(),
         },
         "too-long-message" => TestParams {
             group_id,
-            burn_amount: 1,
+            burn_amount: min_burn,
             message: "A".repeat(513), // 513 characters (should fail)
             should_succeed: false,
             test_description: "Test message too long (should fail)".to_string(),
@@ -210,13 +221,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print_usage();
                 return Ok(());
             }
-            let custom_burn_amount = args[3].parse::<u64>()
-                .map_err(|_| format!("Invalid burn amount: {}", args[3]))?;
+            let custom_burn_amount = parse_token_amount(&args[3])
+                .ok_or_else(|| format!("Invalid burn amount: {}", args[3]))?;
             
             let custom_message = if args.len() >= 5 {
                 args[4].clone()
             } else {
-                format!("Custom burn: {} tokens for group {}", custom_burn_amount, group_id)
+                format!("Custom burn: {} tokens for group {}", format_token_amount(custom_burn_amount), group_id)
             };
             
             TestParams {
@@ -224,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 burn_amount: custom_burn_amount,
                 message: custom_message,
                 should_succeed: true,
-                test_description: format!("Custom burn test: {} tokens for group {} with message", custom_burn_amount, group_id),
+                test_description: format!("Custom burn test: {} tokens for group {} with message", format_token_amount(custom_burn_amount), group_id),
             }
         },
         _ => {
@@ -244,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔍 Connecting to: {}", rpc_url);
     let client = RpcClient::new(rpc_url.to_string());
     
-    let payer_path = std::env::var("SOLANA_KEYPAIR_PATH")
+    let payer_path = std::env::var("MEMO_WALLET").or_else(|_| std::env::var("SOLANA_KEYPAIR_PATH"))
         .unwrap_or_else(|_| format!("{}/.config/solana/id.json", std::env::var("HOME").unwrap()));
     let payer = read_keypair_file(&payer_path)?;
 
@@ -252,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Test case: {}", test_case);
     println!("Description: {}", test_params.test_description);
     println!("Group ID: {}", test_params.group_id);
-    println!("Burn amount: {} tokens", test_params.burn_amount);
+    println!("Burn amount: {} tokens", format_token_amount(test_params.burn_amount));
     println!("Burn message: \"{}\" ({} chars)", test_params.message, test_params.message.len());
     println!("Expected result: {}", if test_params.should_succeed { "SUCCESS" } else { "FAILURE" });
     println!();
@@ -329,9 +340,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let current_balance = balance.ui_amount.unwrap_or(0.0);
                 println!("Current token balance: {} tokens", current_balance);
                 
-                if current_balance < test_params.burn_amount as f64 {
+                let current_balance_units = balance.amount.parse::<u64>().unwrap_or(0);
+                if current_balance_units < test_params.burn_amount {
                     println!("❌ ERROR: Insufficient token balance!");
-                    println!("   Required: {} tokens", test_params.burn_amount);
+                    println!("   Required: {} tokens", format_token_amount(test_params.burn_amount));
                     println!("   Available: {} tokens", current_balance);
                     return Ok(());
                 }
@@ -399,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &memo_burn_program_id,
         &user_global_burn_stats_pda,
         test_params.group_id,
-        test_params.burn_amount * 1_000_000, // Convert to units
+        test_params.burn_amount,
     );
 
     // First, simulate transaction to get optimal CU limit
@@ -495,7 +507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 analyze_unexpected_error(&err.to_string());
             } else {
                 println!("✅ EXPECTED FAILURE: Test failed as expected");
-                analyze_expected_error(&err.to_string(), &test_params);
+                analyze_expected_error(&err.to_string(), &test_params, min_burn);
             }
         }
     }
@@ -523,7 +535,7 @@ fn generate_borsh_memo_from_params(params: &TestParams, burner_pubkey: &Pubkey) 
     // Create BurnMemo structure
     let burn_memo = BurnMemo {
         version: BURN_MEMO_VERSION,
-        burn_amount: params.burn_amount * 1_000_000, // Convert to units
+        burn_amount: params.burn_amount,
         payload,
     };
     
@@ -542,9 +554,9 @@ fn generate_borsh_memo_from_params(params: &TestParams, burner_pubkey: &Pubkey) 
     Ok(memo_bytes)
 }
 
-fn analyze_expected_error(error_msg: &str, params: &TestParams) {
-    if error_msg.contains("BurnAmountTooSmall") && params.burn_amount == 0 {
-        println!("✅ Correct: Burn amount too small detected");
+fn analyze_expected_error(error_msg: &str, params: &TestParams, min_burn: u64) {
+    if error_msg.contains("BurnAmountTooSmall") && params.burn_amount < min_burn {
+        println!("✅ Correct: Burn amount too small detected (minimum {} tokens)", format_token_amount(min_burn));
     } else if error_msg.contains("GroupNotFound") || error_msg.contains("InvalidChatGroupPDA") {
         println!("✅ Correct: Invalid group detected");
     } else if error_msg.contains("insufficient funds") {
@@ -628,11 +640,11 @@ fn print_usage() {
     println!("Usage: cargo run --bin test-memo-chat-burn-for-group -- <test_case> <group_id> [amount] [message]");
     println!();
     println!("Available test cases:");
-    println!("  valid-basic         - Valid burn operation with 1 token and basic message");
-    println!("  valid-large         - Valid burn operation with 10,000 tokens and detailed message");
+    println!("  valid-basic         - Valid burn operation with the current minimum (1 x mint reward) and basic message");
+    println!("  valid-large         - Valid burn operation with 10,000 x the minimum and detailed message");
     println!("  valid-empty-message - Valid burn operation with empty message");
     println!("  valid-long-message  - Valid burn operation with long message (near 512 char limit)");
-    println!("  small-amount        - Test burn amount too small (should fail)");
+    println!("  small-amount        - Test burn amount too small: minimum - 1 unit (should fail)");
     println!("  invalid-group       - Test burn for non-existent group (should fail)");
     println!("  too-long-message    - Test message too long (should fail)");
     println!("  custom              - Custom test with specified amount and message");
@@ -648,4 +660,5 @@ fn print_usage() {
     println!();
     println!("Note: Make sure the specified group_id exists before running the test.");
     println!("      Messages are optional and limited to 512 characters.");
+    println!("      Custom amounts are in tokens and may be fractional (up to 6 decimals).");
 }

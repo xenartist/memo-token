@@ -27,6 +27,14 @@ The memo-chat contract implements a decentralized chat group system where users 
 
 ---
 
+## Revision Note (October 16, 2026): Supply-Scaled Burn Minimums
+
+Burn minimums are no longer fixed whole-token amounts. Each minimum is a multiple of the current memo-mint reward, computed from the live `mint.supply` before the burn: `min_burn_amount(MINTS, supply) = MINTS × memo_mint::mint_amount_at_supply(supply)` (saturating multiply; see MEMO-MINT-AUDIT.md). Multipliers (constants renamed from `*_BURN_TOKENS` / `*_BURN_AMOUNT` to `*_BURN_MINTS`): group creation `MIN_GROUP_CREATION_BURN_MINTS = 42_069`, `burn_tokens_for_group` `MIN_GROUP_BURN_MINTS = 1`. The whole-token check (`amount % DECIMAL_FACTOR != 0` → `InvalidBurnAmount`) was removed, so fractional amounts are accepted. `InvalidBurnAmount` stays in the enum but is never returned, so later error codes are unchanged. `BurnAmountTooSmall` now has a generic message, and a failed check logs the actual and required amounts in units. Success logs report units instead of whole tokens.
+
+- **Why**: as supply grows the mint reward falls to as little as 1 unit (0.000001 token), so fixed whole-token thresholds would eventually be out of reach for users who earn by minting, and amounts that are not whole tokens could not be burned at all (memo-burn now accepts any amount of at least 1 unit). Up to and including 10M supply the reward is 1 token, so every minimum equals its previous value (mainnet supply was about 8.73M at the time of the change); above 10M the minimums fall with each curve step, down to `MINTS` units at the last step.
+- **Supply source**: the supply is read from the `mint` account, which is constrained to `AUTHORIZED_MINT_PUBKEY`, so a caller cannot pass a mint with a chosen supply.
+- **Boundary / front-running**: supply can change between building and executing a transaction. Mints raise it (the minimum can only fall); burns lower it, and a burn that moves supply back across a step boundary raises the reward, and so the minimum, by one step (relatively largest at the low end of a decade, e.g. 0.1 → 0.2 token per mint around 90M). Crossing a second boundary would take burning a whole step's width of supply (at least 10M tokens), so in practice the minimum can move by one step at most, and the only effect is that a transaction fails with `BurnAmountTooSmall` and rolls back; no tokens are lost. Burning more than the minimum is always accepted, so clients should compute the minimum from a fresh supply and may add a buffer (for example, one step).
+
 ## Revision Note (October 14, 2026): One Mint per Transaction
 
 memo-mint 0.3.0 allows exactly one mint per transaction (see MEMO-MINT-AUDIT.md, Revision 3) and requires its `MintState` account. `send_memo_to_group` has a new **last** account, `mint_state`: writable, typed as `memo_mint::MintState`, and checked against seeds `[b"mint_state"]` and its stored bump under the memo-mint program. It is passed through to the `process_mint` CPI, where memo-mint checks it again. Existing accounts keep their order and this app's error codes are unchanged.
@@ -76,7 +84,7 @@ This contract no longer limits the memo's maximum length, matching memo-mint and
 | `InvalidTagsFormat` | 6019 | 6018 |
 | `InvalidGroupIdFormat` | 6020 | 6019 |
 | `BurnAmountTooSmall` | 6021 | 6020 |
-| `InvalidBurnAmount` | 6022 | 6021 |
+| `InvalidBurnAmount` | 6022 | 6021 (no longer returned since October 16, 2026) |
 | `MissingBurnAmountField` | 6023 | 6022 |
 | `InvalidBurnAmountFormat` | 6024 | 6023 |
 | `BurnAmountMismatch` | 6025 | 6024 |
@@ -139,10 +147,11 @@ The memo-chat contract enables users to:
 - Dual network support (testnet/mainnet)
 
 ### Economic Model
-- **Group Creation**: Minimum 42,069 MEMO tokens burned
+- **Group Creation**: Minimum 42,069 × the current mint reward (42,069 MEMO while supply ≤ 10M; scales down with the emission curve)
 - **Send Message**: Free (rewards sender with minted tokens via memo-mint)
-- **Burn for Group**: Minimum 1 MEMO token burned (permissionless support)
-- **Maximum Burn**: 1 trillion MEMO tokens per transaction
+- **Burn for Group**: Minimum 1 × the current mint reward (1 MEMO while supply ≤ 10M; permissionless support)
+- **Fractional amounts**: allowed (no whole-token requirement)
+- **Maximum Burn**: 1 trillion MEMO tokens per burn instruction
 
 ---
 
@@ -315,7 +324,7 @@ The `burn_tokens_for_group` instruction is **intentionally permissionless withou
 - ✅ Other contracts (via CPI)
 
 **Security Analysis**:
-- ✅ Burn amount validated (minimum 1 token)
+- ✅ Burn amount validated (minimum 1 × the current mint reward)
 - ✅ Maximum burn enforced (1 trillion tokens)
 - ✅ Group existence validated (PDA must exist)
 - ✅ Memo validated and tracked
@@ -575,40 +584,43 @@ if chat_group.burned_amount == u64::MAX && old_amount < u64::MAX {
 
 #### Burn Amount Validation ✅
 
+**Minimum (shared helper)**:
+```rust
+pub fn min_burn_amount(mints: u64, supply: u64) -> u64 {
+    mints.saturating_mul(memo_mint::mint_amount_at_supply(supply))
+}
+```
+
 **Group Creation**:
 ```rust
-if burn_amount < MIN_GROUP_CREATION_BURN_AMOUNT {
+let min_required = min_burn_amount(MIN_GROUP_CREATION_BURN_MINTS, ctx.accounts.mint.supply);
+if burn_amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", burn_amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
 if burn_amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
-
-if burn_amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
-}
 ```
 
 **Burn for Group**:
 ```rust
-if amount < MIN_BURN_AMOUNT {
+let min_required = min_burn_amount(MIN_GROUP_BURN_MINTS, ctx.accounts.mint.supply);
+if amount < min_required {
+    msg!("Burn amount too small: {} units (minimum: {} units)", amount, min_required);
     return Err(ErrorCode::BurnAmountTooSmall.into());
 }
 
 if amount > MAX_BURN_PER_INSTRUCTION {
     return Err(ErrorCode::BurnAmountTooLarge.into());
 }
-
-if amount % DECIMAL_FACTOR != 0 {
-    return Err(ErrorCode::InvalidBurnAmount.into());
-}
 ```
 
 **Security Strengths**:
-- ✅ Minimum burn amount enforced
+- ✅ Minimum burn amount enforced, scaled with the current mint reward (supply read from the authorized mint before the burn; the multiply saturates)
 - ✅ Maximum burn amount prevents DoS
-- ✅ Integer token validation (must be whole tokens)
+- ✅ Fractional amounts accepted, so no balance is left unburnable; supply changes between signing and execution can raise the minimum by at most one curve step (see the October 16, 2026 revision note)
 
 #### Group Creation Data Validation ✅
 
@@ -1137,7 +1149,7 @@ pub enum ErrorCode {
     #[msg("Group ID mismatch: Group ID from memo does not match instruction parameter.")]
     GroupIdMismatch,
     
-    #[msg("Burn amount too small. Must burn at least 42069 tokens.")]
+    #[msg("Burn amount too small. Must burn at least the required multiple of the current mint reward.")]
     BurnAmountTooSmall,
     // ... 40+ error types total
 }
@@ -1318,9 +1330,9 @@ The `smoke-test-memo-chat` validates end-to-end functionality:
 | Feature | memo-project | memo-chat |
 |---------|--------------|-----------|
 | **Primary Purpose** | Project registry & funding | Chat groups & messaging |
-| **Creation Cost** | 42,069 tokens | 42,069 tokens |
-| **Update Cost** | 42,069 tokens (creator only) | N/A (no update operation) |
-| **Support Cost** | 420 tokens minimum | 1 token minimum |
+| **Creation Cost** | 42,069 × mint reward | 42,069 × mint reward |
+| **Update Cost** | 42,069 × mint reward (creator only) | N/A (no update operation) |
+| **Support Cost** | 420 × mint reward minimum | 1 × mint reward minimum |
 | **Message Rewards** | No | Yes (mint tokens via CPI) |
 | **Rate Limiting** | No | Yes (configurable per group) |
 | **Leaderboard** | Top 100 projects | Top 100 groups |
@@ -1337,7 +1349,7 @@ The `smoke-test-memo-chat` validates end-to-end functionality:
 - ✅ memo-chat integrates with memo-mint (rewards messages)
 - ✅ memo-chat has rate limiting (spam prevention)
 - ✅ memo-chat no update operation (immutable groups)
-- ✅ memo-chat lower support minimum (1 vs 420 tokens)
+- ✅ memo-chat lower support minimum (1 vs 420 × the mint reward; 1 vs 420 tokens while supply ≤ 10M)
 
 **Verdict**: Both contracts demonstrate consistent security practices with appropriate design variations for their different use cases.
 

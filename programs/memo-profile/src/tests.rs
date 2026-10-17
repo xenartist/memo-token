@@ -93,22 +93,24 @@ mod constants_tests {
 
     #[test]
     fn test_min_profile_creation_burn() {
-        assert_eq!(MIN_PROFILE_CREATION_BURN_TOKENS, 420, "Minimum profile creation burn should be 420 tokens");
-        assert_eq!(
-            MIN_PROFILE_CREATION_BURN_AMOUNT,
-            420 * DECIMAL_FACTOR,
-            "MIN_PROFILE_CREATION_BURN_AMOUNT should match tokens * decimal factor"
-        );
+        assert_eq!(MIN_PROFILE_CREATION_BURN_MINTS, 420, "Minimum profile creation burn should be 420 mint rewards");
     }
 
     #[test]
     fn test_min_profile_update_burn() {
-        assert_eq!(MIN_PROFILE_UPDATE_BURN_TOKENS, 420, "Minimum profile update burn should be 420 tokens");
-        assert_eq!(
-            MIN_PROFILE_UPDATE_BURN_AMOUNT,
-            420 * DECIMAL_FACTOR,
-            "MIN_PROFILE_UPDATE_BURN_AMOUNT should match tokens * decimal factor"
-        );
+        assert_eq!(MIN_PROFILE_UPDATE_BURN_MINTS, 420, "Minimum profile update burn should be 420 mint rewards");
+    }
+
+    #[test]
+    fn test_min_burn_amount_scales_with_mint_reward() {
+        // Up to 10M supply the mint reward is 1 token
+        assert_eq!(min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, 0), 420 * DECIMAL_FACTOR);
+        assert_eq!(min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR), 420 * DECIMAL_FACTOR);
+        // Above 10M: 0.9 token; above 100M: 0.09 token
+        assert_eq!(min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR + 1), 420 * 900_000);
+        assert_eq!(min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, 100_000_000 * DECIMAL_FACTOR + 1), 420 * 90_000);
+        // Last step and at the cap: 1 unit per mint
+        assert_eq!(min_burn_amount(MIN_PROFILE_CREATION_BURN_MINTS, memo_mint::MAX_SUPPLY_LAMPORTS), 420);
     }
 
     #[test]
@@ -752,7 +754,7 @@ mod parse_profile_creation_memo_tests {
     #[test]
     fn test_parse_valid_profile_creation_memo() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_CREATION_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_CREATION_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_profile_creation_memo(
             burn_amount,
             user,
@@ -773,7 +775,7 @@ mod parse_profile_creation_memo_tests {
     #[test]
     fn test_parse_profile_creation_memo_minimal() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_CREATION_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_CREATION_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_profile_creation_memo(
             burn_amount,
             user,
@@ -794,7 +796,7 @@ mod parse_profile_creation_memo_tests {
     #[test]
     fn test_parse_profile_creation_memo_wrong_burn_amount() {
         let user = Pubkey::new_unique();
-        let memo_burn_amount = MIN_PROFILE_CREATION_BURN_AMOUNT;
+        let memo_burn_amount = MIN_PROFILE_CREATION_BURN_MINTS * DECIMAL_FACTOR;
         let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
         
         let memo_data = create_profile_creation_memo(
@@ -813,7 +815,7 @@ mod parse_profile_creation_memo_tests {
     fn test_parse_profile_creation_memo_wrong_user() {
         let user1 = Pubkey::new_unique();
         let user2 = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_CREATION_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_CREATION_BURN_MINTS * DECIMAL_FACTOR;
         
         let memo_data = create_profile_creation_memo(
             burn_amount,
@@ -830,7 +832,7 @@ mod parse_profile_creation_memo_tests {
     #[test]
     fn test_parse_profile_creation_memo_invalid_base64() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_CREATION_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_CREATION_BURN_MINTS * DECIMAL_FACTOR;
         let invalid_base64 = b"not valid base64!!!".to_vec();
         
         let result = parse_profile_creation_borsh_memo(&invalid_base64, user, burn_amount);
@@ -845,7 +847,7 @@ mod parse_profile_update_memo_tests {
     #[test]
     fn test_parse_valid_profile_update_memo() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_UPDATE_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_profile_update_memo(
             burn_amount,
             user,
@@ -866,7 +868,7 @@ mod parse_profile_update_memo_tests {
     #[test]
     fn test_parse_profile_update_memo_no_changes() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_UPDATE_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_profile_update_memo(
             burn_amount,
             user,
@@ -887,7 +889,7 @@ mod parse_profile_update_memo_tests {
     #[test]
     fn test_parse_profile_update_memo_clear_about_me() {
         let user = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_UPDATE_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_profile_update_memo(
             burn_amount,
             user,
@@ -906,7 +908,7 @@ mod parse_profile_update_memo_tests {
     #[test]
     fn test_parse_profile_update_memo_wrong_burn_amount() {
         let user = Pubkey::new_unique();
-        let memo_burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
+        let memo_burn_amount = MIN_PROFILE_UPDATE_BURN_MINTS * DECIMAL_FACTOR;
         let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
         
         let memo_data = create_profile_update_memo(
@@ -925,7 +927,7 @@ mod parse_profile_update_memo_tests {
     fn test_parse_profile_update_memo_wrong_user() {
         let user1 = Pubkey::new_unique();
         let user2 = Pubkey::new_unique();
-        let burn_amount = MIN_PROFILE_UPDATE_BURN_AMOUNT;
+        let burn_amount = MIN_PROFILE_UPDATE_BURN_MINTS * DECIMAL_FACTOR;
         
         let memo_data = create_profile_update_memo(
             burn_amount,

@@ -13,9 +13,20 @@ mod tests {
 
     #[test]
     fn test_burn_amount_constants() {
-        assert_eq!(MIN_BLOG_BURN_TOKENS, 1);
-        assert_eq!(MIN_BLOG_BURN_AMOUNT, 1 * 1_000_000);
+        assert_eq!(MIN_BLOG_BURN_MINTS, 1);
         assert_eq!(MAX_BURN_PER_INSTRUCTION, 1_000_000_000_000 * 1_000_000);
+    }
+
+    #[test]
+    fn test_min_burn_amount_scales_with_mint_reward() {
+        // Up to 10M supply the mint reward is 1 token
+        assert_eq!(min_burn_amount(MIN_BLOG_BURN_MINTS, 0), 1 * DECIMAL_FACTOR);
+        assert_eq!(min_burn_amount(MIN_BLOG_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR), 1 * DECIMAL_FACTOR);
+        // Above 10M: 0.9 token; above 100M: 0.09 token
+        assert_eq!(min_burn_amount(MIN_BLOG_BURN_MINTS, 10_000_000 * DECIMAL_FACTOR + 1), 1 * 900_000);
+        assert_eq!(min_burn_amount(MIN_BLOG_BURN_MINTS, 100_000_000 * DECIMAL_FACTOR + 1), 1 * 90_000);
+        // Last step and at the cap: 1 unit per mint
+        assert_eq!(min_burn_amount(MIN_BLOG_BURN_MINTS, memo_mint::MAX_SUPPLY_LAMPORTS), 1);
     }
 
     #[test]
@@ -694,10 +705,9 @@ mod tests {
     }
 
     #[test]
-    fn test_min_burn_amount_is_one_token() {
-        // This is a key difference from memo-project (which requires 42,069 tokens)
-        assert_eq!(MIN_BLOG_BURN_TOKENS, 1);
-        assert_eq!(MIN_BLOG_BURN_AMOUNT, 1_000_000); // 1 token in units
+    fn test_min_burn_is_one_mint_reward() {
+        // This is a key difference from memo-project (which requires 42,069 mint rewards)
+        assert_eq!(MIN_BLOG_BURN_MINTS, 1);
     }
 
     #[test]
@@ -799,7 +809,7 @@ mod tests {
         
         let memo = BurnMemo {
             version: BURN_MEMO_VERSION,
-            burn_amount: MIN_BLOG_BURN_AMOUNT,
+            burn_amount: MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR,
             payload: b"test".to_vec(),
         };
         
@@ -948,7 +958,7 @@ mod tests {
     #[test]
     fn test_parse_valid_blog_creation_memo() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_creation_memo(
             burn_amount,
             creator,
@@ -969,7 +979,7 @@ mod tests {
     #[test]
     fn test_parse_blog_creation_memo_minimal() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_creation_memo(
             burn_amount,
             creator,
@@ -990,7 +1000,7 @@ mod tests {
     #[test]
     fn test_parse_blog_creation_memo_wrong_burn_amount() {
         let creator = Pubkey::new_unique();
-        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
         
         let memo_data = create_blog_creation_memo(
@@ -1009,7 +1019,7 @@ mod tests {
     fn test_parse_blog_creation_memo_wrong_user() {
         let creator1 = Pubkey::new_unique();
         let creator2 = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         
         let memo_data = create_blog_creation_memo(
             burn_amount,
@@ -1026,7 +1036,7 @@ mod tests {
     #[test]
     fn test_parse_blog_creation_memo_invalid_base64() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let invalid_base64 = b"not valid base64!!!".to_vec();
         
         let result = parse_blog_creation_borsh_memo(&invalid_base64, creator, burn_amount);
@@ -1040,7 +1050,7 @@ mod tests {
     #[test]
     fn test_parse_valid_blog_update_memo() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_update_memo(
             burn_amount,
             creator,
@@ -1061,7 +1071,7 @@ mod tests {
     #[test]
     fn test_parse_blog_update_memo_no_changes() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_update_memo(
             burn_amount,
             creator,
@@ -1082,7 +1092,7 @@ mod tests {
     #[test]
     fn test_parse_blog_update_memo_partial() {
         let creator = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_update_memo(
             burn_amount,
             creator,
@@ -1102,7 +1112,7 @@ mod tests {
     #[test]
     fn test_parse_blog_update_memo_wrong_burn_amount() {
         let creator = Pubkey::new_unique();
-        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
         
         let memo_data = create_blog_update_memo(
@@ -1121,7 +1131,7 @@ mod tests {
     fn test_parse_blog_update_memo_wrong_user() {
         let creator1 = Pubkey::new_unique();
         let creator2 = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         
         let memo_data = create_blog_update_memo(
             burn_amount,
@@ -1142,7 +1152,7 @@ mod tests {
     #[test]
     fn test_parse_valid_blog_burn_memo() {
         let burner = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_burn_memo(
             burn_amount,
             burner,
@@ -1156,7 +1166,7 @@ mod tests {
     #[test]
     fn test_parse_blog_burn_memo_empty_message() {
         let burner = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let memo_data = create_blog_burn_memo(
             burn_amount,
             burner,
@@ -1170,7 +1180,7 @@ mod tests {
     #[test]
     fn test_parse_blog_burn_memo_wrong_burn_amount() {
         let burner = Pubkey::new_unique();
-        let memo_burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let memo_burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let expected_burn_amount = memo_burn_amount + DECIMAL_FACTOR;
         
         let memo_data = create_blog_burn_memo(
@@ -1187,7 +1197,7 @@ mod tests {
     fn test_parse_blog_burn_memo_wrong_burner() {
         let burner1 = Pubkey::new_unique();
         let burner2 = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         
         let memo_data = create_blog_burn_memo(
             burn_amount,
@@ -1202,7 +1212,7 @@ mod tests {
     #[test]
     fn test_parse_blog_burn_memo_invalid_base64() {
         let burner = Pubkey::new_unique();
-        let burn_amount = MIN_BLOG_BURN_AMOUNT;
+        let burn_amount = MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR;
         let invalid_base64 = b"not valid base64!!!".to_vec();
         
         let result = parse_blog_burn_borsh_memo(&invalid_base64, burn_amount, burner);
@@ -1279,7 +1289,7 @@ mod tests {
         // Create memo with non-zero burn_amount (should be 0 for mint)
         let burn_memo = BurnMemo {
             version: BURN_MEMO_VERSION,
-            burn_amount: MIN_BLOG_BURN_AMOUNT, // Should be 0 for mint
+            burn_amount: MIN_BLOG_BURN_MINTS * DECIMAL_FACTOR, // Should be 0 for mint
             payload,
         };
         

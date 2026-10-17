@@ -445,13 +445,27 @@ deploy_to_env() {
     # Change to project root
     cd "${PROJECT_ROOT}"
     
+    # ASSUME_YES=1 (set by deploy-testnet.sh) answers the prompts below; never honored on a mainnet cluster
+    local AUTO_CONFIRM=0
+    if [ "${ASSUME_YES:-0}" = "1" ]; then
+        if [[ "${CLUSTER}" =~ "mainnet" ]]; then
+            print_warning "ASSUME_YES ignored: mainnet deployments always ask for confirmation"
+        else
+            AUTO_CONFIRM=1
+        fi
+    fi
+
     # Check git status
     if [ -n "$(git status --porcelain)" ]; then
         print_warning "You have uncommitted changes."
-        read -p "Continue anyway? (yes/no): " continue_dirty
-        if [ "$continue_dirty" != "yes" ]; then
-            print_info "Deployment cancelled."
-            exit 0
+        if [ "${AUTO_CONFIRM}" = "1" ]; then
+            print_info "Continuing (auto-confirmed)"
+        else
+            read -p "Continue anyway? (yes/no): " continue_dirty
+            if [ "$continue_dirty" != "yes" ]; then
+                print_info "Deployment cancelled."
+                exit 0
+            fi
         fi
     fi
     
@@ -461,10 +475,14 @@ deploy_to_env() {
     echo "  Cluster: ${CLUSTER}"
     echo "  Programs: ${SELECTED_PROGRAMS[*]}"
     echo ""
-    read -p "Proceed with deployment? (yes/no): " confirm
-    if [ "$confirm" != "yes" ]; then
-        print_info "Deployment cancelled."
-        exit 0
+    if [ "${AUTO_CONFIRM}" = "1" ]; then
+        print_info "Proceeding (auto-confirmed)"
+    else
+        read -p "Proceed with deployment? (yes/no): " confirm
+        if [ "$confirm" != "yes" ]; then
+            print_info "Deployment cancelled."
+            exit 0
+        fi
     fi
     
     # Step 1: Verify configuration

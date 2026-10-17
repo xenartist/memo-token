@@ -16,7 +16,7 @@ use chrono::Utc;
 
 // Import token-2022 program ID
 use spl_token_2022::id as token_2022_id;
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount};
 
 // Borsh memo structures (must match the contract)
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -61,9 +61,9 @@ const BURN_MEMO_VERSION: u8 = 1;
 const PROJECT_CREATION_DATA_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "project";
 const EXPECTED_OPERATION: &str = "create_project";
-const BURN_AMOUNT_TOKENS: u64 = 42069; // Minimum burn for project creation
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const REQUIRED_TOKENS_FOR_TEST: u64 = 50000; // Need at least 50000 tokens for test
+// Project creation burns at least this many times the current mint reward
+// (mirrors MIN_PROJECT_CREATION_BURN_MINTS in memo-project)
+const MIN_PROJECT_CREATION_BURN_MINTS: u64 = 42069;
 
 /// Get token balance in raw units
 fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
@@ -78,12 +78,6 @@ fn get_token_balance_raw(client: &RpcClient, token_account: &Pubkey) -> u64 {
         },
         Err(_) => 0,
     }
-}
-
-/// Format token amount for display
-fn format_token_amount(raw_amount: u64) -> String {
-    let tokens = raw_amount as f64 / DECIMAL_FACTOR as f64;
-    format!("{:.6}", tokens)
 }
 
 /// Generate exactly 69-byte ASCII memo for mint operations
@@ -244,8 +238,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
     
-    let burn_amount = BURN_AMOUNT_TOKENS * DECIMAL_FACTOR;
-    
     // Connect to network
     let rpc_url = get_rpc_url();
     println!("─────────────────────────────────────────────────────────────────");
@@ -257,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load wallet
     let payer = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
     
     println!("Payer:          {}", payer.pubkey());
@@ -340,8 +332,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_program_id = get_program_id("memo_mint")
         .expect("Failed to get memo_mint program ID");
     
+    // Burn the current minimum: 42,069 x the current mint reward (depends on token supply)
+    let burn_amount = fetch_min_burn_amount(&client, &mint, MIN_PROJECT_CREATION_BURN_MINTS)?;
+    
     // Calculate required balance
-    let required_balance = REQUIRED_TOKENS_FOR_TEST * DECIMAL_FACTOR;
+    let required_balance = burn_amount;
     
     // Ensure sufficient balance before starting tests
     ensure_sufficient_balance(
@@ -370,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Image:         {}", project_image);
     println!("Website:       {}", project_website);
     println!("Tags:          {:?}", project_tags);
-    println!("Burning:       {} tokens ({} units)", BURN_AMOUNT_TOKENS, burn_amount);
+    println!("Burning:       {} tokens ({} units, {} x mint reward)", format_token_amount(burn_amount), burn_amount, MIN_PROJECT_CREATION_BURN_MINTS);
     
     create_project(
         &client,
@@ -439,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Project creation verification");
     println!();
     println!("Total project operations: 2 (create + verify)");
-    println!("Total tokens burned: {} tokens", BURN_AMOUNT_TOKENS);
+    println!("Total tokens burned: {} tokens", format_token_amount(burn_amount));
     println!();
 
     Ok(())

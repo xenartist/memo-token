@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn check_own_profile() -> Result<(), Box<dyn std::error::Error>> {
     // Constants
     let rpc_url = get_rpc_url();
-    let wallet_path = std::env::var("WALLET_PATH").unwrap_or_else(|_| {
+    let wallet_path = std::env::var("MEMO_WALLET").or_else(|_| std::env::var("WALLET_PATH")).unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME environment variable not set");
         format!("{}/.config/solana/id.json", home)
     });

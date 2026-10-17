@@ -41,11 +41,10 @@ const POST_BURN_DATA_VERSION: u8 = 1;
 const BURN_MEMO_VERSION: u8 = 1;
 const EXPECTED_CATEGORY: &str = "forum";
 const EXPECTED_OPERATION: &str = "burn_for_post";
-const DECIMAL_FACTOR: u64 = 1_000_000;
-const MIN_POST_BURN_TOKENS: u64 = 1;
-const MIN_POST_BURN_AMOUNT: u64 = MIN_POST_BURN_TOKENS * DECIMAL_FACTOR;
+const MIN_POST_BURN_MINTS: u64 = 1; // Mirrors MIN_POST_BURN_MINTS in the contract: 1x the current mint reward
 
-use memo_token_client::{get_rpc_url, get_program_id, get_token_mint};
+use memo_token_client::{get_rpc_url, get_program_id, get_token_mint, fetch_min_burn_amount, format_token_amount, parse_token_amount};
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== MEMO-FORUM BURN FOR POST TEST ===");
@@ -57,10 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     
     if args.len() < 3 {
-        println!("Usage: {} <post_id> <burn_amount_tokens> [message]", args[0]);
+        println!("Usage: {} <post_id> <burn_amount_tokens|min> [message]", args[0]);
+        println!("  burn_amount_tokens may be fractional (up to 6 decimals); \"min\" uses the current minimum");
         println!();
         println!("Examples:");
-        println!("  {} 12345 1", args[0]);
+        println!("  {} 12345 min", args[0]);
+        println!("  {} 12345 1.5", args[0]);
         println!("  {} 12345 100 \"Great post! I agree!\"", args[0]);
         return Ok(());
     }
@@ -68,20 +69,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let post_id = args[1].parse::<u64>()
         .map_err(|_| format!("Invalid post_id: {}", args[1]))?;
     
-    let burn_amount_tokens = args[2].parse::<u64>()
-        .map_err(|_| format!("Invalid burn_amount: {}", args[2]))?;
-    
     let message = if args.len() > 3 {
         args[3].clone()
     } else {
         String::new()
     };
-
-    if burn_amount_tokens < MIN_POST_BURN_TOKENS {
-        return Err(format!("Burn amount too small. Minimum: {} token(s)", MIN_POST_BURN_TOKENS).into());
-    }
-
-    let burn_amount = burn_amount_tokens * DECIMAL_FACTOR;
 
     // Connect to network
     let rpc_url = get_rpc_url();
@@ -89,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load user wallet
     let user = read_keypair_file(
-        shellexpand::tilde("~/.config/solana/id.json").to_string()
+        shellexpand::tilde(&std::env::var("MEMO_WALLET").unwrap_or_else(|_| "~/.config/solana/id.json".to_string())).to_string()
     ).expect("Failed to read keypair file");
 
     // Program addresses
@@ -97,10 +89,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let memo_burn_program_id = get_program_id("memo_burn").expect("Failed to get memo_burn program ID");
     let mint_address = get_token_mint("memo_token").expect("Failed to get memo_token mint address");
 
+    // Minimum burn is MIN_POST_BURN_MINTS x the current mint reward (depends on supply)
+    let min_burn_amount = fetch_min_burn_amount(&client, &mint_address, MIN_POST_BURN_MINTS)?;
+    let burn_amount = if args[2] == "min" {
+        min_burn_amount
+    } else {
+        parse_token_amount(&args[2])
+            .ok_or_else(|| format!("Invalid burn_amount: {} (up to 6 decimals)", args[2]))?
+    };
+
+    if burn_amount < min_burn_amount {
+        return Err(format!("Burn amount too small. Minimum: {} token(s)", format_token_amount(min_burn_amount)).into());
+    }
+
     println!("Network: {}", get_rpc_url());
     println!("User: {}", user.pubkey());
     println!("Post ID: {}", post_id);
-    println!("Burn amount: {} token(s)", burn_amount_tokens);
+    println!("Burn amount: {} token(s) (minimum: {})", format_token_amount(burn_amount), format_token_amount(min_burn_amount));
     println!("Message: {}", if message.is_empty() { "(none)" } else { &message });
     println!();
 
@@ -169,12 +174,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check token balance
     match client.get_token_account(&user_token_account) {
         Ok(Some(token_account)) => {
-            let balance = token_account.token_amount.ui_amount.unwrap_or(0.0);
-            println!("User token balance: {} tokens", balance);
+            let balance: u64 = token_account.token_amount.amount.parse().unwrap_or(0);
+            println!("User token balance: {} tokens", format_token_amount(balance));
             
-            if balance < burn_amount_tokens as f64 {
+            if balance < burn_amount {
                 return Err(format!("Insufficient token balance. Need {} tokens, have {}", 
-                                 burn_amount_tokens, balance).into());
+                                 format_token_amount(burn_amount), format_token_amount(balance)).into());
             }
         },
         Ok(None) => {
@@ -276,7 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("🎉 BURN FOR POST SUCCESSFUL!");
             println!("Transaction signature: {}", signature);
             println!();
-            println!("✅ Successfully burned {} tokens for post {}!", burn_amount_tokens, post_id);
+            println!("✅ Successfully burned {} tokens for post {}!", format_token_amount(burn_amount), post_id);
             println!("   User: {}", user.pubkey());
         },
         Err(err) => {

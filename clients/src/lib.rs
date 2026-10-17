@@ -17,7 +17,7 @@ pub use config::{
     read_authority_keypair,
 };
 
-pub use mint_curve::{expected_mint_amount, validate_mint_amount};
+pub use mint_curve::{expected_mint_amount, validate_mint_amount, min_burn_amount, fetch_min_burn_amount, format_token_amount, parse_token_amount};
 
 /// PDA of memo-mint's one-mint-per-transaction state (seeds = [b"mint_state"]) for the network
 /// configured in Anchor.toml. process_mint, process_mint_to, and every app instruction that mints
