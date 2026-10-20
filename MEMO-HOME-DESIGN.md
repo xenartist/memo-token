@@ -613,13 +613,14 @@ Prototype program `home-proto` (testnet `D3kCMRKjxQJ4y3xe74SqiFcvnFGt1MMvcsMMQTz
 | Vault PDA (funded with lamports by the Owner) inits its `UserGlobalBurnStats` and calls `process_burn` via `invoke_signed` | ✓ stats recorded under the Vault PDA |
 | Vault burn by a non-owner | rejected |
 
-## Appendix B. Wallet Test Results (X1 testnet, 2026-10-18 and 2026-10-19)
+## Appendix B. Wallet Test Results (X1 testnet, 2026-10-18 to 2026-10-20)
 
 | Asset type | X1 wallet (iOS) | X1 wallet (web) | Backpack |
 |---|---|---|---|
 | Metaplex Core | display ✓ transfer ✓ | ✓ ✓ | ✓ ✓ |
 | Core Asset in a Collection | ✓ ✓ (wallet passes the Collection account) | not tested | not tested |
 | Core Asset in a Collection with a Burn Oracle | ✓ ✓; the wallet has no burn option | not tested | not tested |
+| **memo-home v1** (deployed program; PDA Collection and Asset, Burn Guard, MasterEdition/Royalties absent, metadata JSON with image) | ✓ ✓ (name, image, Collection shown); no burn option | ✓ ✓; no burn option | ✓ ✓; no burn option |
 | SPL Token + Token Metadata | ✓ ✓ | ✓ ✓ | ✓ ✓ |
 | Token-2022 + Token Metadata | ✓ ✓ | ✓ ✓ | not tested |
 | Token-2022 metadata extension only | address only, transfer ✓ | address only, transfer ✓ | not tested |
@@ -630,3 +631,4 @@ Notes:
 - The X1 wallet puts a token in the NFT tab when decimals = 0 and the holder's balance = 1.
 - Metaplex Token Metadata rejects mints with the TransferHook extension.
 - A newly received Asset may need a wallet restart to appear.
+- memo-home v1 test (2026-10-20): Collection "HOME Wallet Test" `6yejSB4u…`, Assets HOME #1 (web) `4ivUQtZM…`, #2 (iOS) `22sijHuk…`, #3 (Backpack) `5MUkFmuC…`, each with 1 MEMO mined into its Vault. Each wallet displayed its Asset and transferred it; after the transfers the new owner could withdraw from each Vault (nonce 1) and the previous owner was rejected with `NotOwner`.

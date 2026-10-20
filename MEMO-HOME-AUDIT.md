@@ -5,7 +5,7 @@
 **Contract**: memo-home (`programs/memo-home`)
 **Audit Dates**: October 20, 2026 (first review of v1); October 20, 2026 (second, exhaustive review and fixes, this report)
 **Auditor**: Pre-production security review. The second review was a multi-agent audit: 11 review dimensions (custody, mining, Core parsing, Core CPI and direct-Core paths, Anchor accounts, Token-2022 extensions, griefing, app composability, test adequacy, docs and deployment, free-form attacker), two adversarial verifiers per finding (one trying to refute it, one assessing impact with a reproduction), and two follow-up rounds from a completeness critic. Reproductions ran in LiteSVM against copies of the X1 mainnet Metaplex Core bytecode; every fix is covered by the local-validator regression suite.
-**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (not yet deployed)
+**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (testnet deployed 2026-10-20; mainnet not yet deployed)
 **Language**: Rust (Anchor 0.32.1)
 **Network**: X1 (SVM-based)
 **Design reference**: `MEMO-HOME-DESIGN.md`
@@ -187,7 +187,7 @@ Offers, bids and pool trades are filled by a transaction the seller builds (F60)
 | F43 | First-burn lamport handling untested | **Fixed**: H50 (exact top-up), H55 (funded Vault) |
 | F44 | Backup checks and error codes never pinned | **Fixed**: H27c, H34c, H54 |
 | F45 | URI path, empty-argument checks, Config fields, events and on-chain rounding unexercised | **Fixed**: H03, H11, H15b, H15c, H23b, H30b, H102d |
-| F46 | The wallet claim in §2 exceeded Appendix B; the production layout was never wallet-tested | **Checklist**: wallet tests with production Collections |
+| F46 | The wallet claim in §2 exceeded Appendix B; the production layout was never wallet-tested | **Done**: the deployed program's Assets tested in the X1 wallet (iOS, web) and Backpack (Appendix B) |
 | F47 | The cost table called 0.00375 XNT "rent" (it includes Core's 0.0015 XNT fee) | **Corrected** (design §3, §7) |
 | F48 | (disputed) Stale numbers | **Corrected** |
 | F49 | Minor wording mismatches | **Corrected** |
@@ -276,8 +276,8 @@ Tested builds (X1 mainnet, dumped 2026-10-20):
 ### 🔴 Required before testnet deployment
 - [x] Real program keypairs per network (`keys.sh new <env> programs memo_home`, backed up offline); `declare_id!` and `Anchor.toml` set to the testnet / mainnet IDs; placeholder key deleted (F25).
 - [x] Deploy tooling (F05, F28): memo_home is in `setup-keypairs.sh` and `deploy-common.sh` (after memo_burn); the mint check accepts `MEMO_MINT = memo_mint::AUTHORIZED_MINT_PUBKEY` with the mainnet cascade; the deploy runs the idempotent `admin-init-burn-guard` client and checks the IDL authority after a first deploy; `verify-deployment` checks the Burn Guard; `smoke-test-memo-home` covers the main path (verified on the local validator).
-- [ ] Deploy (the script initializes the Burn Guard and prints the IDL authority); if the IDL authority is not the deploy admin, redeploy with a new program key (F15). Then run `verify-deployment` and `run-smoke-tests.sh memo-home`.
-- [ ] Re-run the wallet tests from design Appendix B with production Collections and PDA addresses: display, transfer, burn rejected, and the iOS, web and Backpack wallets (F46).
+- [x] Deployed to testnet 2026-10-20 (slot 196824766, commit b383351e): IDL authority is the deploy admin, Burn Guard `2YdkLa2r…` initialized, `verify-deployment` passes for memo_home and the Burn Guard, `smoke-test-memo-home` passes on testnet.
+- [x] Wallet tests with production Collections and PDA addresses (2026-10-20, design Appendix B): X1 wallet iOS and web and Backpack display and transfer memo-home Assets; none offers a burn; Vault control follows the transfer (F46).
 
 ### 🔴 Required before mainnet
 - [ ] Verify the deployed bytecode against a reproducible `--features mainnet` build.
