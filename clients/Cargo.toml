@@ -198,6 +198,14 @@ name = "smoke-test-memo-forum"
 path = "smoke-test/src/smoke-test-memo-forum.rs"
 
 [[bin]]
+name = "smoke-test-memo-home"
+path = "smoke-test/src/smoke-test-memo-home.rs"
+
+[[bin]]
+name = "admin-init-burn-guard"
+path = "home/src/admin-init-burn-guard.rs"
+
+[[bin]]
 name = "verify-deployment"
 path = "smoke-test/src/verify-deployment.rs"
 

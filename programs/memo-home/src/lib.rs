@@ -21,14 +21,12 @@ use anchor_spl::associated_token::{self, get_associated_token_address_with_progr
 use anchor_spl::token_2022::Token2022;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 
-// Program ID - different for testnet and mainnet.
-// Placeholder IDs for development; replace with the keys from scripts/setup-keypairs.sh
-// (and Anchor.toml [programs.*]) before the first deployment.
+// Program ID - different for testnet and mainnet
 #[cfg(feature = "mainnet")]
-declare_id!("35sNMzUreT7Gyk4r1gyVrxvZTNJPEvDo4Y5RBy9JhG2i");
+declare_id!("ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs");
 
 #[cfg(not(feature = "mainnet"))]
-declare_id!("35sNMzUreT7Gyk4r1gyVrxvZTNJPEvDo4Y5RBy9JhG2i");
+declare_id!("J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv");
 
 /// Metaplex Core program (same address on X1 testnet and mainnet)
 pub const CORE_PROGRAM_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");

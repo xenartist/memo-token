@@ -5,7 +5,7 @@
 **Contract**: memo-home (`programs/memo-home`)
 **Audit Dates**: October 20, 2026 (first review of v1); October 20, 2026 (second, exhaustive review and fixes, this report)
 **Auditor**: Pre-production security review. The second review was a multi-agent audit: 11 review dimensions (custody, mining, Core parsing, Core CPI and direct-Core paths, Anchor accounts, Token-2022 extensions, griefing, app composability, test adequacy, docs and deployment, free-form attacker), two adversarial verifiers per finding (one trying to refute it, one assessing impact with a reproduction), and two follow-up rounds from a completeness critic. Reproductions ran in LiteSVM against copies of the X1 mainnet Metaplex Core bytecode; every fix is covered by the local-validator regression suite.
-**Version**: 0.1.0 (pre-deployment), 11 instructions. Development program ID `35sNMzUreT7Gyk4r1gyVrxvZTNJPEvDo4Y5RBy9JhG2i` for both networks (placeholder, not deployed)
+**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (not yet deployed)
 **Language**: Rust (Anchor 0.32.1)
 **Network**: X1 (SVM-based)
 **Design reference**: `MEMO-HOME-DESIGN.md`
@@ -134,7 +134,7 @@ Offers, bids and pool trades are filled by a transaction the seller builds (F60)
 | ID | Finding | Resolution |
 |---|---|---|
 | F03 | `create_collection` recorded any address as Authority without its signature, so an app's PDA could be named in Collections it never created | **Fixed**: the Authority signs (an app PDA by CPI); H09, H120, H131 |
-| F05 | `deploy-common.sh` expects `AUTHORIZED_MINT_PUBKEY` in every program, so a deploy that includes memo_home aborts | **Checklist**: memo_home takes the mint from memo-mint; handle it when memo_home is added to the deploy tooling |
+| F05 | `deploy-common.sh` expects `AUTHORIZED_MINT_PUBKEY` in every program, so a deploy that includes memo_home aborts | **Fixed**: memo_home's mint is checked as `memo_mint::AUTHORIZED_MINT_PUBKEY` with the mainnet cascade |
 | F07 | A destination or share recipient that requires incoming memos (Token-2022 MemoTransfer) makes `withdraw` / `mine` fail | **Documented** (design §5.9): unsupported; apps fall back to share 0 |
 | F08 | `create_asset` with owner = Core program ID gave the Asset to the payer | **Fixed**: `InvalidOwner`; H11b |
 | F10 | Transfer-hook mints whose extra accounts need a signer can never leave a Vault (forwarded accounts are non-signers by design) | **Documented** (§5.9) |
@@ -145,7 +145,7 @@ Offers, bids and pool trades are filled by a transaction the seller builds (F60)
 | F20 | Rejections enforced by Core accepted any error and had no positive controls | **Fixed**: exact Core codes (`InvalidAuthority` 9, `NoApprovals` 26, `MissingExternalPluginAdapterAccount` 34) in H14–H14c, H40–H40c, H81–H81d; controls H14d, H14e, H19, H19b |
 | F25 | The placeholder program ID is the key of a plaintext build keypair, shared by both networks | **Checklist**: real per-network keys from `keys.sh` |
 | F27 | Helper-crate docs were incomplete; integration requirements (owner-checked Config, `mainnet` cascade) were missing | **Fixed**: design §4.4 helper table and "Integrating" |
-| F28 | The deployment checklist missed tooling a memo_home deploy needs | **Checklist** (below) |
+| F28 | The deployment checklist missed tooling a memo_home deploy needs | **Fixed**: deploy tooling, Burn Guard client, verification and smoke test (checklist) |
 | F55 | A wallet owner's signature on any program can empty all their Vaults by CPI, and wallet previews do not show it | **Documented** (design §5.8) with the front-end rule. A top-level-only owner check was rejected: it would not stop a malicious program from transferring the Asset itself, and it would break program-owned Assets |
 | F57 | No lock order between memo-home and memo-mint/memo-burn | **Checklist**: lock memo-mint and memo-burn before memo-home (design §5.1 invariant 6) |
 | F58 | (disputed) The memo-mint/memo-burn versions memo-home depends on are not pinned by the deploy tooling | **Checklist**: compare their ProgramData hashes before deploying or locking memo-home |
@@ -274,12 +274,9 @@ Tested builds (X1 mainnet, dumped 2026-10-20):
 ## Pre-Deployment Checklist
 
 ### 🔴 Required before testnet deployment
-- [ ] Generate real program keypairs per network (`keys.sh new testnet programs memo_home`, `keys.sh new mainnet programs memo_home`, or `setup-keypairs.sh` with memo_home added to `PROGRAMS`). Replace both `declare_id!` values and the two `Anchor.toml` entries with different IDs, and delete `target/deploy/memo_home-keypair.json` (the placeholder key) (F25).
-- [ ] Deploy tooling (F05, F28):
-  - add memo_home to `scripts/deploy-common.sh` (`ALL_PROGRAMS` after memo_burn, and the name mappings);
-  - make the mint check accept `MEMO_MINT = memo_mint::AUTHORIZED_MINT_PUBKEY` with the `memo-mint/mainnet` cascade;
-  - add an idempotent `init-burn-guard` client run after the deploy, a Burn Guard content check in verify-deployment, and a smoke test.
-- [ ] Deploy, then call `init_burn_guard` once. Check the IDL account's authority right after the first deploy (`anchor idl authority <id>`); if someone else created it, redeploy with a new program key (F15).
+- [x] Real program keypairs per network (`keys.sh new <env> programs memo_home`, backed up offline); `declare_id!` and `Anchor.toml` set to the testnet / mainnet IDs; placeholder key deleted (F25).
+- [x] Deploy tooling (F05, F28): memo_home is in `setup-keypairs.sh` and `deploy-common.sh` (after memo_burn); the mint check accepts `MEMO_MINT = memo_mint::AUTHORIZED_MINT_PUBKEY` with the mainnet cascade; the deploy runs the idempotent `admin-init-burn-guard` client and checks the IDL authority after a first deploy; `verify-deployment` checks the Burn Guard; `smoke-test-memo-home` covers the main path (verified on the local validator).
+- [ ] Deploy (the script initializes the Burn Guard and prints the IDL authority); if the IDL authority is not the deploy admin, redeploy with a new program key (F15). Then run `verify-deployment` and `run-smoke-tests.sh memo-home`.
 - [ ] Re-run the wallet tests from design Appendix B with production Collections and PDA addresses: display, transfer, burn rejected, and the iOS, web and Backpack wallets (F46).
 
 ### 🔴 Required before mainnet

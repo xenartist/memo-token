@@ -11,7 +11,7 @@ This document describes how to deploy the MEMO Token project to the production e
 ~/.config/solana/memo-token/
 ├── testnet/
 │   ├── authority/   deploy_admin, memo_token_mint
-│   └── programs/    memo_mint, memo_burn, memo_chat, memo_profile, memo_project, memo_blog, memo_forum
+│   └── programs/    memo_mint, memo_burn, memo_home, memo_chat, memo_profile, memo_project, memo_blog, memo_forum
 └── mainnet/
     ├── authority/   (same names)
     └── programs/    (same names; new programs are added here too)
@@ -126,9 +126,9 @@ Old clients and old programs do not pass these accounts, so their mint/burn call
 New clients also work against the old programs (Anchor ignores extra trailing accounts). So:
 
 1. **Release the updated client (memo-app) first.** It works with both old and new programs.
-2. **Upgrade all 7 programs in one run**: `./scripts/deploy-mainnet.sh` with no arguments.
+2. **Upgrade all 8 programs in one run**: `./scripts/deploy-mainnet.sh` with no arguments.
    The script builds everything first, then upgrades in order:
-   `memo_mint` → `memo_burn` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
+   `memo_mint` → `memo_burn` → `memo_home` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
    Between the `memo_mint` / `memo_burn` upgrade and the upgrade of the dependent programs,
    mint/burn through those dependent programs fails. Do not stop halfway.
    **Never upgrade only the apps.** They depend on the current memo-mint / memo-burn (for example, fractional
@@ -224,7 +224,7 @@ After generating mainnet program keypairs, get their public keys:
 cd ~/memo-token
 
 # Get all program IDs
-for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
+for program in memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum; do
   echo "$program: $(cat ~/.config/solana/memo-token/mainnet/programs/${program}-keypair.pub)"
 done
 ```
@@ -344,8 +344,8 @@ After successful deployment, verify on block explorer:
 
 ```bash
 # Check each program
-for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
-  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
+for program in memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(awk -v p="$program" '/^\[programs.mainnet\]/{f=1;next} /^\[/{f=0} f && $1==p {gsub(/"/,"",$3); print $3}' Anchor.toml)
   echo "✅ $program: https://rpc.testnet.x1.xyz/address/$PROGRAM_ID"
 done
 ```
@@ -391,8 +391,8 @@ After successful deployment, verify on block explorer:
 
 ```bash
 # Check each program
-for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
-  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
+for program in memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(awk -v p="$program" '/^\[programs.mainnet\]/{f=1;next} /^\[/{f=0} f && $1==p {gsub(/"/,"",$3); print $3}' Anchor.toml)
   echo "✅ $program: https://rpc.mainnet.x1.xyz/address/$PROGRAM_ID"
 done
 ```
@@ -499,8 +499,8 @@ For maximum security, consider transferring upgrade authority:
 
 **Option 1: Set to Immutable** (No future upgrades)
 ```bash
-for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
-  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
+for program in memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(awk -v p="$program" '/^\[programs.mainnet\]/{f=1;next} /^\[/{f=0} f && $1==p {gsub(/"/,"",$3); print $3}' Anchor.toml)
   solana program set-upgrade-authority $PROGRAM_ID --final --url $X1_RPC_URL
   echo "✅ $program set to immutable"
 done
@@ -510,8 +510,8 @@ done
 ```bash
 MULTISIG_ADDRESS="YOUR_MULTISIG_ADDRESS"
 
-for program in memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum; do
-  PROGRAM_ID=$(grep -A8 '^\[programs.mainnet\]' Anchor.toml | grep "^$program " | cut -d'"' -f2)
+for program in memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum; do
+  PROGRAM_ID=$(awk -v p="$program" '/^\[programs.mainnet\]/{f=1;next} /^\[/{f=0} f && $1==p {gsub(/"/,"",$3); print $3}' Anchor.toml)
   solana program set-upgrade-authority $PROGRAM_ID \
     --new-upgrade-authority $MULTISIG_ADDRESS \
     --url $X1_RPC_URL

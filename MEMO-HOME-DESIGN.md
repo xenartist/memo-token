@@ -2,7 +2,7 @@
 
 **HOME Of Memories Engraved**: a base-layer program that gives every application the same NFT identity and NFT-bound custody, built on the MEMO economy.
 
-Status: v1 implemented in `programs/memo-home` (development program ID, not deployed). Core mechanics verified on testnet with a prototype (Appendix A); the implementation, revised after the second audit (MEMO-HOME-AUDIT.md), passes 41 unit tests and 160 local-validator regression cases against X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds (`clients/regression/src/regression-memo-home.rs`). Last updated 2026-10-20.
+Status: v1 implemented in `programs/memo-home` (testnet `J1pxwy8V…`, mainnet `ArrrsGh5…`, not yet deployed). Core mechanics verified on testnet with a prototype (Appendix A); the implementation, revised after the second audit (MEMO-HOME-AUDIT.md), passes 41 unit tests and 160 local-validator regression cases against X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds (`clients/regression/src/regression-memo-home.rs`). Last updated 2026-10-20.
 
 ---
 

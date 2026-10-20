@@ -40,12 +40,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use memo_token_client::{get_authority_keypair_path, get_program_id, get_rpc_url, get_token_mint};
 
-const PROGRAMS: [&str; 7] = [
-    "memo_mint", "memo_burn", "memo_chat", "memo_profile", "memo_project", "memo_blog", "memo_forum",
+const PROGRAMS: [&str; 8] = [
+    "memo_mint", "memo_burn", "memo_home", "memo_chat", "memo_profile", "memo_project", "memo_blog", "memo_forum",
 ];
 
 const MINT_STATE_SPACE: usize = 8 + 32 + 8 + 1 + 64;
 const GLOBAL_BURN_STATS_SPACE: usize = 8 + 16 + 8 + 8 + 1 + 64;
+const BURN_GUARD_SPACE: usize = 8 + 5 + 1;
 const USER_GLOBAL_BURN_STATS_SPACE: usize = 8 + 32 + 8 + 8 + 8 + 1;
 
 const ONE_MINT_PER_TRANSACTION: u32 = 6008; // memo-mint ErrorCode::OneMintPerTransaction
@@ -171,6 +172,14 @@ fn run() -> Result<Report, Box<dyn std::error::Error>> {
         let total = u128::from_le_bytes(data[8..24].try_into().unwrap());
         let count = u64::from_le_bytes(data[24..32].try_into().unwrap());
         println!("        total_burned: {} MEMO, burn_count: {}", total as f64 / DECIMAL_FACTOR as f64, count);
+    }
+    let memo_home_id = get_program_id("memo_home")?;
+    let (burn_guard, _) = Pubkey::find_program_address(&[b"burn_guard"], &memo_home_id);
+    if let Some(data) = check_state_account(&client, &mut report, "burn_guard", &burn_guard, &memo_home_id, "BurnGuard", BURN_GUARD_SPACE, "create_collection") {
+        report.check(
+            data[8..13] == [1, 2, 2, 1, 2],
+            format!("burn_guard content is V1 {{ create Pass, transfer Pass, burn Rejected, update Pass }} (on-chain {:?})", &data[8..13]),
+        );
     }
 
     // 4. Simulations (never sent)

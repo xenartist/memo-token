@@ -24,6 +24,7 @@ BOLD='\033[1m'
 AVAILABLE_SMOKE_TESTS=(
     "memo-mint"
     "memo-burn"
+    "memo-home"
     "memo-profile"
     "memo-project"
     "memo-chat"
@@ -81,6 +82,7 @@ ${BOLD}OPTIONS:${NC}
 ${BOLD}TESTS:${NC}
     memo-mint                Run memo-mint smoke test
     memo-burn                Run memo-burn smoke test (includes init + burn + verify)
+    memo-home                Run memo-home smoke test (Collection, Asset, mine, withdraw, Vault burn)
     memo-profile             Run memo-profile smoke test (includes create + update + delete)
     memo-project             Run memo-project smoke test (includes create + verify)
     memo-blog                Run memo-blog smoke test (includes create + update + burn + mint)

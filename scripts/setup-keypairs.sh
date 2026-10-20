@@ -28,7 +28,7 @@ if [ "${ENV}" != "testnet" ] && [ "${ENV}" != "mainnet" ]; then
     exit 1
 fi
 
-PROGRAMS="memo_mint memo_burn memo_chat memo_profile memo_project memo_blog memo_forum"
+PROGRAMS="memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum"
 
 # Plaintext keypairs from the old layout should be migrated, not re-imported one by one
 if ls "${KEYS_BASE}/authority"/*.json "${KEYS_BASE}/programs"/*/*.json >/dev/null 2>&1; then

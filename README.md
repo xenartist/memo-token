@@ -6,6 +6,7 @@ X1
 
 This project consists of:
 - Two core programs on X1 (Solana-compatible): **memo-mint** (memo-based minting along a supply curve, PDA mint authority) and **memo-burn** (memo-based burning with per-user and global burn statistics)
+- **memo-home**, the base-layer NFT program: Metaplex Core Collections and Assets, a Vault per Asset that only its owner can empty, and a bounded share of mined MEMO for apps (`MEMO-HOME-DESIGN.md`)
 - Five app programs built on them: memo-chat, memo-profile, memo-project, memo-blog and memo-forum
 - Client tools for testing, administration and deployment checks (`clients/`)
 
@@ -109,7 +110,7 @@ curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/solana-d
 
 ## Setup
 
-The workspace contains 7 programs under `programs/` (memo-mint, memo-burn, memo-chat, memo-profile, memo-project, memo-blog, memo-forum) and one client crate under `clients/`. Program IDs, token mints, RPC and wallet for both networks are configured in `Anchor.toml`, which the clients read as the single source of truth.
+The workspace contains 8 programs under `programs/` (memo-mint, memo-burn, memo-home, memo-chat, memo-profile, memo-project, memo-blog, memo-forum) and one client crate under `clients/`. Program IDs, token mints, RPC and wallet for both networks are configured in `Anchor.toml`, which the clients read as the single source of truth.
 
 Build:
 
@@ -158,7 +159,7 @@ The programs are already live on X1 testnet and mainnet, so a release is an **up
    ./scripts/deploy-mainnet.sh                    # mainnet (asks for confirmation)
    ```
 
-   With no arguments all 7 programs are upgraded in order: `memo_mint` → `memo_burn` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`. You can pass program names to upgrade a subset; they are still deployed in that order. **Never upgrade only the apps:** they depend on the behavior of the current memo-mint / memo-burn (for example fractional burn amounts), so upgrade memo-burn and memo-mint first or in the same run. The script creates the `mint_state` and `global_burn_stats` accounts after upgrading memo-mint / memo-burn if they do not exist yet.
+   With no arguments all 8 programs are deployed or upgraded in order: `memo_mint` → `memo_burn` → `memo_home` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`. You can pass program names to upgrade a subset; they are still deployed in that order. **Never upgrade only the apps:** they depend on the behavior of the current memo-mint / memo-burn (for example fractional burn amounts), so upgrade memo-burn and memo-mint first or in the same run. The script creates the `mint_state` and `global_burn_stats` accounts after upgrading memo-mint / memo-burn if they do not exist yet, and the memo-home Burn Guard after deploying memo-home.
 
 3. Verify (read-only, simulations only):
 

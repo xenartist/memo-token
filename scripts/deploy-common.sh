@@ -23,7 +23,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-ALL_PROGRAMS=("memo_mint" "memo_burn" "memo_chat" "memo_profile" "memo_project" "memo_blog" "memo_forum")
+ALL_PROGRAMS=("memo_mint" "memo_burn" "memo_home" "memo_chat" "memo_profile" "memo_project" "memo_blog" "memo_forum")
 
 print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_success() { echo -e "${GREEN}✅ $1${NC}"; }
@@ -40,6 +40,7 @@ get_program_name_dash() {
     case "$1" in
         memo_mint|memo-mint) echo "memo-mint" ;;
         memo_burn|memo-burn) echo "memo-burn" ;;
+        memo_home|memo-home) echo "memo-home" ;;
         memo_chat|memo-chat) echo "memo-chat" ;;
         memo_profile|memo-profile) echo "memo-profile" ;;
         memo_project|memo-project) echo "memo-project" ;;
@@ -54,6 +55,7 @@ get_program_name_underscore() {
     case "$1" in
         memo-mint|memo_mint) echo "memo_mint" ;;
         memo-burn|memo_burn) echo "memo_burn" ;;
+        memo-home|memo_home) echo "memo_home" ;;
         memo-chat|memo_chat) echo "memo_chat" ;;
         memo-profile|memo_profile) echo "memo_profile" ;;
         memo-project|memo_project) echo "memo_project" ;;
@@ -306,7 +308,22 @@ verify_configuration() {
             esac
         fi
         
-        # 5. Verify mint authority (all programs have this)
+        # 5. Verify mint authority (all programs have this; memo-home takes it from memo-mint)
+        if [ "${program}" = "memo_home" ]; then
+            local home_dir="${PROJECT_ROOT}/programs/memo-home"
+            echo -n "  Mint Authority: "
+            if grep -q 'pub const MEMO_MINT: Pubkey = memo_mint::AUTHORIZED_MINT_PUBKEY;' "${home_dir}/src/lib.rs" \
+                && grep -E '^mainnet = ' "${home_dir}/Cargo.toml" | grep -q '"memo-mint/mainnet"' \
+                && grep -E '^mainnet = ' "${home_dir}/Cargo.toml" | grep -q '"memo-burn/mainnet"'; then
+                print_success "from memo-mint (MEMO_MINT = memo_mint::AUTHORIZED_MINT_PUBKEY, mainnet feature cascades)"
+            else
+                print_error "memo-home must use memo_mint::AUTHORIZED_MINT_PUBKEY and cascade memo-mint/mainnet and memo-burn/mainnet"
+                mismatch_details="${mismatch_details}\n${program}: MEMO_MINT or the mainnet feature cascade is wrong"
+                all_match=false
+            fi
+            echo ""
+            continue
+        fi
         local code_mint_authority=$(extract_authority_from_code "${program}" "MINT" "${ENV}")
         echo -n "  Mint Authority: "
         if [ -z "${code_mint_authority}" ]; then
@@ -576,6 +593,16 @@ deploy_to_env() {
                     --program-name "${program}" \
                     --program-keypair "$(program_keypair_path "${program}" "${ENV}")"
                 print_success "${program} deployed: ${program_id}"
+
+                # Anyone can create a program's IDL account first; it must be ours
+                local idl_authority
+                idl_authority=$(anchor idl authority "${program_id}" --provider.cluster "${CLUSTER}" \
+                    --provider.wallet "${DEPLOY_WALLET}" 2>/dev/null | tail -n 1)
+                if [ "${idl_authority}" = "$(solana-keygen pubkey "${DEPLOY_WALLET}")" ]; then
+                    print_success "${program} IDL authority is the deploy admin"
+                else
+                    print_warning "${program} IDL authority is '${idl_authority}', not the deploy admin: check it before relying on the on-chain IDL"
+                fi
                 ;;
             *)
                 print_error "Could not query ${program} on ${CLUSTER}: ${state#error }"
@@ -609,6 +636,19 @@ deploy_to_env() {
             print_success "Global burn stats ready"
         fi
         
+        # memo-home rejects every Asset burn through the Burn Guard account; create_collection fails
+        # until it exists. The client is idempotent and checks the account's fixed content.
+        if [ "${program}" = "memo_home" ]; then
+            print_info "Initializing the memo-home Burn Guard..."
+            if ! cargo run --quiet --manifest-path "${PROJECT_ROOT}/clients/Cargo.toml" \
+                    --bin admin-init-burn-guard -- "${program_id}" "${CLUSTER}"; then
+                print_error "Burn Guard initialization failed. create_collection fails until it succeeds."
+                print_info "Retry: MEMO_PROGRAM_ENV=${ENV} cargo run --manifest-path clients/Cargo.toml --bin admin-init-burn-guard -- ${program_id} ${CLUSTER}"
+                exit 1
+            fi
+            print_success "Burn Guard ready"
+        fi
+
         # Determine explorer URL based on actual deployment cluster (not ENV)
         if [[ "${CLUSTER}" =~ "mainnet" ]]; then
             echo "   Explorer: https://explorer.mainnet.x1.xyz/address/${program_id}"
