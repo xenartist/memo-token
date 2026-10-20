@@ -35,7 +35,7 @@ url = "https://api.apr.dev"
 
 [provider]
 cluster = "https://rpc.testnet.x1.xyz" # or "https://rpc.mainnet.x1.xyz"
-# Payer for test clients (unlock first: ./scripts/keys.sh unlock testnet). Deploy scripts and admin
-# clients ignore it and use the deploy_admin of the network they target.
-wallet = "~/.config/solana/memo-token/testnet/authority/deploy_admin-keypair.json"
+# Test wallet: payer for the test and smoke-test clients (MEMO_WALLET overrides it). Never a
+# deploy_admin: deploy scripts and admin clients use the deploy_admin of the network they target.
+wallet = "~/.config/solana/id.json"
 program_env = "testnet"  # Which program IDs to use: "testnet" or "mainnet"

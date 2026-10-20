@@ -5,7 +5,7 @@
 **Contract**: memo-home (`programs/memo-home`)
 **Audit Dates**: October 20, 2026 (first review of v1); October 20, 2026 (second, exhaustive review and fixes, this report)
 **Auditor**: Pre-production security review. The second review was a multi-agent audit: 11 review dimensions (custody, mining, Core parsing, Core CPI and direct-Core paths, Anchor accounts, Token-2022 extensions, griefing, app composability, test adequacy, docs and deployment, free-form attacker), two adversarial verifiers per finding (one trying to refute it, one assessing impact with a reproduction), and two follow-up rounds from a completeness critic. Reproductions ran in LiteSVM against copies of the X1 mainnet Metaplex Core bytecode; every fix is covered by the local-validator regression suite.
-**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (testnet deployed 2026-10-20; mainnet not yet deployed)
+**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (both deployed 2026-10-20, upgradeable)
 **Language**: Rust (Anchor 0.32.1)
 **Network**: X1 (SVM-based)
 **Design reference**: `MEMO-HOME-DESIGN.md`
@@ -280,6 +280,7 @@ Tested builds (X1 mainnet, dumped 2026-10-20):
 - [x] Wallet tests with production Collections and PDA addresses (2026-10-20, design Appendix B): X1 wallet iOS and web and Backpack display and transfer memo-home Assets; none offers a burn; Vault control follows the transfer (F46).
 
 ### 🔴 Required before mainnet
+- [x] Deployed to mainnet 2026-10-20 (slot 87306447, commit 073fd001), before locking, to keep testnet and mainnet on the same code: memo-mint and memo-burn on-chain matched the audited builds (`2423c17f…`, `39d06125…`) beforehand (F58); bytecode `7be70db1…` matches the `--features mainnet` build; IDL authority is the deploy admin; Burn Guard `2xwsdHfP…` initialized and verified. The items below remain before locking memo-home.
 - [ ] Verify the deployed bytecode against a reproducible `--features mainnet` build.
 - [ ] Run `./scripts/local-validator.sh start --refresh-external` (or `run-regression-tests.sh` after deleting `target/local-validator/external`). If X1 upgraded a program, re-run the suites against the new build and update the pins (F26).
 - [ ] Ask the X1 operators for the Core version and its upstream fixes (F50), or record the residual risk here.
