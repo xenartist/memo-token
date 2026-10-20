@@ -178,7 +178,7 @@ Keypairs are stored GPG-encrypted in `~/.config/solana/memo-token/<testnet|mainn
 
 ## Client Tools
 
-The `clients` crate contains test and admin tools for every program (`clients/<program>/src/`). They use the network, program IDs and wallet from `Anchor.toml`; set `MEMO_RPC_URL` and `MEMO_WALLET` to point them at another RPC or wallet (for example the local validator). Run them from the repository root. Each tool prints its usage when run without arguments.
+The `clients` crate contains test and admin tools for every program (`clients/<program>/src/`). They use the network, program IDs and the test wallet from `Anchor.toml` (`~/.config/solana/id.json`; never a deploy_admin key, which only the deploy scripts and `admin-*` tools use); set `MEMO_RPC_URL` and `MEMO_WALLET` to point them at another RPC or wallet (for example the local validator). Run them from the repository root. Each tool prints its usage when run without arguments.
 
 Before the first burn, a wallet needs its burn statistics account (once per wallet):
 
