@@ -1,0 +1,30 @@
+[package]
+name = "home_test_app"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only app program for the memo-home regression suite: an app PDA as Authority and owner, calling memo-home by CPI (local validator only)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build"]
+custom-heap = []
+custom-panic = []
+anchor-debug = []
+
+[dependencies]
+anchor-lang = "0.32.1"
+memo-home = { path = "../../../../programs/memo-home", features = ["cpi"] }
+
+[profile.release]
+overflow-checks = true
+
+# Standalone workspace, built by scripts/run-regression-tests.sh with cargo build-sbf
+[workspace]

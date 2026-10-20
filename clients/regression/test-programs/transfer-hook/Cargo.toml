@@ -1,0 +1,17 @@
+[package]
+name = "transfer_hook_test"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only Token-2022 transfer hook for the memo-home regression suite (local validator only)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "2.2"
+spl-transfer-hook-interface = "0.10.0"
+spl-tlv-account-resolution = "0.10.0"
+
+# Standalone workspace, built by scripts/run-regression-tests.sh with cargo build-sbf
+[workspace]

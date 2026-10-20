@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# On-chain regression test runner for memo-mint and memo-burn
+# On-chain regression test runner for memo-mint, memo-burn and memo-home
 #
 # Runs the regression suites (clients/regression/src/) against a local solana-test-validator
 # started by ./scripts/local-validator.sh. Nothing is sent to testnet or mainnet.
 #
 #   Phase 1: validator with a supply of 18.4T tokens held by the test wallet
 #            regression-memo-curve (walks the supply down to ~5M), then
-#            regression-memo-mint and regression-memo-burn
+#            regression-memo-mint, regression-memo-burn and regression-memo-home
 #            (5M supply when the curve suite is not selected)
 #   Phase 2: validator without MintState / GlobalBurnStats (fresh deployment)
 #            regression-admin-init
@@ -15,7 +15,7 @@
 # Usage:
 #   ./scripts/run-regression-tests.sh                 # build programs, run every suite
 #   ./scripts/run-regression-tests.sh --no-build      # use the existing target/deploy/*.so
-#   ./scripts/run-regression-tests.sh memo-burn       # only some suites (curve, mint, burn, admin-init)
+#   ./scripts/run-regression-tests.sh memo-burn       # only some suites (curve, mint, burn, home, admin-init)
 #   ./scripts/run-regression-tests.sh --so-dir <dir>  # load <name>.so from <dir> (e.g. mutation testing)
 #   ./scripts/run-regression-tests.sh --keep          # leave the last validator running
 #   ./scripts/run-regression-tests.sh --help
@@ -37,7 +37,7 @@ RPC_URL="http://127.0.0.1:8899"
 WALLET="$ROOT/target/local-validator/wallet.json"
 LOG_DIR="$ROOT/target/regression-logs"
 
-ALL_SUITES=(curve mint burn admin-init)
+ALL_SUITES=(curve mint burn home admin-init)
 # The curve suite needs a supply above 10T held by the wallet; mint/burn alone run at 5M
 CURVE_ARGS=(--supply 18400000000000 --balance 18400000000000)
 DEFAULT_ARGS=(--supply 5000000 --balance 1000000)
@@ -115,13 +115,22 @@ if [ "$BUILD" = true ]; then
     print_header "Building programs (testnet IDs)"
     anchor build
 fi
+# Test-only programs for the home suite (clients/regression/test-programs): a Token-2022 transfer
+# hook and an app program that calls memo-home by CPI
+if wants home && { [ "$BUILD" = true ] || [ ! -f target/test-programs/home_test_app.so ] \
+        || [ ! -f target/test-programs/transfer_hook_test.so ]; }; then
+    print_header "Building test programs"
+    for p in transfer-hook home-app; do
+        cargo build-sbf --manifest-path "clients/regression/test-programs/$p/Cargo.toml" --sbf-out-dir target/test-programs
+    done
+fi
 print_header "Building regression clients"
 (cd clients && cargo build --quiet --bin regression-memo-curve --bin regression-memo-mint \
-    --bin regression-memo-burn --bin regression-admin-init --bin prepare-local-validator \
+    --bin regression-memo-burn --bin regression-memo-home --bin regression-admin-init --bin prepare-local-validator \
     --bin init-user-global-burn-stats)
 
 set -o pipefail
-if wants curve || wants mint || wants burn; then
+if wants curve || wants mint || wants burn || wants home; then
     if wants curve; then
         print_header "Phase 1: local validator, supply 18.4T"
         start_validator "${CURVE_ARGS[@]}"
@@ -129,7 +138,7 @@ if wants curve || wants mint || wants burn; then
         print_header "Phase 1: local validator, supply 5M"
         start_validator "${DEFAULT_ARGS[@]}"
     fi
-    for s in curve mint burn; do
+    for s in curve mint burn home; do
         if wants "$s"; then run_suite "$s"; fi
     done
     stop_validator

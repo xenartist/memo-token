@@ -218,6 +218,10 @@ path = "regression/src/regression-memo-curve.rs"
 name = "regression-admin-init"
 path = "regression/src/regression-admin-init.rs"
 
+[[bin]]
+name = "regression-memo-home"
+path = "regression/src/regression-memo-home.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

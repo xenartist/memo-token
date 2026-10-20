@@ -6,3 +6,4 @@
 # Claude Code (local only, do not commit)
 /CLAUDE.md
 /memory/
+/clients/regression/test-programs/*/target
