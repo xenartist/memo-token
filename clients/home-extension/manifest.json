@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "home:// (MEMO prototype)",
+  "version": "0.1.0",
+  "description": "Prototype: opens home://<name>.memo/ and home://<asset>/ pages stored on X1, rendered in a sandbox.",
+  "minimum_chrome_version": "120",
+  "background": { "service_worker": "background.js", "type": "module" },
+  "omnibox": { "keyword": "home" },
+  "action": { "default_title": "Open home://" },
+  "permissions": ["declarativeNetRequestWithHostAccess", "storage"],
+  "host_permissions": [
+    "*://*.memo/*",
+    "https://www.google.com/*",
+    "https://www.bing.com/*",
+    "https://duckduckgo.com/*",
+    "http://127.0.0.1:8899/*",
+    "http://localhost:8899/*",
+    "https://rpc.testnet.x1.xyz/*",
+    "https://rpc.mainnet.x1.xyz/*"
+  ],
+  "web_accessible_resources": [{ "resources": ["viewer.html"], "matches": ["<all_urls>"] }],
+  "sandbox": { "pages": ["sandbox.html"] },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'",
+    "sandbox": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; form-action 'none'"
+  }
+}

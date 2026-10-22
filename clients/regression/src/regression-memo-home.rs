@@ -738,7 +738,7 @@ fn main() {
         Some((10_001, vec![(bp, 100)]))).0, INVALID_ROYALTY);
     rejc("H06c", "create_collection with the same royalty creator twice", "bad5", &|t| h.create_collection(&wp, &ap, t, "bad", 0, None,
         Some((500, vec![(bp, 50), (bp, 50)]))).0, INVALID_ROYALTY);
-    rejc("H06d", "create_collection with a 65-byte name", "bad6", &|t| h.create_collection(&wp, &ap, t, &"n".repeat(65), 0, None, None).0,
+    rejc("H06d", "create_collection with a 254-byte name", "bad6", &|t| h.create_collection(&wp, &ap, t, &"n".repeat(254), 0, None, None).0,
         NAME_TOO_LONG);
     rejc("H06e", "create_collection with a 257-byte URI", "bad7", &|t| {
         let s = seed(t);
@@ -839,17 +839,17 @@ fn main() {
         let out = e.exec(&[ix], w, &[&app]);
         e.record("H11e", "create_asset at a pre-funded PDA: the lamports go to the payer and the Asset is created",
             out.ok() && core_owner(&e, &pre) == Some(bp), &out.brief());
-        let (ix, _) = h.create_asset(&wp, &ap, &col, "long-name", &bp, &"n".repeat(65));
-        e.reject("H11f", "create_asset with a 65-byte name", vec![ix], w, &[&app], Expect::Custom(0, NAME_TOO_LONG), &[], &[]);
+        let (ix, _) = h.create_asset(&wp, &ap, &col, "long-name", &bp, &"n".repeat(254));
+        e.reject("H11f", "create_asset with a 254-byte name", vec![ix], w, &[&app], Expect::Custom(0, NAME_TOO_LONG), &[], &[]);
         let s = seed("long-uri");
         let a = h.asset_addr(&col, &s);
         e.reject("H11g", "create_asset with a 257-byte URI", vec![h.create_asset_at(&wp, &ap, &h.config(&col), &col, &a, &s, &bp, "x", &"u".repeat(257))],
             w, &[&app], Expect::Custom(0, URI_TOO_LONG), &[], &[]);
         let s = seed("max-len");
         let a = h.asset_addr(&col, &s);
-        let out = e.exec(&[h.create_asset_at(&wp, &ap, &h.config(&col), &col, &a, &s, &bp, &"n".repeat(64), &"u".repeat(256))], w, &[&app]);
+        let out = e.exec(&[h.create_asset_at(&wp, &ap, &h.config(&col), &col, &a, &s, &bp, &"n".repeat(253), &"u".repeat(256))], w, &[&app]);
         let out2 = e.exec(&[core_transfer(&a, Some(&col), &bp, &bp, &cp)], &b, &[]);
-        e.record("H11h", "create_asset with a 64-byte name and a 256-byte URI; the owner can still transfer it",
+        e.record("H11h", "create_asset with a 253-byte name and a 256-byte URI; the owner can still transfer it",
             out.ok() && out2.ok() && core_owner(&e, &a) == Some(cp), &format!("{} / {}", out.brief(), out2.brief()));
     }
 
@@ -912,7 +912,7 @@ fn main() {
         && core_name_uri(&e, &room) == Some(("Room #1 renamed".into(), "https://example.com/room1-v2.json".into())), &out.brief());
     e.reject("H15c", "update_asset with nothing to update", vec![h.update_asset_with(&wp, &ap, &h.config(&col), &col, &room, None, None)], w, &[&app],
         Expect::Custom(0, NOTHING_TO_UPDATE), &[], &[]);
-    e.reject("H15d", "update_asset with a 65-byte name", vec![h.update_asset(&wp, &ap, &col, &room, Some(&"n".repeat(65)))], w, &[&app],
+    e.reject("H15d", "update_asset with a 254-byte name", vec![h.update_asset(&wp, &ap, &col, &room, Some(&"n".repeat(254)))], w, &[&app],
         Expect::Custom(0, NAME_TOO_LONG), &[], &[]);
     e.reject("H16", "update_asset signed by someone other than the Authority",
         vec![h.update_asset(&xp, &xp, &col, &room, Some("hacked"))], &x, &[], Expect::Custom(0, UNAUTHORIZED), &[], &[]);

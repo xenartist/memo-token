@@ -49,8 +49,9 @@ pub const MAX_BPS: u16 = 10_000;
 /// Royalty creators per Collection (Metaplex convention)
 pub const MAX_ROYALTY_CREATORS: usize = 5;
 
-/// Name and URI limits (bytes) for Collections and Assets
-pub const MAX_NAME_LEN: usize = 64;
+/// Name and URI limits (bytes) for Collections and Assets. 253 is the longest DNS hostname, so
+/// any MEMO ID fits as an Asset name.
+pub const MAX_NAME_LEN: usize = 253;
 pub const MAX_URI_LEN: usize = 256;
 
 // memo-home must be built for the same network as the memo-mint and memo-burn it calls. An app
@@ -1652,7 +1653,7 @@ pub enum ErrorCode {
     ArithmeticOverflow,
     #[msg("The Vault holds too few lamports, or would be left below the rent-exempt minimum")]
     InsufficientVaultLamports,
-    #[msg("Name longer than 64 bytes")]
+    #[msg("Name longer than 253 bytes")]
     NameTooLong,
     #[msg("URI longer than 256 bytes")]
     UriTooLong,

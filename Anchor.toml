@@ -13,6 +13,7 @@ memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 memo_blog = "HPvqPUneCLwb8YYoYTrWmy6o7viRKsnLTgxwkg7CCpfB"
 memo_forum = "9kwS5nSidmoHq84TyNzqFrtD29odp4sdRxm97tCbdpbS"
 memo_home = "J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv"
+memo_id = "Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp"
 
 [programs.mainnet]
 memo_mint = "8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX"
@@ -23,6 +24,7 @@ memo_project = "6Vavot6ybhWBG3rjNXnLfNRPVTz7Garf6E4EZk3byp3a"
 memo_blog = "3EKdp88FgyPC41bxRDzFAtCDUMV2g9SVt5UiytE8wdzM"
 memo_forum = "6gzhG5BveTkJfTi466toX4qmN3BtU9qp1Grnk61GvmXD"
 memo_home = "ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs"
+memo_id = "Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp"
 
 [tokens.testnet]
 memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"

@@ -1,0 +1,34 @@
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1c1c1a; --muted: #6b6b66; --line: #dcdcd6;
+  --ok: #17803d; --warn: #b45309; --bad: #b91c1c; --accent: #2457c5;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a94; --line: #34342f;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #7aa2ff;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#bar { display: flex; gap: 8px; flex: 1; min-width: 0; }
+#address { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: 14px ui-monospace, monospace; }
+#address:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+select, #badge { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+#badge { cursor: pointer; white-space: nowrap; }
+#badge.ok { color: var(--ok); } #badge.warn { color: var(--warn); } #badge.bad { color: var(--bad); }
+#details { padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; }
+#details dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+#details dt { color: var(--muted); } #details dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+#details p { margin: 8px 0 0; color: var(--muted); }
+#notice { padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--warn); overflow-wrap: anywhere; }
+#notice a { color: var(--accent); }
+main { flex: 1; position: relative; }
+main iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.error { max-width: 640px; margin: 48px auto; padding: 0 16px; }
+.error h1 { font-size: 18px; }
+.error p { color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 560px) { header { flex-wrap: wrap; } #bar { flex-basis: 100%; } }

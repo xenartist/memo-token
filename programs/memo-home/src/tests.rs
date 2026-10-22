@@ -254,11 +254,11 @@ mod argument_tests {
         assert!(require_name_uri(Some(""), Some("")).is_ok());
         assert!(require_name_uri(Some(&format!("{}x", name)), None).is_err());
         assert!(require_name_uri(None, Some(&format!("{}x", uri))).is_err());
-        assert_eq!(MAX_NAME_LEN, 64);
+        assert_eq!(MAX_NAME_LEN, 253);
         assert_eq!(MAX_URI_LEN, 256);
-        // the limit is in bytes: 22 three-byte characters are 66 bytes
-        assert!(require_name_uri(Some(&"家".repeat(22)), None).is_err());
-        assert!(require_name_uri(Some(&"家".repeat(21)), None).is_ok());
+        // the limit is in bytes: 85 three-byte characters are 255 bytes
+        assert!(require_name_uri(Some(&"家".repeat(85)), None).is_err());
+        assert!(require_name_uri(Some(&"家".repeat(84)), None).is_ok());
     }
 
     #[test]

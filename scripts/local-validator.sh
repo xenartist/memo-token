@@ -53,7 +53,8 @@ spl_associated_token_account ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL 9ba8d4
 # Test-only programs (clients/regression/test-programs, built by run-regression-tests.sh into
 # target/test-programs): <file name> <program id>
 TEST_PROGRAMS="transfer_hook_test HCwbzCbQRg4YH2pDkwa9hDDGqu64axLquG6mAKSdnbhr
-home_test_app EZzeE6EZ7oD3Qsr5F1Wuu5TVHgbzDYL4LiZCxaSPR6c2"
+home_test_app EZzeE6EZ7oD3Qsr5F1Wuu5TVHgbzDYL4LiZCxaSPR6c2
+home_web_test 6uknhjicEvg7B7oAvZ3y7TWojo8YfvKicn7HFVDPtiip"
 
 # Programs from Anchor.toml [programs.testnet]: <name> <program id>
 PROGRAMS=$(awk '/^\[programs.testnet\]/{f=1;next} /^\[/{f=0} f && /=/{gsub(/[" ]/,""); split($0,a,"="); print a[1], a[2]}' Anchor.toml)
@@ -163,7 +164,7 @@ start() {
         fi
         validator_args+=(--bpf-program "$id" "$ext_so")
     done <<< "$EXTERNAL_PROGRAMS"
-    # Test-only programs used by regression-memo-home, when built
+    # Test-only programs (regression-memo-home, the home:// extension prototype), when built
     while read -r file id; do
         if [ -f "$ROOT/target/test-programs/$file.so" ]; then
             validator_args+=(--bpf-program "$id" "$ROOT/target/test-programs/$file.so")

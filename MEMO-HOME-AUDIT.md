@@ -119,7 +119,7 @@ This broke invariants 1, 4, 5 and 6. It was not direct theft, but it froze every
 
 ### 🟠 F04 (Medium, fixed): unbounded names and URIs
 
-An Authority could write names or URIs large enough to push Core past its 32 KiB heap on every later instruction that deserializes the Asset or Collection, which blocked transfers in the whole Collection. Large strings also raise rent and break wallet rendering. **Fix**: `MAX_NAME_LEN = 64`, `MAX_URI_LEN = 256` (bytes), checked in all four create/update instructions. H06d, H06e, H11f, H11g, H15d, H18d. H11h shows that an Asset at the maximum lengths still transfers.
+An Authority could write names or URIs large enough to push Core past its 32 KiB heap on every later instruction that deserializes the Asset or Collection, which blocked transfers in the whole Collection. Large strings also raise rent and break wallet rendering. **Fix**: `MAX_NAME_LEN = 64`, `MAX_URI_LEN = 256` (bytes), checked in all four create/update instructions. H06d, H06e, H11f, H11g, H15d, H18d. H11h shows that an Asset at the maximum lengths still transfers. *Update 2026-10-21*: `MAX_NAME_LEN` raised to 253 (the DNS hostname limit) so that every MEMO ID fits as an Asset name; 253 + 256 bytes stay far below Core's heap, and H11h passes at the new maximum.
 
 ### 🟠 F59 (Medium, mitigated): listings did not protect buyers
 

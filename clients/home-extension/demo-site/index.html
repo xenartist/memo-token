@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xen-artist.memo</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="logo.svg">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="logo.svg" alt="">
+    <b>xen-artist.memo</b>
+    <nav><a href="./">Home</a><a href="blog/first-post.html">Blog</a><a href="about.html">About</a></nav>
+  </header>
+  <h1>Hello from the chain</h1>
+  <p>This page, its stylesheet and its logo are stored in accounts on X1. The extension read them
+  through RPC, checked each SHA-256 hash, and rendered them here in a sandbox with no network access.</p>
+  <p>The address <code>home://xen-artist.memo/</code> resolved through a name record to a memo-home
+  Asset, and every file belongs to that Asset. Whoever owns the Asset owns the site.</p>
+  <p>Scripts run too: <button id="b" type="button">Clicked 0 times</button></p>
+  <p class="muted">An external link, which the viewer does not open inside home://:
+  <a href="https://x1.xyz">x1.xyz</a></p>
+</div>
+<script>
+  let n = 0;
+  const b = document.getElementById("b");
+  b.addEventListener("click", () => { b.textContent = `Clicked ${++n} time${n === 1 ? "" : "s"}`; });
+</script>
+</body>
+</html>

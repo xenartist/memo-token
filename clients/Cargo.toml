@@ -206,6 +206,10 @@ name = "admin-init-burn-guard"
 path = "home/src/admin-init-burn-guard.rs"
 
 [[bin]]
+name = "home-web-seed"
+path = "home/src/home-web-seed.rs"
+
+[[bin]]
 name = "verify-deployment"
 path = "smoke-test/src/verify-deployment.rs"
 
@@ -229,6 +233,10 @@ path = "regression/src/regression-admin-init.rs"
 [[bin]]
 name = "regression-memo-home"
 path = "regression/src/regression-memo-home.rs"
+
+[[bin]]
+name = "regression-memo-id"
+path = "regression/src/regression-memo-id.rs"
 
 [dependencies]
 solana-client = "^2"

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>home://</title>
+<link rel="stylesheet" href="viewer.css">
+<script type="module" src="viewer.js"></script>
+</head>
+<body>
+<header>
+  <form id="bar">
+    <input id="address" spellcheck="false" autocomplete="off" aria-label="home:// address" placeholder="home://xen-artist.memo/">
+    <select id="rpc" aria-label="Network">
+      <option value="http://127.0.0.1:8899">Local validator</option>
+      <option value="https://rpc.testnet.x1.xyz">X1 testnet</option>
+      <option value="https://rpc.mainnet.x1.xyz">X1 mainnet</option>
+    </select>
+  </form>
+  <button id="badge" type="button" aria-expanded="false" aria-controls="details">…</button>
+</header>
+<section id="details" hidden></section>
+<div id="notice" hidden></div>
+<main id="stage"></main>
+</body>
+</html>

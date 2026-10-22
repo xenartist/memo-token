@@ -32,6 +32,7 @@ AVAILABLE_CONTRACTS=(
     "memo-blog"
     "memo-forum"
     "memo-home"
+    "memo-id"
 )
 
 # Test options
@@ -98,6 +99,7 @@ ${BOLD}CONTRACTS:${NC}
     memo-blog           Run tests for memo-blog contract
     memo-forum          Run tests for memo-forum contract
     memo-home           Run tests for memo-home contract
+    memo-id             Run tests for memo-id contract
 
 ${BOLD}EXAMPLES:${NC}
     # Run all contracts' unit tests

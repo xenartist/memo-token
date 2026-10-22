@@ -297,12 +297,12 @@ A MEMO ID is a globally unique, user-chosen ID such as `@xen-artist` or `memo.ri
 
 #### Structure
 
-- One memo-home Collection per suffix (e.g. `x1`, `rip`), Authority = the memo-id PDA, at `collection_address(memo-id PDA, sha256(suffix))`. Suffixes are created by the app.
+- One memo-home Collection per suffix (v1: `memo`; see MEMO-ID-DESIGN.md), Authority = the memo-id PDA, at `collection_address(memo-id PDA, sha256(suffix))`. Suffixes are created by the app.
 - Each MemoId Asset is created with seed `sha256(memo_id)`, so its address follows from the ID and a second Asset for the same ID cannot exist in the Collection.
 - Registry PDA `[b"memo_id", sha256(memo_id)]`, one per full `memo_id`, which makes it globally unique:
-  `memo_id`, `kind` (Nft / Record), `asset` (for Nft), `parent`, `target`, `target_set_by`, `created_at`, `bump`.
-- Primary ID PDA `[b"primary_id", target]`: `memo_id`, `set_by`, `bump`.
-- Format: `a-z 0-9 -` (DNS hostname rules: no leading or trailing `-`), stored lowercase; at most 63 characters per label and 253 in total. No `_` and no Unicode, so every MEMO ID maps to a gateway subdomain (`xen-artist.x1.<gateway>`) and has no look-alike characters.
+  `kind` (Nft / Record), `asset` (for Nft), `parent`, `created_at`, `nft_subids_issued`, `record_subids`, `bump`, `target_set_by`, `target`, `memo_id`.
+- Primary ID PDA `[b"primary_id", target]`: `target`, `memo_id_registry`, `set_by`, `bump`.
+- Format: `a-z 0-9 -` (DNS hostname rules: no leading or trailing `-`), stored lowercase; at most 63 characters per label and 253 in total (memo-home accepts Asset names that long; MEMO-ID-DESIGN.md §2). No `_` and no Unicode, so every MEMO ID is a valid DNS hostname and has no look-alike characters.
 - A MEMO ID is permanent: no expiry and no renewal, because memo-home Assets cannot be burned or reclaimed. Registration burns MEMO through memo-burn, priced by length in mints (short IDs cost more).
 
 #### Controller and verification
@@ -311,7 +311,7 @@ A MEMO ID is a globally unique, user-chosen ID such as `@xen-artist` or `memo.ri
 - **Forward** (`memo_id` → Target) is set by the controller and stamped with `target_set_by`. It is void when the controller changes.
 - **Reverse** (Primary ID) is set by the Target's controller: the wallet itself for `Address`, or `owner_of(asset)` for `Asset`. It is void when that controller changes.
 - **Verified** = forward and reverse match and neither is void. Apps display only verified MEMO IDs. Consequences:
-  - pointing `scam.x1` at someone else's room shows nothing until the room's owner confirms;
+  - pointing `scam.memo` at someone else's room shows nothing until the room's owner confirms;
   - after a room is sold, its MEMO ID is unverified until the new owner confirms;
   - a seller cannot redirect a MEMO ID just before a sale, because the forward record is void once the buyer is the controller.
 - Default resolution when no forward record is valid: the MEMO ID resolves to its controller's wallet.
@@ -333,7 +333,7 @@ A MEMO ID is a globally unique, user-chosen ID such as `@xen-artist` or `memo.ri
 - Only NFT MEMO IDs (suffix level, second level, issued SubIds) can have SubIds, so deleting a Record SubId never cascades.
 - Records and NFTs share the registry PDA, so they cannot collide.
 - Optional public sale: the parent's controller sets a price, and anyone can buy an NFT SubId. The payment goes to the parent's Vault (a plain token transfer).
-- Indexers show how many NFT SubIds a parent has issued, so buyers of the parent can see it.
+- The parent's Registry counts its issued NFT SubIds, and a SubId Index lists each one, so buyers of the parent can read them from chain state with no indexer (MEMO-ID-DESIGN.md §3).
 
 #### Composition
 
@@ -358,11 +358,11 @@ A website is an Asset. It can be bound to a MEMO ID, transferred and sold, and v
 | Mining tip | a visitor sends an SPL Memo; memo-web calls `home.mine(share_bps)` with a small or zero share for the visitor; the reward goes to the Site's Vault | memo-home + memo-mint |
 | Direct tip | plain MEMO transfer to the Site's Vault | memo-home |
 | Like | the visitor burns MEMO through memo-burn; memo-web updates `[b"site_stats", asset]` (likes, burned total) and an optional leaderboard | memo-burn |
-| Content | `[b"site", asset]` stores a manifest pointer: `memo://`, `ar://`, `ipfs://` or `https://`, plus an optional content hash | memo-file (§6.6) |
+| Content | `[b"site", asset]` stores a manifest pointer: `home://`, `ar://`, `ipfs://` or `https://`, plus an optional content hash | memo-file (§6.6) |
 
 Tips go to the Vault, so accumulated income is sold together with the Site.
 
-### 6.6 Storage (`memo-file`, `memo://`)
+### 6.6 Storage (`memo-file`, `home://`)
 
 A shared module for any app that stores files for an Asset (sites, blogs, forum posts, avatars, project pages). Each file belongs to one Asset; only `owner_of(asset)` writes, and never while the Asset is listed (otherwise a seller could delete content and reclaim rent just before a sale).
 
@@ -382,15 +382,15 @@ All file content is stored in accounts, so it is readable from chain state for a
 - **Session keys**: one upload of 1 MB is about a thousand transactions. The owner signs `register_session(key, ttl)` once; the session key may then write and finalize Blocks and add File Versions for that Asset until it expires or `revoke_session` is called. It can never close, seal, transfer or withdraw. The session key's lamports for fees and rent come from a budget the owner sets; unused funds return to the owner.
 - **Clearing unfinished uploads**: because Blocks are addressed by content, a squatter could start a Block for a hash and never finish it, blocking that content for everyone. Anyone may close a Block that is unfinished and idle for about 30 days; the rent goes back to whoever paid it, and the hash is free again. The same rule applies to unfinished Files.
 - **Rent top-up**: anyone may add lamports to a Block, File or File Version, in case rent rules change.
-- **Public read specification**: the account layouts and a short reference reader (fetch the File, its File Version, the Blocks, check every hash) are published with the program, so files can be read from any X1 RPC node without our gateway or library.
+- **Public read specification**: the account layouts and a short reference reader (fetch the File, its File Version, the Blocks, check every hash) are published with the program, so files can be read from any X1 RPC node without our library.
 
 Address format:
 
 | Form | Example | Use |
 |---|---|---|
-| Canonical (by Asset) | `memo://<asset address>/index.html` | stable references between programs |
-| Readable (by MEMO ID) | `memo://xen-artist.x1/index.html` | for people; resolves through memo-id, so it follows the MEMO ID |
-| Version | `memo://xen-artist.x1/post.md?v=3` | a specific File Version; latest if omitted |
+| Canonical (by Asset) | `home://<asset address>/index.html` | stable references between programs |
+| Readable (by MEMO ID) | `home://xen-artist.memo/index.html` | for people; resolves through memo-id, so it follows the MEMO ID |
+| Version | `home://xen-artist.memo/post.md?v=3` | a specific File Version; latest if omitted |
 
 External content (`ar://`, `ipfs://`, `https://`, and X1 VAULT files as `x1vault://<file address>`, checked by their BLAKE3 hash) is only referenced; a content hash in the manifest lets readers verify it.
 
@@ -398,19 +398,25 @@ External content (`ar://`, `ipfs://`, `https://`, and X1 VAULT files as `x1vault
 
 Reference: X1 VAULT (x1vault.com, X1 mainnet program `34JxpA5L…`) already stores sealed files in 9 KB chunk accounts addressed by BLAKE3 hash, with session keys, cleanup of stale uploads and a public read format. memo-file differs in binding files to an Asset owner instead of a wallet, sharing Blocks between files and versions, and having no admin key, fees or reward pool.
 
-#### Opening `memo://` in browsers and wallets
+#### Opening `home://` in browsers and wallets
 
-Browsers do not resolve unknown schemes, and web pages can only register `web+memo://`. Plan:
+The scheme is `home://` because content lives in memo-home Assets; with the `.memo` suffix it reads `home://xen-artist.memo/`. Neither `home` nor `memo` is in the IANA URI scheme registry (checked 2026-10-21). `home` is a common word and a native app could claim it, so readers do not rely on the OS scheme handler.
 
-1. **HTTPS gateway** (works everywhere): `https://xen-artist.x1.<gateway domain>` serves `memo://xen-artist.x1/`.
-2. **Open-source resolver library + browser extension**: reads and verifies content from RPC directly, so users do not have to trust the gateway.
-3. **Wallet in-app browsers**: the X1 wallet can recognize `memo://` in its address bar using the same library.
+Browsers do not resolve unknown schemes, and web pages can only register `web+home://`. Plan:
+
+**No gateway (decided 2026-10-21).** The project runs no gateway, server or indexer, and the protocol never depends on one. Every reader resolves `home://` from X1 RPC itself and checks every hash:
+
+1. **Open-source resolver library + browser extension** (desktop).
+2. **Wallet in-app browsers** (mobile and desktop): the X1 wallet can recognize `home://` in its address bar using the same library.
+3. **Anyone's own reader**: the public read specification (above) is enough to build one. A third party may run an HTTPS mirror, but it is not part of the system and nothing links to it.
+
+Prototype (2026-10-21): `clients/home-extension` is a Chrome extension that implements reader 1 against a throwaway stand-in for memo-id and memo-file on the local validator, with the sandboxed rendering described below. See its README.
 
 Requirements:
 
-- **One origin per Site**: the gateway, extension and wallets must serve each MEMO ID on its own origin (subdomain). Wallet connection approvals are per origin; a shared origin would let one approved Site act for all.
-- **Verification labels**: "verified on-chain" for `memo://` content and matching hashes, "external, unverified" otherwise.
-- **Moderation**: on-chain content cannot be deleted. The gateway needs a blocklist and a report process before launch.
+- **One origin per Site**: readers must isolate every Site. Wallet connection approvals are per origin, so a shared origin would let one approved Site act for all. The extension renders each page in an opaque sandbox origin; connecting a Site to a wallet needs a reader-side bridge that names the `home://` Site in the approval (open, §9).
+- **Verification labels**: "verified on-chain" for `home://` content and matching hashes, "external, unverified" otherwise.
+- **Moderation**: on-chain content cannot be deleted, and there is no central party to filter it. Readers may offer user-chosen blocklists that users subscribe to; none is built into the protocol.
 
 #### memo-home requirements
 
@@ -446,7 +452,7 @@ Modelled on PICO-8: 128×128 pixels, 16-colour palette, 4-channel sound, Lua sub
 
 | Account | Seeds | Content |
 |---|---|---|
-| Console Config | `[b"console"]` | Collection, runtime URI and hash (`memo://<console asset>/runtime.js`), spec version, max cartridge size |
+| Console Config | `[b"console"]` | Collection, runtime URI and hash (`home://<console asset>/runtime.js`), spec version, max cartridge size |
 | Game | `[b"game", asset]` | asset, spec version, entry path, latest version, created_at |
 | Game Version | `[b"game_version", asset, version]` | version, list of (path, File Version, hash), published_at |
 | Game Stats | `[b"game_stats", asset]` | tips, likes (memo-burn), plays reported by clients are not stored on-chain |
@@ -462,11 +468,11 @@ Instructions:
 
 #### Game Manifest standard
 
-Every console writes the same manifest fields, so any gateway, wallet or launcher can open games from any console: `console` (program id), `spec` (name and version), `runtime` (URI and hash), `entry`, `version`, file hashes. A launcher loads the runtime, checks every hash, then starts the game in its own origin (§6.6).
+Every console writes the same manifest fields, so any reader, wallet or launcher can open games from any console: `console` (program id), `spec` (name and version), `runtime` (URI and hash), `entry`, `version`, file hashes. A launcher loads the runtime, checks every hash, then starts the game in its own origin (§6.6).
 
 #### Addresses
 
-`memo://tetris.x1/` opens the latest version through the gateway; `memo://tetris.x1/?v=3` a specific one. A MEMO ID attaches to the Game Asset as usual (§6.4).
+`home://tetris.memo/` opens the latest version in any `home://` reader; `home://tetris.memo/?v=3` a specific one. A MEMO ID attaches to the Game Asset as usual (§6.4).
 
 #### memo-home requirements
 
@@ -496,7 +502,7 @@ For software we write, the Image or Package NFT is the copyright and tip revenue
 
 #### Boot from the chain
 
-1. A small open-source loader (gateway page, extension or wallet browser, §6.6) reads the memo-os runtime from memo-file and checks its hash.
+1. A small open-source loader (extension or wallet browser, §6.6) reads the memo-os runtime from memo-file and checks its hash.
 2. The runtime loads the kernel and initrd and checks their hashes.
 3. The kernel starts. Root filesystem blocks load on demand, as they are read.
 4. The Machine's overlay is applied over the Image.
@@ -580,9 +586,9 @@ Instruction-data inscriptions (≈ 0.05 XNT per MB) were considered and dropped:
 
 Items 1–4 (royalties, fixed Authority, memo requirement, share rounding) were decided on 2026-10-20; see §2. The second audit (MEMO-HOME-AUDIT.md) led to these decisions on the same day: PDA Collection and Asset addresses, the Authority signing `create_collection`, and the Vault State nonce.
 
-5. **MEMO ID default suffix**: which suffix `@xen-artist` abbreviates (e.g. `xen-artist.x1`), whether `.x1` collides with an existing X1 naming service, and avoiding real ICANN TLDs (e.g. `.rip`) as suffixes.
+5. **MEMO ID default suffix**: proposed `memo` (`@xen-artist` = `xen-artist.memo`), see MEMO-ID-DESIGN.md. `.x1` is taken by the official X1NS (`id.x1.xyz`), and real ICANN TLDs (e.g. `.rip`) are avoided.
 6. **MEMO ID prices**: burn per length, and whether issuing an NFT SubId burns MEMO.
-7. **Gateway domain** for MEMO Web, and the extension and wallet integration timeline.
+7. **Wallet integration** (no gateway, decided 2026-10-21): how X1 wallet in-app browsers open `home://`, and how a Site connects to the wallet with the `home://` name shown in the approval.
 8. **memo-file limits**: Block size (9 KB proposed), maximum file size and file count per Asset, and the inline limit for small files.
 9. **MEMO Console spec**: cartridge size limit, Lua subset, and how the runtime itself is versioned and upgraded (old games must keep running on the spec version they were published for).
 10. **memo-os**: maximum Image size, which RISC-V emulator to build on, whether and when to allow network relays, client-side encryption of Machine overlays, and which model APIs the AI bridge supports first.
