@@ -14,6 +14,8 @@ struct AnchorToml {
     programs: Programs,
     #[serde(default)]
     tokens: Tokens,
+    #[serde(default)]
+    lookup_tables: Tokens,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -318,6 +320,49 @@ pub fn get_token_mint(token_name: &str) -> Result<Pubkey, Box<dyn std::error::Er
     } else {
         Err(format!("Token '{}' not found in Anchor.toml [tokens.{}]", token_name, env).into())
     }
+}
+
+/// Address Lookup Table recorded in Anchor.toml `[lookup_tables.<program_env>]` (e.g. "memo_id"),
+/// or None if it has not been created yet (`admin-init-memo-id-alt` creates and records it)
+pub fn get_lookup_table(name: &str) -> Result<Option<Pubkey>, String> {
+    let config = read_anchor_config(&get_anchor_toml_path()).map_err(|e| format!("Could not read Anchor.toml: {}", e))?;
+    let env = effective_program_env(&config);
+    let tables = if env == "mainnet" { &config.lookup_tables.mainnet } else { &config.lookup_tables.testnet };
+    match tables.get(&name.replace('-', "_")) {
+        None => Ok(None),
+        Some(s) => Pubkey::from_str(s).map(Some).map_err(|e| format!("Invalid lookup table for {}: {}", name, e)),
+    }
+}
+
+/// Record an Address Lookup Table in Anchor.toml `[lookup_tables.<env>]`, adding the section if
+/// it is missing. Fails if `name` is already recorded there.
+pub fn record_lookup_table(env: &str, name: &str, table: &Pubkey) -> Result<PathBuf, String> {
+    let path = get_anchor_toml_path();
+    let text = fs::read_to_string(&path).map_err(|e| format!("Could not read {}: {}", path.display(), e))?;
+    let header = format!("[lookup_tables.{}]", env);
+    let line = format!("{} = \"{}\"", name, table);
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines.iter().position(|l| l.trim() == header) {
+        Some(at) => {
+            let end = lines[at + 1..].iter().position(|l| l.trim_start().starts_with('[')).map_or(lines.len(), |i| at + 1 + i);
+            if lines[at + 1..end].iter().any(|l| l.split('=').next().map(str::trim) == Some(name)) {
+                return Err(format!("{} already has {} in {}", path.display(), name, header));
+            }
+            // after the section's last non-empty line
+            let mut insert = end;
+            while insert > at + 1 && lines[insert - 1].trim().is_empty() {
+                insert -= 1;
+            }
+            lines.insert(insert, line);
+        }
+        None => {
+            // before [registry], next to the other per-network sections
+            let at = lines.iter().position(|l| l.trim() == "[registry]").unwrap_or(lines.len());
+            lines.splice(at..at, [header, line, String::new()]);
+        }
+    }
+    fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("Could not write {}: {}", path.display(), e))?;
+    Ok(path)
 }
 
 /// Get all token mints for the current environment

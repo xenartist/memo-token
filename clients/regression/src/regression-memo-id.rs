@@ -16,7 +16,7 @@
 mod harness;
 
 use harness::*;
-use memo_token_client::get_program_id;
+use memo_token_client::{get_program_id, memo_id::MemoIdAddresses};
 use sha2::{Digest, Sha256};
 #[allow(deprecated)]
 use solana_sdk::address_lookup_table::instruction as alt_ix;
@@ -415,8 +415,11 @@ impl Id<'_> {
     /// the frozen Address Lookup Table that clients use (programs invoked at the top level, such
     /// as memo-id and SPL Memo, must stay in the message itself)
     fn fixed_accounts(&self) -> Vec<Pubkey> {
-        vec![self.authority, self.config, self.collection, self.home_authority, CORE, self.home, self.e.mint, self.e.gbs,
-             t22(), self.e.burn_prog, IXS_SYSVAR, system_program()]
+        // the list admin-init-memo-id-alt deploys
+        let shared = MemoIdAddresses::new(self.prog, self.home);
+        assert_eq!((shared.authority, shared.collection, shared.config, shared.home_authority),
+                   (self.authority, self.collection, self.config, self.home_authority));
+        shared.lookup_table_addresses(self.e.mint, self.e.burn_prog, self.e.gbs)
     }
 }
 

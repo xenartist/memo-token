@@ -202,8 +202,20 @@ name = "smoke-test-memo-home"
 path = "smoke-test/src/smoke-test-memo-home.rs"
 
 [[bin]]
+name = "smoke-test-memo-id"
+path = "smoke-test/src/smoke-test-memo-id.rs"
+
+[[bin]]
 name = "admin-init-burn-guard"
 path = "home/src/admin-init-burn-guard.rs"
+
+[[bin]]
+name = "admin-init-memo-id"
+path = "id/src/admin-init-memo-id.rs"
+
+[[bin]]
+name = "admin-init-memo-id-alt"
+path = "id/src/admin-init-memo-id-alt.rs"
 
 [[bin]]
 name = "home-web-seed"

@@ -2,6 +2,7 @@
 /// Provides unified configuration and utility functions
 
 pub mod config;
+pub mod memo_id;
 pub mod mint_curve;
 
 // Re-export commonly used functions
@@ -15,6 +16,8 @@ pub use config::{
     get_all_token_mints,
     get_authority_keypair_path,
     read_authority_keypair,
+    get_lookup_table,
+    record_lookup_table,
 };
 
 pub use mint_curve::{expected_mint_amount, validate_mint_amount, min_burn_amount, fetch_min_burn_amount, format_token_amount, parse_token_amount};

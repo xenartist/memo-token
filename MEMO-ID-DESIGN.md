@@ -111,7 +111,7 @@ The numbers follow the existing app prices (memo-chat group 42,069 MEMO, memo-pr
 - **Forward** (`memo_id` → Target): set by the controller. memo-id stores `target_set_by = controller`. The record is valid only while `target_set_by` equals the current controller, so it lapses automatically on a sale.
 - **Reverse** (Primary ID): set for a Target by that Target's controller. For an `Address`, that is the address itself as a signer. For an `Asset`, it is `owner_of(asset)`, with the same one-level Vault rule. It is valid only while `set_by` equals that controller.
 - **Verified** means the forward record and the reverse record point at each other and both are valid. Apps display only verified MEMO IDs. When no valid forward record exists, a MEMO ID resolves to its controller's wallet.
-- Listing does not block controller actions: whatever a seller sets lapses once the buyer is the controller.
+- Listing does not block controller actions. Forward records lapse once the buyer is the controller, and Record SubIds move with the ID and can be deleted, but **issued NFT SubIds are permanent**: a market records `nft_subids_issued` (Registry offset 81) at listing and requires it unchanged at the sale (MEMO-ID-AUDIT.md F01).
 
 Helper functions exported by the crate (feature `cpi`):
 - `controller_of(registry, asset?, holder?)`

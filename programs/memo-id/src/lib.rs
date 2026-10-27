@@ -25,7 +25,7 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 declare_id!("Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp");
 
 #[cfg(not(feature = "mainnet"))]
-declare_id!("Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp");
+declare_id!("8FgBnyrx84d5zmLmww7LurCXgvZvYwqbXcDkppFZNhgR");
 
 /// The MEMO mint (the one memo-burn accepts)
 pub const MEMO_MINT: Pubkey = memo_burn::AUTHORIZED_MINT_PUBKEY;

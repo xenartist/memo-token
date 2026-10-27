@@ -25,6 +25,7 @@ AVAILABLE_SMOKE_TESTS=(
     "memo-mint"
     "memo-burn"
     "memo-home"
+    "memo-id"
     "memo-profile"
     "memo-project"
     "memo-chat"
@@ -83,6 +84,7 @@ ${BOLD}TESTS:${NC}
     memo-mint                Run memo-mint smoke test
     memo-burn                Run memo-burn smoke test (includes init + burn + verify)
     memo-home                Run memo-home smoke test (Collection, Asset, mine, withdraw, Vault burn)
+    memo-id                  Run memo-id smoke test (register, Primary ID, NFT SubId; v0 + lookup table)
     memo-profile             Run memo-profile smoke test (includes create + update + delete)
     memo-project             Run memo-project smoke test (includes create + verify)
     memo-blog                Run memo-blog smoke test (includes create + update + burn + mint)
