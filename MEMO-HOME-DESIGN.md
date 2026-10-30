@@ -301,7 +301,7 @@ A MEMO ID is a globally unique, user-chosen ID such as `@xen-artist` or `memo.ri
 - Each MemoId Asset is created with seed `sha256(memo_id)`, so its address follows from the ID and a second Asset for the same ID cannot exist in the Collection.
 - Registry PDA `[b"memo_id", sha256(memo_id)]`, one per full `memo_id`, which makes it globally unique:
   `kind` (Nft / Record), `asset` (for Nft), `parent`, `created_at`, `nft_subids_issued`, `record_subids`, `bump`, `target_set_by`, `target`, `memo_id`.
-- Primary ID PDA `[b"primary_id", target]`: `target`, `memo_id_registry`, `set_by`, `bump`.
+- Primary ID PDA `[b"primary_id", kind, target]` (kind 0 Address, 1 Asset): `target`, `memo_id_registry`, `set_by`, `bump`.
 - Format: `a-z 0-9 -` (DNS hostname rules: no leading or trailing `-`), stored lowercase; at most 63 characters per label and 253 in total (memo-home accepts Asset names that long; MEMO-ID-DESIGN.md §2). No `_` and no Unicode, so every MEMO ID is a valid DNS hostname and has no look-alike characters.
 - A MEMO ID is permanent: no expiry and no renewal, because memo-home Assets cannot be burned or reclaimed. Registration burns MEMO through memo-burn, priced by length in mints (short IDs cost more).
 
@@ -314,7 +314,7 @@ A MEMO ID is a globally unique, user-chosen ID such as `@xen-artist` or `memo.ri
   - pointing `scam.memo` at someone else's room shows nothing until the room's owner confirms;
   - after a room is sold, its MEMO ID is unverified until the new owner confirms;
   - a seller cannot redirect a MEMO ID just before a sale, because the forward record is void once the buyer is the controller.
-- Default resolution when no forward record is valid: the MEMO ID resolves to its controller's wallet.
+- Default resolution when no forward record is valid: the MEMO ID resolves to its controller only when the controller is a wallet, not a program-owned account or PDA (MEMO-ID-DESIGN.md §5).
 - One wallet or Asset can be the Target of several MEMO IDs; its Primary ID chooses which one is shown as `@handle`.
 
 #### SubIds

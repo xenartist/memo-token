@@ -25,7 +25,7 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 declare_id!("Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp");
 
 #[cfg(not(feature = "mainnet"))]
-declare_id!("8FgBnyrx84d5zmLmww7LurCXgvZvYwqbXcDkppFZNhgR");
+declare_id!("3U7nmWArstoRfkuGDsirEwiY6nngqjcooZxJ4Eh87MBt");
 
 /// The MEMO mint (the one memo-burn accepts)
 pub const MEMO_MINT: Pubkey = memo_burn::AUTHORIZED_MINT_PUBKEY;
@@ -69,9 +69,11 @@ pub const PRIMARY_ID_SEED: &[u8] = b"primary_id";
 pub const SUFFIX: &str = "memo";
 pub const COLLECTION_NAME: &str = "MEMO ID";
 /// URI of the MEMO ID Collection, fixed at `init` (no admin can change it later): the shared
-/// MEMO ID metadata JSON on Arweave. Must be set before the mainnet deployment.
-pub const COLLECTION_URI: &str = "";
-#[cfg(feature = "mainnet")]
+/// MEMO ID metadata JSON on Arweave (metadata/memo_id-metadata.json), also the default URI for IDs,
+/// through the ardrive.net gateway (wallets need https for the URI and for the JSON's image).
+pub const COLLECTION_URI: &str = "https://ardrive.net/Ff6UIKWrVHgbQkj68w-VHc8GLoi4gKR690F8jJAXkBA";
+// unit tests may still run with the mainnet IDs
+#[cfg(all(feature = "mainnet", not(test)))]
 const _: () = assert!(!COLLECTION_URI.is_empty(), "set COLLECTION_URI before building for mainnet");
 
 /// Label: 1-63 bytes; full ID: at most 253 bytes (the DNS hostname limits). The Asset is named
@@ -363,6 +365,16 @@ impl Target {
     pub fn key(&self) -> &Pubkey {
         match self {
             Target::Address(k) | Target::Asset(k) => k,
+        }
+    }
+
+    /// The kind as a seed (its Borsh variant index). A keypair-addressed Core Asset X can be
+    /// owned by one party while another still holds key X, so `Address(X)` and `Asset(X)` need
+    /// separate Primary IDs.
+    pub fn kind_seed(&self) -> &'static [u8] {
+        match self {
+            Target::Address(_) => &[0],
+            Target::Asset(_) => &[1],
         }
     }
 }
@@ -658,7 +670,7 @@ pub struct SetPrimary<'info> {
         init_if_needed,
         payer = payer,
         space = PrimaryId::SPACE,
-        seeds = [PRIMARY_ID_SEED, target.key().as_ref()],
+        seeds = [PRIMARY_ID_SEED, target.kind_seed(), target.key().as_ref()],
         bump
     )]
     pub primary: Account<'info, PrimaryId>,
@@ -792,7 +804,7 @@ impl SubidIndex {
     pub const SPACE: usize = 8 + 32 + 1;
 }
 
-/// The reverse record of a Target, at [PRIMARY_ID_SEED, target key]
+/// The reverse record of a Target, at [PRIMARY_ID_SEED, target kind, target key]
 #[account]
 pub struct PrimaryId {
     pub target: Target,
@@ -887,9 +899,12 @@ pub struct UriUpdated {
 // Helpers (the pure ones are also used by apps through the `cpi` feature)
 // ---------------------------------------------------------------------------------------------
 
-/// A DNS hostname label: 1-63 bytes of `a-z`, `0-9`, `-`, no `-` at either end, no `xn--`
+/// A DNS hostname label: 1-63 bytes of `a-z`, `0-9`, `-`, no `-` at either end, no `xn--`.
+/// The suffix itself is not a label, so no ID contains `.memo.` (a truncated `a.memo.b.memo`
+/// would look like `a.memo`).
 pub fn valid_label(label: &str) -> bool {
     !label.is_empty()
+        && label != SUFFIX
         && label.len() <= MAX_LABEL_LEN
         && !label.starts_with('-')
         && !label.ends_with('-')
@@ -959,7 +974,7 @@ pub fn subid_index_address(parent_registry: &Pubkey, index: u32) -> Pubkey {
 
 /// Primary ID PDA of a Target
 pub fn primary_id_address(target: &Target) -> Pubkey {
-    Pubkey::find_program_address(&[PRIMARY_ID_SEED, target.key().as_ref()], &crate::ID).0
+    Pubkey::find_program_address(&[PRIMARY_ID_SEED, target.kind_seed(), target.key().as_ref()], &crate::ID).0
 }
 
 /// Controller of an Asset: its Core owner, or, when `holder` is given, the owner of `holder`

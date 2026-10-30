@@ -81,11 +81,11 @@ mod names {
 
     #[test]
     fn labels() {
-        for ok in ["a", "0", "xen-artist", "0x1", "a-b-c", "x-n--a", &"a".repeat(63)] {
+        for ok in ["a", "0", "xen-artist", "0x1", "a-b-c", "x-n--a", "memos", "my-memo", &"a".repeat(63)] {
             assert!(valid_label(ok), "{}", ok);
         }
         let long = "a".repeat(64);
-        for bad in ["", "-a", "a-", "-", "A", "aB", "a_b", "a b", "a.b", "xn--a", "é", "a/b", &long] {
+        for bad in ["", "-a", "a-", "-", "A", "aB", "a_b", "a b", "a.b", "xn--a", "é", "a/b", "memo", &long] {
             assert!(!valid_label(bad), "{}", bad);
         }
     }
@@ -95,7 +95,7 @@ mod names {
         for ok in ["a.memo", "xen-artist.memo", "blog.xen-artist.memo", "a.b.c.memo"] {
             assert!(valid_memo_id(ok), "{}", ok);
         }
-        for bad in ["memo", ".memo", "a.x1", "a.memo.", "a..memo", "-a.memo", "A.memo", "amemo", "a.memox"] {
+        for bad in ["memo", ".memo", "a.x1", "a.memo.", "a..memo", "-a.memo", "A.memo", "amemo", "a.memox", "memo.memo", "a.memo.b.memo"] {
             assert!(!valid_memo_id(bad), "{}", bad);
         }
     }
@@ -352,8 +352,17 @@ mod accounts {
             Pubkey::find_program_address(&[b"subid", parent.as_ref(), &[2, 0, 0, 0]], &crate::ID).0
         );
         assert_ne!(subid_index_address(&parent, 0), subid_index_address(&parent, 1));
-        // a wallet and an Asset with the same key share one Primary ID slot
-        assert_eq!(primary_id_address(&Target::Address(key(9))), primary_id_address(&Target::Asset(key(9))));
+        // a wallet and an Asset with the same key have separate Primary IDs (a keypair Core
+        // Asset can be owned by someone other than the holder of its key)
+        assert_eq!(
+            primary_id_address(&Target::Address(key(9))),
+            Pubkey::find_program_address(&[b"primary_id", &[0], key(9).as_ref()], &crate::ID).0
+        );
+        assert_eq!(
+            primary_id_address(&Target::Asset(key(9))),
+            Pubkey::find_program_address(&[b"primary_id", &[1], key(9).as_ref()], &crate::ID).0
+        );
+        assert_ne!(primary_id_address(&Target::Address(key(9))), primary_id_address(&Target::Asset(key(9))));
     }
 }
 

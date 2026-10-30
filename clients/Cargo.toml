@@ -218,6 +218,10 @@ name = "admin-init-memo-id-alt"
 path = "id/src/admin-init-memo-id-alt.rs"
 
 [[bin]]
+name = "memo-id-update-uri"
+path = "id/src/memo-id-update-uri.rs"
+
+[[bin]]
 name = "home-web-seed"
 path = "home/src/home-web-seed.rs"
 

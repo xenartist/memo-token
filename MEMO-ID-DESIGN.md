@@ -5,7 +5,7 @@
 Status: implemented in `programs/memo-id` (2026-10-21) and tested on the local validator (unit tests and `regression-memo-id`); not deployed. The program ID in the code is a local development key until the testnet and mainnet keypairs are set up. Builds on `MEMO-HOME-DESIGN.md` §6.4, which this document refines into an implementable specification.
 
 Decided (2026-10-21): the URL scheme is `home://` (MEMO-HOME-DESIGN.md §6.6); label rules stay strict (DNS hostname labels, ASCII only, §2), following the industry standard rather than X1NS's looser rule.
-Also decided: suffix `memo`; no royalties on the MEMO ID Collection; no reserved names. Metadata: the registrant passes the URI (at most 256 bytes, must start with `https://`, `ar://` or `ipfs://`); there is no project server or gateway (decided 2026-10-21), so project clients default to one shared metadata JSON with a generic MEMO ID image, stored permanently on Arweave (confirmed 2026-10-21; uploaded once before launch, its `ar://` URI fixed in the clients); wallets show the on-chain name as the title. Prices: decided, see §4.
+Also decided: suffix `memo`; no royalties on the MEMO ID Collection; no reserved names. Metadata: the registrant passes the URI (at most 256 bytes, must start with `https://`, `ar://` or `ipfs://`); there is no project server or gateway (decided 2026-10-21), so project clients default to one shared metadata JSON with a generic MEMO ID image, stored permanently on Arweave (confirmed 2026-10-21; uploaded through Turbo; decided 2026-10-30: the default URI and `COLLECTION_URI` are both `https://ardrive.net/Ff6UIKWrVHgbQkj68w-VHc8GLoi4gKR690F8jJAXkBA`, copy in `metadata/memo_id-metadata.json`; its `image` is `https://ardrive.net/YtT8Mte_qBwHmc2_UDRwziXdQi-5QYP_Y2m2Y2__AN8`, and its `"collection": { "name": "MEMO ID", "family": "MEMO" }` field makes the X1 wallet title the group `MEMO ID`). `ardrive.net` serves Turbo uploads at once; `arweave.net` still answered 404 for them a day after they were final. If the gateway goes away, the data stays on Arweave: controllers move an ID with `update_uri`, while the Collection loses only its image and description. Wallets need `https://` for both the URI and the JSON's `image`: X1 wallet test 2026-10-29 showed nothing for an `ar://` URI or an `ar://` image, and the image with both as https (MEMO-ID-AUDIT.md, testnet wallet tests); wallets show the on-chain name as the title. Prices: decided, see §4.
 
 ---
 
@@ -33,7 +33,7 @@ Later:
 |---|---|
 | Default suffix | **`memo`**: it is the project name, pairs with the `home://` scheme (`home://xen-artist.memo/`: the scheme names where content lives, the suffix names the namespace), and is not an IANA top-level domain. As of the IANA root zone list of 2026-10-20, `id`, `rip`, `me`, `mo` and `meme` are TLDs; `memo`, `x1`, `xnt` and `home` are not, and `home` is permanently reserved by ICANN for name-collision reasons. A future gTLD round could still delegate `.memo`. On X1, the X1 team runs X1NS (`id.x1.xyz`) with the suffix `.x1`, so memo-id never issues `.x1` names; `.memo` does not collide with it. |
 | `@handle` | `@xen-artist` is short for `xen-artist.memo`. |
-| Label characters | `a-z`, `0-9`, `-`; stored lowercase; no leading or trailing `-`; no `xn--` prefix (reserved by DNS for internationalized names, so no look-alike Unicode can appear in any reader) |
+| Label characters | `a-z`, `0-9`, `-`; stored lowercase; no leading or trailing `-`; no `xn--` prefix (reserved by DNS for internationalized names, so no look-alike Unicode can appear in any reader). The label `memo` itself is not allowed at any level, so no ID contains `.memo.`: a truncated `xen-artist.memo.evil.memo` would otherwise read as `xen-artist.memo` (MEMO-ID-AUDIT.md F14). |
 | Label length | 1–63 bytes |
 | Full ID length | at most 253 bytes, the DNS hostname limit (decided 2026-10-21). The Asset is named after the full `memo_id`, so memo-home's Asset name limit was raised from 64 to 253 bytes for this. A second-level ID is at most 68 bytes (a 63-byte label plus `.memo`); longer IDs come from SubId levels. |
 | Levels | `label.memo` (registered), then any number of SubId levels below an NFT ID, e.g. `blog.xen-artist.memo` |
@@ -55,7 +55,7 @@ The clients normalize input (trim, lowercase) before sending. The program reject
 | MEMO ID Collection | memo-home `collection_address(memo-id Authority, sha256("memo"))` | Core Collection "MEMO ID", URI `COLLECTION_URI` (fixed at `init`), `max_share_bps = 0`, no `max_assets`, no royalties | once |
 | Registry | `[b"memo_id", sha256(memo_id)]` | see below; 160 bytes plus the ID's length (166–413) | ≈ 0.0020–0.0038 XNT |
 | SubId Index | `[b"subid", parent Registry, i as u32 LE]` | `registry` (the issued SubId's Registry), `bump`; 41 bytes | ≈ 0.0012 XNT per NFT SubId |
-| Primary ID | `[b"primary_id", target_key]` | `target` (Target), `memo_id_registry` (Pubkey), `set_by` (Pubkey), `bump`; 106 bytes | ≈ 0.0016 XNT |
+| Primary ID | `[b"primary_id", kind (0 Address, 1 Asset), target_key]` | `target` (Target), `memo_id_registry` (Pubkey), `set_by` (Pubkey), `bump`; 106 bytes | ≈ 0.0016 XNT |
 | MemoId Asset | memo-home `asset_address(MEMO ID Collection, sha256(memo_id))` | Core Asset, name = the full `memo_id`, URI from the registrant; with its Vault and Vault State | ≈ 0.0048 XNT |
 
 Registry fields, fixed-size ones first so readers can filter with memcmp at fixed offsets:
@@ -110,7 +110,8 @@ The numbers follow the existing app prices (memo-chat group 42,069 MEMO, memo-pr
 - **Controller** of a Record SubId: the controller of its parent.
 - **Forward** (`memo_id` → Target): set by the controller. memo-id stores `target_set_by = controller`. The record is valid only while `target_set_by` equals the current controller, so it lapses automatically on a sale.
 - **Reverse** (Primary ID): set for a Target by that Target's controller. For an `Address`, that is the address itself as a signer. For an `Asset`, it is `owner_of(asset)`, with the same one-level Vault rule. It is valid only while `set_by` equals that controller.
-- **Verified** means the forward record and the reverse record point at each other and both are valid. Apps display only verified MEMO IDs. When no valid forward record exists, a MEMO ID resolves to its controller's wallet.
+- **Verified** means the forward record and the reverse record point at each other and both are valid. Apps display only verified MEMO IDs. When no valid forward record exists, a MEMO ID resolves to its controller only if that controller is a wallet (a System-owned address, not a program-owned account or PDA). Otherwise it does not resolve: an ID listed in escrow, held by an Asset signer or left in a non-memo-home Vault has a PDA as its controller, and funds sent there are usually lost (MEMO-ID-AUDIT.md F15). With a verified `holder`, the holder's owner is the controller and the same rule applies.
+- **Display**: apps and markets show the on-chain name (the Asset name, equal to `Registry.memo_id`), never the `name` field of the URI's JSON, which the controller can set to anything (F16). Long IDs are shortened in the middle so the `.memo` end and the first label stay visible; wallets that cut the end can hide the real suffix.
 - Listing does not block controller actions. Forward records lapse once the buyer is the controller, and Record SubIds move with the ID and can be deleted, but **issued NFT SubIds are permanent**: a market records `nft_subids_issued` (Registry offset 81) at listing and requires it unchanged at the sale (MEMO-ID-AUDIT.md F01).
 
 Helper functions exported by the crate (feature `cpi`):
@@ -153,7 +154,7 @@ With the table, `register` always fits: a 68-byte ID with a 256-byte URI is 1,05
 | 200 bytes | 122 | 250 |
 | 253 bytes | 55 | 182 |
 
-The default `ar://` URI is 48 bytes, so every case fits with it. A client warns before sending when a long custom URI would not fit. The regression suite issues a 253-byte SubId (four levels) and transfers it.
+The table assumes the new owner is one of the signers. A new owner who is none of payer, controller and holder adds 32 bytes to the message: subtract 32 from the first column. At 253 bytes that leaves 23 bytes, so even the default 63-byte gateway URI does not fit (MEMO-ID-AUDIT.md F17). Clients check the serialized size before asking for a signature; when it is over 1,232 bytes they issue the SubId to the controller (or payer) and transfer it in a second transaction, or ask for a shorter URI. The regression suite issues a 253-byte SubId (four levels) and transfers it.
 
 CPI depth:
 - `user → memo-id → memo-home → Core → System` is 4.
@@ -169,6 +170,7 @@ CPI depth:
 - Prices are computed on-chain from the live supply. The memo's `burn_amount` must equal the price exactly, so the client reads the supply just before sending (simulate first, §7 of the home design).
 - Record SubIds cannot have children, so deleting one never orphans anything.
 - `set_primary` uses `init_if_needed`: every field is rewritten on each call, so an existing Primary ID is simply replaced.
+- The kind is part of the Primary ID seed. A third-party Core Asset created at a keypair address X can be owned by one party while another still holds key X; `Address(X)` and `Asset(X)` therefore have separate Primary IDs, and neither can replace or close the other's (MEMO-ID-AUDIT.md F13).
 - The Collection URI is a program constant, because no admin can change the Collection after `init`. A mainnet build fails until `COLLECTION_URI` is set to the shared metadata JSON on Arweave.
 - No admin, no fees beyond the burn, no upgrade-sensitive state. Locked when stable, after memo-home.
 
@@ -180,7 +182,7 @@ CPI depth:
 2. **Prices**: see §4.
 3. **Royalties**: none.
 4. **Reserved names**: none.
-5. **Metadata**: see the top of this document.
+5. **Metadata**: see the top of this document. Project clients offer two choices, at `register` and later through `update_uri` (decided 2026-10-29): the shared default JSON, or a URI the user pastes (content the user hosts on Arweave, IPFS or HTTPS). Clients do not upload images or JSON for the user, so they depend on no upload service. A custom image changes nothing about identity: apps show the on-chain name (§5, F16).
 6. **Full ID length**: at most 253 bytes; memo-home's Asset name limit raised to 253 (§2). This needs a memo-home upgrade on testnet and mainnet before memo-id is deployed.
 7. **Issued NFT SubIds**: a count in the Registry plus the SubId Index (§3).
 

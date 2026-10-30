@@ -1,0 +1,10 @@
+{
+  "name": "MEMO ID",
+  "description": "An on-chain name on X1 ending in .memo.",
+  "image": "https://ardrive.net/YtT8Mte_qBwHmc2_UDRwziXdQi-5QYP_Y2m2Y2__AN8",
+  "collection": { "name": "MEMO ID", "family": "MEMO" },
+  "properties": {
+    "category": "image",
+    "files": [{ "uri": "https://ardrive.net/YtT8Mte_qBwHmc2_UDRwziXdQi-5QYP_Y2m2Y2__AN8", "type": "image/png" }]
+  }
+}

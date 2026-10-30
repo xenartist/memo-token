@@ -187,8 +187,10 @@ impl<'a> Id<'a> {
     fn subid_index(&self, parent: &Pubkey, i: u32) -> Pubkey {
         Pubkey::find_program_address(&[b"subid", parent.as_ref(), &i.to_le_bytes()], &self.prog).0
     }
-    fn primary(&self, target: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(&[b"primary_id", target.as_ref()], &self.prog).0
+    /// Primary ID of a Target: [b"primary_id", kind (0 Address, 1 Asset), key]
+    fn primary(&self, target: &Target) -> Pubkey {
+        let kind = match target { Target::Address(_) => 0u8, Target::Asset(_) => 1 };
+        Pubkey::find_program_address(&[b"primary_id", &[kind], target.key().as_ref()], &self.prog).0
     }
     fn reg(&self, memo_id: &str) -> Option<Reg> { self.e.data(&self.registry(memo_id)).map(|d| parse_reg(&d)) }
     fn asset_data(&self, asset: &Pubkey) -> Option<(Pubkey, Option<Pubkey>, String, String)> {
@@ -368,13 +370,13 @@ impl<'a> Id<'a> {
             AccountMeta::new(*payer, true),
             AccountMeta::new_readonly(*signer, true),
             AccountMeta::new_readonly(self.registry(memo_id), false),
-            AccountMeta::new(self.primary(&target.key()), false),
+            AccountMeta::new(self.primary(&target), false),
             self.opt(target_asset),
             self.opt(holder),
             AccountMeta::new_readonly(system_program(), false),
         ])
     }
-    fn clear_primary(&self, signer: &Pubkey, target: &Pubkey, target_asset: Option<&Pubkey>, holder: Option<&Pubkey>) -> Instruction {
+    fn clear_primary(&self, signer: &Pubkey, target: &Target, target_asset: Option<&Pubkey>, holder: Option<&Pubkey>) -> Instruction {
         self.ix("clear_primary", vec![], vec![
             AccountMeta::new(*signer, true),
             AccountMeta::new(self.primary(target), false),
@@ -401,7 +403,7 @@ impl<'a> Id<'a> {
         ])
     }
     /// Primary ID: (target, registry, set_by)
-    fn primary_data(&self, target: &Pubkey) -> Option<(Target, Pubkey, Pubkey)> {
+    fn primary_data(&self, target: &Target) -> Option<(Target, Pubkey, Pubkey)> {
         self.e.data(&self.primary(target)).map(|d| {
             let k = pk(&d, 9);
             let t = if d[8] == 0 { Target::Address(k) } else { Target::Asset(k) };
@@ -472,6 +474,28 @@ fn core_transfer(asset: &Pubkey, col: &Pubkey, owner: &Pubkey, new_owner: &Pubke
             AccountMeta::new_readonly(CORE, false),
         ],
         data: vec![14, 0],
+    }
+}
+
+/// CreateV1 of a Core Asset at keypair address `asset`, owned by `owner`, in no collection
+fn core_create_plain(asset: &Pubkey, payer: &Pubkey, owner: &Pubkey) -> Instruction {
+    let mut d = vec![0u8, 0];
+    bstr(&mut d, "plain core asset");
+    bstr(&mut d, "https://example.com/plain.json");
+    d.push(0);
+    Instruction {
+        program_id: CORE,
+        accounts: vec![
+            AccountMeta::new(*asset, true),
+            AccountMeta::new_readonly(CORE, false),
+            AccountMeta::new_readonly(CORE, false),
+            AccountMeta::new(*payer, true),
+            AccountMeta::new_readonly(*owner, false),
+            AccountMeta::new_readonly(CORE, false),
+            AccountMeta::new_readonly(system_program(), false),
+            AccountMeta::new_readonly(CORE, false),
+        ],
+        data: d,
     }
 }
 
@@ -588,6 +612,8 @@ fn main() {
     let m = format!("{}.memo", long);
     let pl = Id::payload("register", &ap, &m);
     rej("R17", "register a 64-character label", id.tx(price5, &pl, id.register(&ap, &long, URI)), INVALID_LABEL);
+    let pl_suffix = Id::payload("register", &ap, "memo.memo");
+    rej("R34", "register the label \"memo\" (the suffix is not a label)", id.tx(price5, &pl_suffix, id.register(&ap, "memo", URI)), INVALID_LABEL);
     let label2 = format!("bob{}", e.nonce());
     let id2 = format!("{}.memo", label2);
     let pl2 = Id::payload("register", &ap, &id2);
@@ -658,6 +684,7 @@ fn main() {
     let other_asset = id.asset(&format!("{}.memo", free_label(&id, 4, 0)));
     rej0("S07", "create a SubId with another Asset", id.create_subid(&ap, &ap, &a_id, &other_asset, None, "shop", None), &alice, &[], WRONG_ASSET);
     rej0("S08", "create a SubId with a 64-character label", id.create_subid(&ap, &ap, &a_id, &a_asset, None, &"a".repeat(64), None), &alice, &[], INVALID_LABEL);
+    rej0("S11", "create a SubId with the label \"memo\" (no ID contains .memo.)", id.create_subid(&ap, &ap, &a_id, &a_asset, None, "memo", None), &alice, &[], INVALID_LABEL);
 
     let tmp = format!("tmp.{}", a_id);
     e.must("create tmp SubId", &[id.create_subid(&ap, &ap, &a_id, &a_asset, None, "tmp", None)], &alice, &[]);
@@ -816,27 +843,49 @@ fn main() {
 
     // ------------------------------------------------------------------ Primary IDs
     let out = e.exec(&[id.set_primary(&ap, &ap, &a_id, Target::Address(ap), None, None)], &alice, &[]);
-    let pd = id.primary_data(&ap);
+    let pd = id.primary_data(&Target::Address(ap));
     e.record("P01", "wallet sets its Primary ID", out.ok() && pd == Some((Target::Address(ap), id.registry(&a_id), ap)), &format!("{} {:?}", out.brief(), pd));
     let r = id.reg(&a_id).unwrap();
     e.record("P02", "verified: forward and reverse match, both set by the current controllers",
              r.target == Some(Target::Address(ap)) && r.target_set_by == ap && pd.is_some_and(|p| p.1 == id.registry(&a_id) && p.2 == ap), "");
     rej0("P03", "set another wallet's Primary ID", id.set_primary(&bp, &bp, &a_id, Target::Address(ap), None, None), &bob, &[], NOT_CONTROLLER);
     let out = e.exec(&[id.set_primary(&ap, &ap, &wiki, Target::Address(ap), None, None)], &alice, &[]);
-    e.record("P04", "set again: the Primary ID is replaced", out.ok() && id.primary_data(&ap).map(|p| p.1) == Some(id.registry(&wiki)), &out.brief());
+    e.record("P04", "set again: the Primary ID is replaced", out.ok() && id.primary_data(&Target::Address(ap)).map(|p| p.1) == Some(id.registry(&wiki)), &out.brief());
     let out = e.exec(&[id.set_primary(&bp, &bp, &shop, Target::Asset(shop_asset), Some(&shop_asset), None)], &bob, &[]);
-    e.record("P05", "an Asset's owner sets its Primary ID", out.ok() && id.primary_data(&shop_asset) == Some((Target::Asset(shop_asset), id.registry(&shop), bp)), &out.brief());
+    e.record("P05", "an Asset's owner sets its Primary ID", out.ok() && id.primary_data(&Target::Asset(shop_asset)) == Some((Target::Asset(shop_asset), id.registry(&shop), bp)), &out.brief());
     rej0("P06", "set an Asset's Primary ID as a non-owner",
          id.set_primary(&ap, &ap, &a_id, Target::Asset(shop_asset), Some(&shop_asset), None), &alice, &[], NOT_CONTROLLER);
     rej0("P07", "Asset target without its account", id.set_primary(&bp, &bp, &shop, Target::Asset(shop_asset), None, None), &bob, &[], WRONG_ASSET);
     rej0("P08", "Asset target with another account", id.set_primary(&bp, &bp, &shop, Target::Asset(shop_asset), Some(&a_asset), None), &bob, &[], WRONG_ASSET);
-    rej0("P09", "clear another's Primary ID", id.clear_primary(&bp, &ap, None, None), &bob, &[], NOT_CONTROLLER);
+    rej0("P09", "clear another's Primary ID", id.clear_primary(&bp, &Target::Address(ap), None, None), &bob, &[], NOT_CONTROLLER);
     let before = e.c.get_balance(&ap).unwrap();
-    let rent = e.c.get_balance(&id.primary(&ap)).unwrap();
-    let out = e.exec(&[id.clear_primary(&ap, &ap, None, None)], &alice, &[]);
+    let rent = e.c.get_balance(&id.primary(&Target::Address(ap))).unwrap();
+    let out = e.exec(&[id.clear_primary(&ap, &Target::Address(ap), None, None)], &alice, &[]);
     let after = e.c.get_balance(&ap).unwrap();
-    e.record("P10", "clear_primary closes it, rent to the signer", out.ok() && id.primary_data(&ap).is_none() && after + 5000 == before + rent,
+    e.record("P10", "clear_primary closes it, rent to the signer", out.ok() && id.primary_data(&Target::Address(ap)).is_none() && after + 5000 == before + rent,
              &format!("{} rent {}", out.brief(), rent));
+
+    // a keypair-addressed Core Asset X: the wallet keeps key X and sells X to bob. Address(X) and
+    // Asset(X) have separate Primary IDs, so neither party can replace or close the other's
+    let x = Keypair::new();
+    let xp = x.pubkey();
+    e.must("create a keypair Core Asset for the wallet", &[core_create_plain(&xp, &wp, &wp)], w, &[&x]);
+    e.must("sell it to bob", &[core_transfer(&xp, &CORE, &wp, &bp)], w, &[]);
+    let out = e.exec(&[id.set_primary(&bp, &bp, &shop, Target::Asset(xp), Some(&xp), None)], &bob, &[]);
+    let bob_record = Some((Target::Asset(xp), id.registry(&shop), bp));
+    e.record("K01", "the buyer sets the Primary ID of a keypair Core Asset",
+             out.ok() && id.primary_data(&Target::Asset(xp)) == bob_record, &out.brief());
+    let out = e.exec(&[id.set_primary(&wp, &xp, &a_id, Target::Address(xp), None, None)], w, &[&x]);
+    e.record("K02", "the key holder sets Address(X) at its own address; the buyer's Asset(X) record is unchanged",
+             out.ok() && id.primary_data(&Target::Address(xp)) == Some((Target::Address(xp), id.registry(&a_id), xp))
+                 && id.primary_data(&Target::Asset(xp)) == bob_record,
+             &out.brief());
+    let mut onto = id.set_primary(&wp, &xp, &a_id, Target::Address(xp), None, None);
+    onto.accounts[3].pubkey = id.primary(&Target::Asset(xp));
+    e.reject("K03", "the key holder writes Address(X) into the Asset(X) Primary ID", vec![onto], w, &[&x],
+             Expect::Custom(0, ANCHOR_CONSTRAINT_SEEDS), &[], &[]);
+    rej0("K04", "the key holder clears the Asset(X) Primary ID", id.clear_primary(&xp, &Target::Asset(xp), Some(&xp), None), w, &[&x], NOT_CONTROLLER);
+    e.record("K05", "the buyer's record survives", id.primary_data(&Target::Asset(xp)) == bob_record, "");
 
     // ------------------------------------------------------------------ transfer and the Vault rule
     // bob's NFT SubId moves into the Vault of alice's MEMO ID Asset: alice controls it through the holder
@@ -844,7 +893,7 @@ fn main() {
     e.must("move shop into alice's Vault", &[core_transfer(&shop_asset, &id.collection, &bp, &a_vault)], &bob, &[]);
     let r = id.reg(&shop).unwrap();
     e.record("V01", "after the transfer bob's forward records lapse (target_set_by is not the controller)",
-             r.target_set_by != a_vault && id.primary_data(&shop_asset).is_some_and(|p| p.2 == bp), "");
+             r.target_set_by != a_vault && id.primary_data(&Target::Asset(shop_asset)).is_some_and(|p| p.2 == bp), "");
     rej0("V02", "the old owner can no longer set the target", id.set_target(&bp, &shop, None, &shop_asset, None, Some(Target::Address(bp))), &bob, &[], NOT_CONTROLLER);
     rej0("V03", "without the holder, the controller is the Vault (nobody can sign)",
          id.set_target(&ap, &shop, None, &shop_asset, None, Some(Target::Address(ap))), &alice, &[], NOT_CONTROLLER);
@@ -856,15 +905,35 @@ fn main() {
     let out = e.exec(&[id.create_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "gift", None)], &alice, &[]);
     e.record("V06", "and creates SubIds under it", out.ok() && id.reg(&format!("gift.{}", shop)).is_some(), &out.brief());
     let out = e.exec(&[id.set_primary(&ap, &ap, &a_id, Target::Asset(shop_asset), Some(&shop_asset), Some(&a_asset))], &alice, &[]);
-    e.record("V07", "and sets the held Asset's Primary ID", out.ok() && id.primary_data(&shop_asset).is_some_and(|p| p.2 == ap), &out.brief());
+    e.record("V07", "and sets the held Asset's Primary ID", out.ok() && id.primary_data(&Target::Asset(shop_asset)).is_some_and(|p| p.2 == ap), &out.brief());
+    let gift = format!("gift.{}", shop);
+    let before = e.c.get_balance(&ap).unwrap();
+    let rent = e.c.get_balance(&id.registry(&gift)).unwrap();
+    let out = e.exec(&[id.delete_subid(&ap, &shop, &shop_asset, Some(&a_asset), &gift)], &alice, &[]);
+    e.record("V08", "through the holder: delete a Record SubId, rent to the holder's owner",
+             out.ok() && id.reg(&gift).is_none() && e.c.get_balance(&ap).unwrap() + 5000 == before + rent, &out.brief());
+    let out = e.exec(&[cu(400_000), id.update_uri(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "ar://held")], &alice, &[]);
+    e.record("V09", "through the holder: update_uri", out.ok() && id.asset_data(&shop_asset).is_some_and(|a| a.2 == shop && a.3 == "ar://held"), &out.brief());
+    let held_sub = format!("held.{}", shop);
+    e.must("create a Record SubId through the holder", &[id.create_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "held", None)], &alice, &[]);
+    let n = id.reg(&shop).unwrap().nft_subids_issued;
+    let pl_held = Id::payload("issue_subid", &ap, &held_sub);
+    let ix = id.issue_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), &held_sub, n, &ap, URI);
+    e.burn_ok("V10", "through the holder: issue an NFT SubId (burns 69 mints)", id.tx(price5, &pl_held, ix), &alice, &[], &ap, price5, 1);
+    let before = e.c.get_balance(&ap).unwrap();
+    let rent = e.c.get_balance(&id.primary(&Target::Asset(shop_asset))).unwrap();
+    let out = e.exec(&[id.clear_primary(&ap, &Target::Asset(shop_asset), Some(&shop_asset), Some(&a_asset))], &alice, &[]);
+    e.record("V11", "through the holder: clear the held Asset's Primary ID, rent to the signer",
+             out.ok() && id.primary_data(&Target::Asset(shop_asset)).is_none() && e.c.get_balance(&ap).unwrap() + 5000 == before + rent,
+             &out.brief());
 
     // a sale of alice's ID: everything alice set lapses for bob
     e.must("transfer alice's ID to bob", &[core_transfer(&a_asset, &id.collection, &ap, &bp)], &alice, &[]);
     let r = id.reg(&a_id).unwrap();
-    e.record("V08", "after a sale the forward record is void for the buyer", r.target_set_by == ap && r.target_set_by != bp, "");
+    e.record("V12", "after a sale the forward record is void for the buyer", r.target_set_by == ap && r.target_set_by != bp, "");
     let out = e.exec(&[id.set_target(&bp, &blog, Some(&a_id), &a_asset, None, Some(Target::Address(bp)))], &bob, &[]);
-    e.record("V09", "the buyer controls the Record SubIds", out.ok() && id.reg(&blog).is_some_and(|r| r.target_set_by == bp), &out.brief());
-    rej0("V10", "the seller no longer does", id.set_target(&ap, &blog, Some(&a_id), &a_asset, None, None), &alice, &[], NOT_CONTROLLER);
+    e.record("V13", "the buyer controls the Record SubIds", out.ok() && id.reg(&blog).is_some_and(|r| r.target_set_by == bp), &out.brief());
+    rej0("V14", "the seller no longer does", id.set_target(&ap, &blog, Some(&a_id), &a_asset, None, None), &alice, &[], NOT_CONTROLLER);
 
     // ------------------------------------------------------------------ update_uri
     let out = e.exec(&[cu(400_000), id.update_uri(&bp, &bp, &a_id, &a_asset, None, "ipfs://bafynew")], &bob, &[]);

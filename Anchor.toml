@@ -13,7 +13,7 @@ memo_project = "ENVapgjzzMjbRhLJ279yNsSgaQtDYYVgWq98j54yYnyx"
 memo_blog = "HPvqPUneCLwb8YYoYTrWmy6o7viRKsnLTgxwkg7CCpfB"
 memo_forum = "9kwS5nSidmoHq84TyNzqFrtD29odp4sdRxm97tCbdpbS"
 memo_home = "J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv"
-memo_id = "8FgBnyrx84d5zmLmww7LurCXgvZvYwqbXcDkppFZNhgR"
+memo_id = "3U7nmWArstoRfkuGDsirEwiY6nngqjcooZxJ4Eh87MBt"
 
 [programs.mainnet]
 memo_mint = "8iq6zqaEVcfaym2u8t939PAN5jmfPVc6Z333RuxKTTZX"
@@ -33,7 +33,7 @@ memo_token = "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1"
 memo_token = "memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick"
 
 [lookup_tables.testnet]
-memo_id = "D8r17Ta8pZyGgGJpuT63sDApM9XR2BAY1Wwcpiz7Ud29"
+memo_id = "CcNJEzWdEFL3mEz67T1Fg5GAqi4rXzvZMrajqeD8tk57"
 
 [registry]
 url = "https://api.apr.dev"

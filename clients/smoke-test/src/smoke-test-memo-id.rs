@@ -37,7 +37,8 @@ use memo_token_client::{
 /// Burn prices in hundredths of a mint (memo-id PRICE_CENTI_MINTS_5_PLUS / _ISSUE_SUBID)
 const PRICE_CENTI_REGISTER_5_PLUS: u64 = 6_900;
 const PRICE_CENTI_ISSUE_SUBID: u64 = 6_900;
-const URI: &str = "https://example.com/memo-id-smoke.json";
+/// The shared MEMO ID metadata JSON (memo-id COLLECTION_URI), the default for project clients
+const URI: &str = "https://ardrive.net/Ff6UIKWrVHgbQkj68w-VHc8GLoi4gKR690F8jJAXkBA";
 const SUBID_LABEL: &str = "www";
 const MAX_TX_BYTES: usize = 1232;
 
@@ -90,8 +91,9 @@ impl Ctx {
     fn asset(&self, memo_id: &str) -> Pubkey {
         Pubkey::find_program_address(&[b"asset", self.a.collection.as_ref(), &sha(memo_id.as_bytes())], &self.a.home).0
     }
-    fn primary(&self, target: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(&[b"primary_id", target.as_ref()], &self.a.program).0
+    /// Primary ID of an `Address` target: [b"primary_id", kind 0, address]
+    fn primary(&self, address: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(&[b"primary_id", &[0], address.as_ref()], &self.a.program).0
     }
     fn subid_index(&self, parent: &Pubkey, i: u32) -> Pubkey {
         Pubkey::find_program_address(&[b"subid", parent.as_ref(), &i.to_le_bytes()], &self.a.program).0
