@@ -100,7 +100,7 @@ offline backup, then `chmod 700` the directories and `chmod 600` the `.gpg` file
 
 ```bash
 ./scripts/keys.sh unlock mainnet     # in your own terminal; asks for the mainnet passphrase
-./scripts/deploy-prod-staging-testnet.sh    # or ./scripts/deploy-mainnet.sh
+./scripts/deploy-prod-staging-testnet.sh memo_mint    # or ./scripts/deploy-mainnet.sh; always name the programs
 cargo run --bin verify-deployment -- <WALLET_WITH_MEMO>
 ./scripts/keys.sh lock
 ```
@@ -126,9 +126,12 @@ Old clients and old programs do not pass these accounts, so their mint/burn call
 New clients also work against the old programs (Anchor ignores extra trailing accounts). So:
 
 1. **Release the updated client (memo-app) first.** It works with both old and new programs.
-2. **Upgrade all 8 programs in one run**: `./scripts/deploy-mainnet.sh` with no arguments.
-   The script builds everything first, then upgrades in order:
-   `memo_mint` → `memo_burn` → `memo_home` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
+2. **Upgrade the programs of the release in one run, named explicitly**:
+   `./scripts/deploy-mainnet.sh memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum` for all eight mainnet programs.
+   Do not run it without arguments. The script then selects all 9 programs, including `memo_id`, which is not
+   on mainnet: today that aborts (no `memo_id` program keypair), and once the keypair exists it would deploy memo-id.
+   The script builds every named program first, then upgrades in this order:
+   `memo_mint` → `memo_burn` → `memo_home` → `memo_id` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`.
    Between the `memo_mint` / `memo_burn` upgrade and the upgrade of the dependent programs,
    mint/burn through those dependent programs fails. Do not stop halfway.
    **Never upgrade only the apps.** They depend on the current memo-mint / memo-burn (for example, fractional
@@ -138,7 +141,13 @@ New clients also work against the old programs (Anchor ignores extra trailing ac
    If that step fails, the script stops and prints the retry command. Until both accounts exist, every mint/burn fails.
 4. Verify with `cargo run --bin verify-deployment -- <WALLET_WITH_MEMO>`. It is read-only: it runs simulations
    only and sends nothing. It uses `cluster` / `program_env` from `Anchor.toml` and checks:
-   - all 7 programs: upgrade authority is `deploy_admin`, and the on-chain bytecode matches `target/deploy/*.so`
+   - every program: upgrade authority is `deploy_admin`, and the on-chain ELF hash matches
+     `deployments/<network>.sha256`. The deploy scripts update that file after each deployment to the network
+     it names, so commit it with the release. A memo-mint-only upgrade leaves the other recorded hashes valid,
+     although rebuilding the apps from the new tree gives different bytes. Prod Staging, and programs the file
+     does not list, are compared with the local build in `target/deploy` instead. `memo_id` is skipped where it
+     is not deployed.
+   - the SPL Memo program is X1's non-upgradeable build with the pinned hash (memo-mint relies on its UTF-8 check)
    - the MEMO mint authority is the memo-mint PDA
    - `mint_state` and `global_burn_stats` exist with the right owner, size and discriminator
    - simulated mints and burns:
@@ -242,7 +251,7 @@ declare_id!("YOUR_MAINNET_PROGRAM_ID_HERE");  // ← Update this
 declare_id!("A31a17bhgQyRQygeZa1SybytjbCdjMpu6oPr9M3iQWzy");  // Testnet (unchanged)
 ```
 
-Repeat for all 5 programs: `memo-mint`, `memo-burn`, `memo-chat`, `memo-profile`, `memo-project`.
+Repeat for all 9 programs: `memo-mint`, `memo-burn`, `memo-home`, `memo-id`, `memo-chat`, `memo-profile`, `memo-project`, `memo-blog`, `memo-forum`.
 
 ### 3.3 Update Authority Public Keys
 
@@ -259,14 +268,17 @@ cat ~/.config/solana/memo-token/mainnet/authority/memo_token_mint-keypair.pub
 Update in contract code:
 
 ```rust
-// For memo-mint, memo-burn, memo-profile, memo-chat, memo-project
+// For memo-mint, memo-burn, memo-chat, memo-profile, memo-project, memo-blog and memo-forum.
+// memo-home takes the mint from memo-mint, and memo-id takes it from memo-burn. Both also assert the
+// program IDs and the mint per network at compile time (the `const _: () = assert!(...)` blocks in
+// their lib.rs). Update those addresses too.
 #[cfg(feature = "mainnet")]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("YOUR_MAINNET_MINT_AUTHORITY");
 
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_MINT_PUBKEY: Pubkey = pubkey!("HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
 
-// For memo-chat and memo-project only
+// For memo-mint, memo-burn, memo-chat, memo-project and memo-forum
 #[cfg(feature = "mainnet")]
 pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("YOUR_MAINNET_ADMIN_AUTHORITY");
 
@@ -324,11 +336,11 @@ Before running deployment:
 ```bash
 cd ~/memo-token
 
-# Deploy all programs
-./scripts/deploy-prod-staging-testnet.sh
+# Name the programs of the release (never run it without arguments: it would include memo_id)
+./scripts/deploy-prod-staging-testnet.sh memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum
 
-# Or deploy specific programs
-./scripts/deploy-prod-staging-testnet.sh memo_burn memo_chat
+# Or only some programs
+./scripts/deploy-prod-staging-testnet.sh memo_mint
 ```
 
 The script will:
@@ -371,11 +383,11 @@ Before running deployment:
 ```bash
 cd ~/memo-token
 
-# Deploy all programs
-./scripts/deploy-mainnet.sh
+# Name the programs of the release (never run it without arguments: it would include memo_id)
+./scripts/deploy-mainnet.sh memo_mint memo_burn memo_home memo_chat memo_profile memo_project memo_blog memo_forum
 
-# Or deploy specific programs
-./scripts/deploy-mainnet.sh memo_burn memo_chat
+# Or only some programs
+./scripts/deploy-mainnet.sh memo_mint
 ```
 
 The script will:
@@ -383,7 +395,8 @@ The script will:
 2. Verify program IDs and authorities match code
 3. Build with `mainnet` feature flag
 4. Deploy to X1 Mainnet
-5. Display deployment summary
+5. Record each program's hash in `deployments/mainnet.sha256` (commit it)
+6. Display deployment summary
 
 ### 6.3 Verify Deployment
 

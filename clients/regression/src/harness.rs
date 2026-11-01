@@ -3,27 +3,43 @@
 //! The suites only run against a local solana-test-validator (scripts/local-validator.sh,
 //! scripts/run-regression-tests.sh). Every transaction is sent with skip_preflight, so failing
 //! transactions land on-chain, and each case asserts the exact outcome:
-//!   - rejections: the exact `InstructionError [index, Custom(code)]` (or other exact error) and no
-//!     change to any watched state (balances, supply, MintState, user and global burn stats)
+//!   - rejections: the exact `InstructionError [index, Custom(code)]` (or other exact error; with
+//!     `Expect::Raised` also the Anchor error name and the failing program, with `Expect::RaisedBy`
+//!     and `Expect::BuiltinBy` the failing program) and no change to any watched state (balances,
+//!     supply, MintState, user and global burn stats, and with `reject_untouched` every account the
+//!     transaction references except the fee payer)
 //!   - successes: exact token deltas, the minted amount against an independent curve reference,
-//!     MintState = (fingerprint of this transaction, its slot), exact burn statistics deltas
+//!     memo-mint's success log line, MintState = (fingerprint of this transaction, its slot),
+//!     exact burn statistics deltas
+//! Transactions are legacy, or v0 over an address lookup table (`mint_ok_v0`, `reject_v0`).
 //! A suite exits with status 1 if any case fails.
 
-use std::{cell::Cell, thread::sleep, time::{Duration, Instant}};
+use std::{cell::Cell, collections::HashSet, thread::sleep, time::{Duration, Instant}};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig, rpc_request::RpcRequest};
+use solana_client::{
+    rpc_client::{RpcClient, SerializableTransaction},
+    rpc_config::RpcSendTransactionConfig,
+    rpc_request::RpcRequest,
+};
+#[allow(deprecated)]
+use solana_sdk::address_lookup_table::instruction as alt_ix;
+#[allow(deprecated)]
+use solana_sdk::{reserved_account_keys::ReservedAccountKeys, sysvar::instructions::construct_instructions_data};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
-    message::Message,
+    message::{
+        v0::{self, LoadedAddresses},
+        AddressLookupTableAccount, Message, SanitizedMessage, SanitizedVersionedMessage, SimpleAddressLoader, VersionedMessage,
+    },
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair, Signature, Signer},
-    transaction::Transaction,
+    transaction::{Transaction, VersionedTransaction},
 };
 use solana_system_interface::instruction as sys_ix;
 use spl_associated_token_account::{
@@ -41,10 +57,14 @@ pub const LEGACY_MEMO_V1: Pubkey = solana_sdk::pubkey!("Memo1UhkJRfHyvLMcVucJwxX
 pub const SPL_TOKEN_LEGACY: Pubkey = solana_sdk::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
 // Anchor framework error codes
+pub const ANCHOR_INSTRUCTION_FALLBACK_NOT_FOUND: u32 = 101;
+pub const ANCHOR_INSTRUCTION_DID_NOT_DESERIALIZE: u32 = 102;
 pub const ANCHOR_CONSTRAINT_MUT: u32 = 2000;
 pub const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
 pub const ANCHOR_CONSTRAINT_ADDRESS: u32 = 2012;
+pub const ANCHOR_DISCRIMINATOR_NOT_FOUND: u32 = 3001;
 pub const ANCHOR_DISCRIMINATOR_MISMATCH: u32 = 3002;
+pub const ANCHOR_ACCOUNT_NOT_ENOUGH_KEYS: u32 = 3005;
 pub const ANCHOR_OWNED_BY_WRONG_PROGRAM: u32 = 3007;
 pub const ANCHOR_INVALID_PROGRAM_ID: u32 = 3008;
 pub const ANCHOR_ACCOUNT_NOT_SIGNER: u32 = 3010;
@@ -62,7 +82,23 @@ pub fn disc(name: &str) -> Vec<u8> {
     Sha256::digest(format!("global:{}", name).as_bytes())[..8].to_vec()
 }
 
+/// Anchor account discriminator
+pub fn account_disc(name: &str) -> Vec<u8> {
+    Sha256::digest(format!("account:{}", name).as_bytes())[..8].to_vec()
+}
+
+/// Seed of the shadow MintState address. clients/smoke-test/src/prepare-local-validator.rs plants
+/// a MintState-shaped account owned by memo-mint at sha256(this seed), which is not memo-mint's
+/// MintState PDA (and has no known key), to test that memo-mint binds MintState to the PDA.
+pub const SHADOW_MINT_STATE_SEED: &[u8] = b"memo-token regression: shadow MintState";
+pub fn shadow_mint_state() -> Pubkey { Pubkey::new_from_array(Sha256::digest(SHADOW_MINT_STATE_SEED).into()) }
+
 pub fn memo_ix(data: &[u8]) -> Instruction { Instruction::new_with_bytes(spl_memo::ID, data, vec![]) }
+/// memo-mint's success log line for a mint of `amount` units at supply `supply_before` (units).
+/// It does not name the recipient (D4 / O2b): the balance checks do
+pub fn minted_log(amount: u64, supply_before: u64) -> String {
+    format!("Program log: Minted {} units, supply before mint: {} units", amount, supply_before)
+}
 pub fn cu(units: u32) -> Instruction { ComputeBudgetInstruction::set_compute_unit_limit(units) }
 pub fn b64(raw: &[u8]) -> Vec<u8> { general_purpose::STANDARD.encode(raw).into_bytes() }
 
@@ -87,36 +123,46 @@ pub fn curve_reference(supply: u64) -> Option<u64> {
     if supply + reward > MAX_SUPPLY { None } else { Some(reward) }
 }
 
-/// SHA-256 of the instructions sysvar content (without the trailing 2-byte current index), built
-/// the way the runtime serializes it; this is what memo-mint stores in MintState.
+/// SHA-256 of the instructions sysvar content (without the trailing 2-byte current index) of a
+/// legacy message; this is what memo-mint stores in MintState. See `fingerprint_versioned`.
 pub fn fingerprint(msg: &Message) -> [u8; 32] {
-    let ixs = &msg.instructions;
-    let mut data: Vec<u8> = vec![];
-    data.extend((ixs.len() as u16).to_le_bytes());
-    for _ in ixs {
-        data.extend([0u8, 0u8]);
-    }
-    for (i, ix) in ixs.iter().enumerate() {
-        let off = data.len() as u16;
-        data[2 + 2 * i..4 + 2 * i].copy_from_slice(&off.to_le_bytes());
-        data.extend((ix.accounts.len() as u16).to_le_bytes());
-        for &ai in &ix.accounts {
-            let ai = ai as usize;
-            let mut flags = 0u8;
-            if msg.is_signer(ai) {
-                flags |= 1;
-            }
-            if msg.is_maybe_writable(ai, None) {
-                flags |= 2;
-            }
-            data.push(flags);
-            data.extend(msg.account_keys[ai].as_ref());
+    fingerprint_versioned(&VersionedMessage::Legacy(msg.clone()), &LoadedAddresses::default())
+}
+
+/// `fingerprint` of a legacy or v0 message, built with the runtime's own code rather than a
+/// re-implementation: the message is sanitized with every reserved account key active (as on the
+/// local validator; a write lock requested on a reserved key, e.g. a sysvar or a builtin program,
+/// is demoted to read-only, and so is a program id the message invokes), with `loaded` as the
+/// addresses a v0 message loads from its lookup tables (writable ones, then read-only ones, in
+/// lookup order). Its instructions are decompiled with the resulting signer / writable flags and
+/// serialized by `construct_instructions_data`, as the runtime builds the instructions sysvar.
+/// A message the runtime cannot sanitize never executes; its fingerprint is all zero.
+pub fn fingerprint_versioned(msg: &VersionedMessage, loaded: &LoadedAddresses) -> [u8; 32] {
+    #[allow(deprecated)]
+    let reserved = ReservedAccountKeys::new_all_activated().active;
+    fingerprint_with_reserved(msg, loaded, &reserved)
+}
+
+/// The fingerprint with `reserved` as the reserved account keys. With an empty set no write lock
+/// on a reserved key is demoted: that is what this harness computed before (MEMO-MINT Revision 5
+/// re-audit S07), which a suite can use to show that a case depends on the demotion.
+pub fn fingerprint_with_reserved(msg: &VersionedMessage, loaded: &LoadedAddresses, reserved: &HashSet<Pubkey>) -> [u8; 32] {
+    let sanitized = SanitizedVersionedMessage::try_new(msg.clone()).ok()
+        .and_then(|m| SanitizedMessage::try_new(m, SimpleAddressLoader::Enabled(loaded.clone()), reserved).ok());
+    let Some(m) = sanitized else { return [0; 32] };
+    let data = construct_instructions_data(&m.decompile_instructions());
+    Sha256::digest(&data[..data.len() - 2]).into()
+}
+
+/// Every account the instructions reference, once each, except the fee payer
+fn referenced(ixs: &[Instruction], payer: &Keypair) -> Vec<Pubkey> {
+    let mut keys: Vec<Pubkey> = vec![];
+    for k in ixs.iter().flat_map(|ix| ix.accounts.iter().map(|a| a.pubkey)) {
+        if k != payer.pubkey() && !keys.contains(&k) {
+            keys.push(k);
         }
-        data.extend(msg.account_keys[ix.program_id_index as usize].as_ref());
-        data.extend((ix.data.len() as u16).to_le_bytes());
-        data.extend(&ix.data);
     }
-    Sha256::digest(&data).into()
+    keys
 }
 
 /// Raw Borsh BurnMemo bytes with an explicit (possibly forged) payload length prefix
@@ -162,6 +208,23 @@ impl Out {
         format!("{} slot={} err={}", if self.landed { "landed" } else { "NOT landed" }, self.slot, self.err_text())
     }
     pub fn minted_log_count(&self) -> usize { self.logs.iter().filter(|l| l.contains("Minted ")).count() }
+    /// Compute units the last "Program <program> consumed N of M compute units" line reports (a
+    /// program's top-level invocation comes after its CPIs)
+    pub fn consumed(&self, program: &Pubkey) -> Option<u64> {
+        let p = format!("Program {} consumed ", program);
+        self.logs.iter().filter_map(|l| l.strip_prefix(&p)?.split(' ').next()?.parse().ok()).last()
+    }
+    /// The Anchor error named by the first "Error Code: <Name>." log line (the innermost one)
+    pub fn error_name(&self) -> Option<String> {
+        self.logs.iter().find_map(|l| l.split("Error Code: ").nth(1).map(|s| s.split('.').next().unwrap_or("").to_string()))
+    }
+    /// The program of the innermost failing frame: the first "Program <id> failed: ..." line
+    pub fn failed_program(&self) -> Option<Pubkey> {
+        self.logs.iter().find_map(|l| {
+            let (id, tail) = l.strip_prefix("Program ")?.split_once(' ')?;
+            if tail.starts_with("failed:") { id.parse().ok() } else { None }
+        })
+    }
 }
 
 /// Expected failure of a transaction
@@ -169,6 +232,19 @@ impl Out {
 pub enum Expect<'a> {
     /// InstructionError at this instruction index with this custom code
     Custom(u64, u32),
+    /// Custom(index, code), raised as the Anchor error `name` with `program` as the innermost
+    /// failing frame. Error numbers alone do not say which program failed: every Anchor program
+    /// numbers its errors from 6000, and a CPI error surfaces under the caller's index.
+    Raised(u64, u32, Pubkey, &'a str),
+    /// Custom(index, code) with `program` as the innermost failing frame, for programs that log no
+    /// Anchor error name (System, Token-2022): their numbers overlap, e.g. Custom(0) is System's
+    /// AccountAlreadyInUse and Token-2022's NotRentExempt
+    RaisedBy(u64, u32, Pubkey),
+    /// InstructionError at this instruction index with this non-custom error, exactly, e.g.
+    /// (0, "InvalidInstructionData"), with `program` as the innermost failing frame. The error
+    /// alone does not say which program failed: a program and the programs it calls share the
+    /// index, and they can raise the same ProgramError.
+    BuiltinBy(u64, &'a str, Pubkey),
     /// any error whose JSON contains this text (non-custom errors, e.g. InvalidInstructionData)
     ErrContains(&'a str),
 }
@@ -180,12 +256,20 @@ impl Expect<'_> {
         }
         match self {
             Expect::Custom(ix, code) => out.custom() == Some((*ix, *code)),
+            Expect::Raised(ix, code, program, name) => out.custom() == Some((*ix, *code))
+                && out.failed_program() == Some(*program) && out.error_name().as_deref() == Some(*name),
+            Expect::RaisedBy(ix, code, program) => out.custom() == Some((*ix, *code)) && out.failed_program() == Some(*program),
+            Expect::BuiltinBy(ix, name, program) => out.err == Some(json!({"InstructionError": [ix, name]}))
+                && out.failed_program() == Some(*program),
             Expect::ErrContains(s) => out.err_text().contains(s),
         }
     }
     pub fn describe(&self) -> String {
         match self {
             Expect::Custom(ix, code) => format!("InstructionError [{}, Custom({})]", ix, code),
+            Expect::Raised(ix, code, program, name) => format!("InstructionError [{}, Custom({})] = {} raised by {}", ix, code, name, program),
+            Expect::RaisedBy(ix, code, program) => format!("InstructionError [{}, Custom({})] raised by {}", ix, code, program),
+            Expect::BuiltinBy(ix, name, program) => format!("InstructionError [{}, {}] raised by {}", ix, name, program),
             Expect::ErrContains(s) => format!("error containing {:?}", s),
         }
     }
@@ -270,6 +354,7 @@ pub struct Env {
     nonce: Cell<u64>,
     pass: Cell<u32>,
     fail: Cell<u32>,
+    skip: Cell<u32>,
     suite: String,
 }
 
@@ -296,7 +381,7 @@ impl Env {
         let e = Env {
             c, wallet, mint_prog, burn_prog, blog_prog, forum_prog, mint, mint_auth,
             mint_state: mint_state_pda(), gbs: global_burn_stats_pda(),
-            nonce: Cell::new(seed), pass: Cell::new(0), fail: Cell::new(0), suite: suite.into(),
+            nonce: Cell::new(seed), pass: Cell::new(0), fail: Cell::new(0), skip: Cell::new(0), suite: suite.into(),
         };
         println!("== {} ==", suite);
         println!("RPC {}  wallet {}  memo-mint {}  memo-burn {}  mint {}", url, e.wallet.pubkey(), mint_prog, burn_prog, mint);
@@ -352,6 +437,13 @@ impl Env {
             users: users.iter().map(|u| (*u, self.user_stats(u))).collect(),
         }
     }
+    /// Owner, lamports and data of each account (None while it does not exist)
+    pub fn raw(&self, keys: &[Pubkey]) -> Vec<Option<(Pubkey, u64, Vec<u8>)>> {
+        keys.iter().map(|k| {
+            self.c.get_account_with_commitment(k, CommitmentConfig::confirmed()).ok()
+                .and_then(|r| r.value).map(|a| (a.owner, a.lamports, a.data))
+        }).collect()
+    }
 
     // ---------------- sending ----------------
     pub fn build(&self, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair], blockhash: Hash) -> Transaction {
@@ -365,7 +457,7 @@ impl Env {
         tx.try_sign(&keys, blockhash).expect("sign");
         tx
     }
-    pub fn send(&self, tx: &Transaction) -> Result<Signature, String> {
+    pub fn send(&self, tx: &impl SerializableTransaction) -> Result<Signature, String> {
         self.c.send_transaction_with_config(tx, RpcSendTransactionConfig { skip_preflight: true, max_retries: Some(10), ..Default::default() })
             .map_err(|e| e.to_string())
     }
@@ -403,6 +495,110 @@ impl Env {
         let bh = self.c.get_latest_blockhash().expect("blockhash");
         self.send_tx(&self.build(ixs, payer, signers, bh))
     }
+
+    // ---------------- v0 transactions over an address lookup table ----------------
+    /// Creates and extends an address lookup table (authority and payer: the wallet) and waits
+    /// until its addresses can be loaded (from the slot after the one that extended it)
+    pub fn create_alt(&self, addresses: &[Pubkey]) -> AddressLookupTableAccount {
+        let wp = self.wallet.pubkey();
+        let recent = self.c.get_slot_with_commitment(CommitmentConfig::finalized()).expect("slot");
+        #[allow(deprecated)]
+        let (create, key) = alt_ix::create_lookup_table(wp, wp, recent);
+        #[allow(deprecated)]
+        let extend = alt_ix::extend_lookup_table(key, wp, Some(wp), addresses.to_vec());
+        let out = self.must("create and extend an address lookup table", &[create, extend], &self.wallet, &[]);
+        let start = Instant::now();
+        while self.c.get_slot_with_commitment(CommitmentConfig::confirmed()).unwrap_or(0) <= out.slot + 1 {
+            if start.elapsed() > Duration::from_secs(60) {
+                eprintln!("SETUP FAILED: the validator did not pass slot {} within 60s (address lookup table activation)", out.slot + 1);
+                std::process::exit(2);
+            }
+            sleep(Duration::from_millis(100));
+        }
+        AddressLookupTableAccount { key, addresses: addresses.to_vec() }
+    }
+    /// v0 transaction over `alt` (every non-signer, non-program account found in it is loaded
+    /// from it), and the addresses it loads: writable ones first, then read-only ones
+    pub fn build_v0(&self, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair], alt: &AddressLookupTableAccount,
+                    blockhash: Hash) -> (VersionedTransaction, LoadedAddresses) {
+        let msg = v0::Message::try_compile(&payer.pubkey(), ixs, std::slice::from_ref(alt), blockhash).expect("compile v0 message");
+        let mut loaded = LoadedAddresses::default();
+        for l in &msg.address_table_lookups {
+            loaded.writable.extend(l.writable_indexes.iter().map(|&i| alt.addresses[i as usize]));
+            loaded.readonly.extend(l.readonly_indexes.iter().map(|&i| alt.addresses[i as usize]));
+        }
+        let n = msg.header.num_required_signatures as usize;
+        let keys: Vec<&Keypair> = msg.account_keys[..n].iter().map(|k| {
+            std::iter::once(payer).chain(signers.iter().copied()).find(|kp| kp.pubkey() == *k)
+                .unwrap_or_else(|| panic!("missing signer {}", k))
+        }).collect();
+        (VersionedTransaction::try_new(VersionedMessage::V0(msg), &keys).expect("sign v0"), loaded)
+    }
+    pub fn send_v0(&self, tx: &VersionedTransaction, loaded: &LoadedAddresses) -> Out {
+        let fp = fingerprint_versioned(&tx.message, loaded);
+        let mut out = match self.send(tx) {
+            Ok(sig) => self.wait(&sig),
+            Err(e) => Out { err: Some(json!(format!("RPC rejected: {}", e))), ..Default::default() },
+        };
+        out.fp = fp;
+        out
+    }
+    /// `ixs` as a legacy transaction, or as a v0 transaction over `alt`
+    pub fn exec_over(&self, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair], alt: Option<&AddressLookupTableAccount>) -> Out {
+        match alt {
+            None => self.exec(ixs, payer, signers),
+            Some(alt) => {
+                let bh = self.c.get_latest_blockhash().expect("blockhash");
+                let (tx, loaded) = self.build_v0(ixs, payer, signers, alt, bh);
+                self.send_v0(&tx, &loaded)
+            }
+        }
+    }
+
+    // ---------------- simulation ----------------
+    /// simulateTransaction with signature verification off and the blockhash replaced: every
+    /// signature is left empty, so a transaction can be signed by any address (e.g. the admin)
+    /// without its key. Nothing lands. Returns the outcome (`landed` = executed, `slot` = the
+    /// simulated bank's slot, `fp` = the fingerprint) and the post-simulation owner, lamports and
+    /// data of `addresses` (None for an account that does not exist afterwards). When the
+    /// simulation fails the RPC returns no account (every entry is None, even the fee payer's), so
+    /// a failed simulation says nothing about account state.
+    pub fn simulate_unsigned(&self, ixs: &[Instruction], payer: &Pubkey, addresses: &[Pubkey]) -> (Out, Vec<Option<(Pubkey, u64, Vec<u8>)>>) {
+        let tx = Transaction::new_unsigned(Message::new(ixs, Some(payer)));
+        let wire = general_purpose::STANDARD.encode(bincode::serialize(&tx).expect("serialize"));
+        let r: Value = self.c.send(RpcRequest::SimulateTransaction, json!([wire, {
+            "encoding": "base64", "sigVerify": false, "replaceRecentBlockhash": true, "commitment": "confirmed",
+            "accounts": {"encoding": "base64", "addresses": addresses.iter().map(|k| k.to_string()).collect::<Vec<_>>()}
+        }])).expect("simulateTransaction");
+        let v = &r["value"];
+        let out = Out {
+            landed: true,
+            slot: r["context"]["slot"].as_u64().unwrap_or(0),
+            err: if v["err"].is_null() { None } else { Some(v["err"].clone()) },
+            logs: v["logs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+            fp: fingerprint(&tx.message),
+            ..Default::default()
+        };
+        let accounts = (0..addresses.len()).map(|i| {
+            let a = &v["accounts"][i];
+            if a.is_null() {
+                return None;
+            }
+            let data = general_purpose::STANDARD.decode(a["data"][0].as_str().unwrap_or("")).unwrap_or_default();
+            Some((a["owner"].as_str().and_then(|o| o.parse().ok()).unwrap_or_default(), a["lamports"].as_u64().unwrap_or(0), data))
+        }).collect();
+        (out, accounts)
+    }
+
+    /// Signatures of the transactions in `slot`'s block, in execution order
+    pub fn block_signatures(&self, slot: u64) -> Vec<String> {
+        let r: Result<Value, _> = self.c.send(RpcRequest::GetBlock, json!([slot, {
+            "encoding": "json", "transactionDetails": "signatures", "rewards": false, "commitment": "confirmed",
+            "maxSupportedTransactionVersion": 0
+        }]));
+        r.ok().and_then(|v| v["signatures"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()))
+            .unwrap_or_default()
+    }
     /// Setup transaction that must succeed (aborts the suite otherwise)
     pub fn must(&self, what: &str, ixs: &[Instruction], payer: &Keypair, signers: &[&Keypair]) -> Out {
         let out = self.exec(ixs, payer, signers);
@@ -437,22 +633,69 @@ impl Env {
             println!("     logs:\n       {}", out.logs.join("\n       "));
         }
     }
-    /// Prints the summary and exits with status 1 if any case failed
+    /// A case that could not run here (e.g. it needs a fresh validator, or a timing condition such
+    /// as M26's same-slot pair never occurred). Skips are counted and make the suite fail unless
+    /// MEMO_REGRESSION_ALLOW_SKIP=1, so a run never reports less coverage than it claims.
+    pub fn skip(&self, id: &str, reason: &str) {
+        self.skip.set(self.skip.get() + 1);
+        println!("SKIP [{}] {}", id, reason);
+    }
+    /// Prints the summary and exits with status 1 if any case failed, or was skipped without
+    /// MEMO_REGRESSION_ALLOW_SKIP=1
     pub fn finish(&self) -> ! {
-        let (p, f) = (self.pass.get(), self.fail.get());
-        println!("\n== {}: {} passed, {} failed ==", self.suite, p, f);
-        std::process::exit(if f == 0 && p > 0 { 0 } else { 1 });
+        let (p, f, s) = (self.pass.get(), self.fail.get(), self.skip.get());
+        let allow_skip = std::env::var("MEMO_REGRESSION_ALLOW_SKIP").is_ok_and(|v| v == "1");
+        if s == 0 {
+            println!("\n== {}: {} passed, {} failed ==", self.suite, p, f);
+        } else {
+            println!("\n== {}: {} passed, {} failed, {} skipped{} ==", self.suite, p, f, s,
+                     if allow_skip { " (allowed by MEMO_REGRESSION_ALLOW_SKIP=1)" } else { " (see the SKIP lines above; set MEMO_REGRESSION_ALLOW_SKIP=1 to accept them)" });
+        }
+        std::process::exit(if f == 0 && p > 0 && (s == 0 || allow_skip) { 0 } else { 1 });
     }
 
     /// The transaction must fail with `expect`, and no watched state may change
     pub fn reject(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
                   expect: Expect, token_accounts: &[Pubkey], users: &[Pubkey]) -> Out {
-        let before = self.snap(token_accounts, users);
-        let out = self.exec(&ixs, payer, signers);
-        let after = self.snap(token_accounts, users);
+        self.reject_watching(id, desc, ixs, payer, signers, expect, token_accounts, users, &[])
+    }
+
+    /// As `reject`, and no account the instructions reference may change either (owner, lamports
+    /// and data), except the fee payer, which pays the fee
+    #[allow(clippy::too_many_arguments)]
+    pub fn reject_untouched(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
+                            expect: Expect, token_accounts: &[Pubkey], users: &[Pubkey]) -> Out {
+        let keys = referenced(&ixs, payer);
+        self.reject_watching(id, desc, ixs, payer, signers, expect, token_accounts, users, &keys)
+    }
+
+    /// As `reject_untouched`, sent as a v0 transaction over `alt`
+    #[allow(clippy::too_many_arguments)]
+    pub fn reject_v0(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
+                     expect: Expect, token_accounts: &[Pubkey], users: &[Pubkey], alt: &AddressLookupTableAccount) -> Out {
+        let keys = referenced(&ixs, payer);
+        self.reject_over(id, desc, ixs, payer, signers, expect, token_accounts, users, &keys, Some(alt))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reject_watching(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
+                       expect: Expect, token_accounts: &[Pubkey], users: &[Pubkey], accounts: &[Pubkey]) -> Out {
+        self.reject_over(id, desc, ixs, payer, signers, expect, token_accounts, users, accounts, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reject_over(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair], expect: Expect,
+                   token_accounts: &[Pubkey], users: &[Pubkey], accounts: &[Pubkey], alt: Option<&AddressLookupTableAccount>) -> Out {
+        let (before, raw_before) = (self.snap(token_accounts, users), self.raw(accounts));
+        let out = self.exec_over(&ixs, payer, signers, alt);
+        let (after, raw_after) = (self.snap(token_accounts, users), self.raw(accounts));
         let matched = expect.matches(&out);
-        let unchanged = before == after;
-        let detail = format!("expected {} and no state change; got {}; {}", expect.describe(), out.brief(), before.diff(&after));
+        let changed: Vec<String> = accounts.iter().zip(raw_before.iter().zip(raw_after.iter()))
+            .filter(|(_, (a, b))| a != b).map(|(k, _)| k.to_string()).collect();
+        let unchanged = before == after && changed.is_empty();
+        let detail = format!("expected {} and no state change; got {} ({:?} in {:?}); {}{}", expect.describe(), out.brief(),
+                             out.error_name(), out.failed_program(), before.diff(&after),
+                             if changed.is_empty() { String::new() } else { format!("; accounts changed: {}", changed.join(", ")) });
         self.record_out(id, desc, matched && unchanged, &detail, &out);
         out
     }
@@ -565,24 +808,40 @@ impl Env {
 
     // ---------------- success checks ----------------
     /// The transaction must succeed and mint exactly `curve_reference(supply before)` to
-    /// `recipient_ta` (supply up by the same amount, `others` unchanged), with exactly one mint
+    /// `recipient_ta` (supply up by the same amount, `others` unchanged), with exactly one mint,
+    /// whose log line is exactly `minted_log` (amount, supply before),
     /// and MintState = (fingerprint of this transaction, its slot). Returns the minted amount.
     pub fn mint_ok(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
                    recipient_ta: &Pubkey, others: &[Pubkey]) -> u64 {
+        self.mint_ok_over(id, desc, ixs, payer, signers, recipient_ta, others, None)
+    }
+
+    /// As `mint_ok`, sent as a v0 transaction over `alt` (MintState holds the fingerprint of the
+    /// instructions as the runtime resolves them through the table)
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_ok_v0(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
+                      recipient_ta: &Pubkey, others: &[Pubkey], alt: &AddressLookupTableAccount) -> u64 {
+        self.mint_ok_over(id, desc, ixs, payer, signers, recipient_ta, others, Some(alt))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mint_ok_over(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
+                    recipient_ta: &Pubkey, others: &[Pubkey], alt: Option<&AddressLookupTableAccount>) -> u64 {
         let mut accounts = vec![*recipient_ta];
         accounts.extend_from_slice(others);
         let before = self.snap(&accounts, &[]);
         let expected = curve_reference(before.supply);
-        let out = self.exec(&ixs, payer, signers);
+        let out = self.exec_over(&ixs, payer, signers, alt);
         let after = self.snap(&accounts, &[]);
         let minted = after.bal(recipient_ta) as i128 - before.bal(recipient_ta) as i128;
         let supply_delta = after.supply as i128 - before.supply as i128;
         let others_same = others.iter().all(|o| before.bal(o) == after.bal(o));
         let state_ok = after.mint_state == Some((out.fp, out.slot));
         let exp = expected.map(|x| x as i128).unwrap_or(-1);
-        let pass = out.ok() && minted == exp && supply_delta == exp && others_same && state_ok && out.minted_log_count() == 1;
-        let detail = format!("{}; supply before {} expected {:?} minted {} supply delta {} others unchanged {} mint_state matches tx {} mint logs {}",
-            out.brief(), before.supply, expected, minted, supply_delta, others_same, state_ok, out.minted_log_count());
+        let log_ok = expected.is_some_and(|x| out.logs.contains(&minted_log(x, before.supply)));
+        let pass = out.ok() && minted == exp && supply_delta == exp && others_same && state_ok && out.minted_log_count() == 1 && log_ok;
+        let detail = format!("{}; supply before {} expected {:?} minted {} supply delta {} others unchanged {} mint_state matches tx {} mint logs {} mint log as expected {}",
+            out.brief(), before.supply, expected, minted, supply_delta, others_same, state_ok, out.minted_log_count(), log_ok);
         self.record_out(id, desc, pass, &detail, &out);
         minted.max(0) as u64
     }

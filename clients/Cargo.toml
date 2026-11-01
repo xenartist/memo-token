@@ -254,6 +254,32 @@ path = "regression/src/regression-memo-home.rs"
 name = "regression-memo-id"
 path = "regression/src/regression-memo-id.rs"
 
+# Reproductions of the third memo-id audit's findings (local validator only, not a regression suite)
+[[bin]]
+name = "repro-memo-id-audit3"
+path = "regression/src/repro-memo-id-audit3.rs"
+
+# Stateful model-based fuzzer for memo-id (local validator only): --seed <u64> --steps <n>
+[[bin]]
+name = "fuzz-memo-id"
+path = "regression/src/fuzz-memo-id.rs"
+
+# Reproductions of the memo-mint Revision 5 audit findings (local validator only, not a regression suite)
+[[bin]]
+name = "repro-memo-mint-audit"
+path = "regression/src/repro-memo-mint-audit.rs"
+
+# memo-mint's own CU per build, for the options of the memo-mint Revision 5 audit (local validator
+# only, one build per validator start via local-validator.sh --so-dir; not a regression suite)
+[[bin]]
+name = "options-memo-mint-cu"
+path = "regression/src/options-memo-mint-cu.rs"
+
+# Stateful model-based fuzzer for memo-mint (local validator only): --seed <u64> --steps <n>
+[[bin]]
+name = "fuzz-memo-mint"
+path = "regression/src/fuzz-memo-mint.rs"
+
 [dependencies]
 solana-client = "^2"
 solana-sdk = "^2"

@@ -9,8 +9,10 @@
 #            regression-memo-curve (walks the supply down to ~5M), then
 #            regression-memo-mint, regression-memo-burn, regression-memo-home and
 #            regression-memo-id (5M supply when the curve suite is not selected)
-#   Phase 2: validator without MintState / GlobalBurnStats (fresh deployment)
-#            regression-admin-init
+#   Phase 2: (id) validator with a supply of 2.5T: regression-memo-id again at a reward of 8
+#            units, where memo-id prices are fractions of a MEMO (ceil rounding, supply input)
+#   Phase 3: validator without MintState / GlobalBurnStats (fresh deployment)
+#            regression-admin-init (memo-mint's admin init by simulation, no admin key needed)
 #
 # Usage:
 #   ./scripts/run-regression-tests.sh                 # build programs, run every suite
@@ -33,6 +35,7 @@ BOLD='\033[1m'
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+source "$ROOT/scripts/anchor-build.sh"
 RPC_URL="http://127.0.0.1:8899"
 WALLET="$ROOT/target/local-validator/wallet.json"
 LOG_DIR="$ROOT/target/regression-logs"
@@ -41,9 +44,12 @@ ALL_SUITES=(curve mint burn home id admin-init)
 # The curve suite needs a supply above 10T held by the wallet; mint/burn alone run at 5M
 CURVE_ARGS=(--supply 18400000000000 --balance 18400000000000)
 DEFAULT_ARGS=(--supply 5000000 --balance 1000000)
+# memo-id prices are ceil(reward x centi-mints / 100): at 5M the reward is 1 MEMO and every price
+# is a whole number of MEMO, so the id suite also runs where the reward is 8 units
+ID_TAIL_ARGS=(--supply 2500000000000 --balance 1000000)
 
 show_help() {
-    sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 print_header() {
@@ -78,7 +84,16 @@ wants() { [[ " ${SUITES[*]} " == *" $1 "* ]]; }
 bin_name() {
     case $1 in
         admin-init) echo "regression-admin-init" ;;
+        id@*) echo "regression-memo-id" ;;
         *) echo "regression-memo-$1" ;;
+    esac
+}
+
+# Log and summary name: a suite run a second time under other conditions is "<suite>@<tag>"
+run_name() {
+    case $1 in
+        *@*) echo "$(bin_name "$1")-${1#*@}" ;;
+        *) bin_name "$1" ;;
     esac
 }
 
@@ -98,8 +113,8 @@ FAILED=()
 run_suite() {
     local suite=$1 bin log
     bin=$(bin_name "$suite")
-    log="$LOG_DIR/$bin.log"
-    print_header "Running $bin"
+    log="$LOG_DIR/$(run_name "$suite").log"
+    print_header "Running $(run_name "$suite")"
     if (cd clients && MEMO_PROGRAM_ENV=testnet MEMO_RPC_URL="$RPC_URL" MEMO_WALLET="$WALLET" \
             cargo run --quiet --bin "$bin") 2>&1 | tee "$log"; then
         PASSED+=("$suite")
@@ -113,7 +128,7 @@ trap '[ "$KEEP" = true ] || stop_validator' EXIT
 
 if [ "$BUILD" = true ]; then
     print_header "Building programs (testnet IDs)"
-    anchor build
+    anchor_build
 fi
 # Test-only programs for the home suite (clients/regression/test-programs): a Token-2022 transfer
 # hook, an app program that calls memo-home by CPI, and the home:// extension prototype
@@ -141,18 +156,26 @@ if wants curve || wants mint || wants burn || wants home || wants id; then
     for s in curve mint burn home id; do
         if wants "$s"; then run_suite "$s"; fi
     done
-    stop_validator
+    # --keep leaves the validator of the last phase that runs
+    if wants id || wants admin-init || [ "$KEEP" != true ]; then stop_validator; fi
+fi
+
+if wants id; then
+    print_header "Phase 2: local validator, supply 2.5T (reward 8 units)"
+    start_validator "${ID_TAIL_ARGS[@]}"
+    run_suite id@2.5t
+    if wants admin-init || [ "$KEEP" != true ]; then stop_validator; fi
 fi
 
 if wants admin-init; then
-    print_header "Phase 2: local validator without MintState / GlobalBurnStats"
+    print_header "Phase 3: local validator without MintState / GlobalBurnStats"
     start_validator --no-core-state
     run_suite admin-init
 fi
 
 print_header "Regression Test Summary"
-for s in "${PASSED[@]}"; do echo -e "  ${GREEN}PASS${NC} $(bin_name "$s")"; done
-for s in "${FAILED[@]}"; do echo -e "  ${RED}FAIL${NC} $(bin_name "$s") (log: target/regression-logs/$(bin_name "$s").log)"; done
+for s in "${PASSED[@]}"; do echo -e "  ${GREEN}PASS${NC} $(run_name "$s")"; done
+for s in "${FAILED[@]}"; do echo -e "  ${RED}FAIL${NC} $(run_name "$s") (log: target/regression-logs/$(run_name "$s").log)"; done
 echo ""
 if [ ${#FAILED[@]} -gt 0 ]; then
     echo -e "${RED}${BOLD}${#FAILED[@]} suite(s) failed${NC}"

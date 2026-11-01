@@ -2,7 +2,7 @@
 //! 
 //! This test suite provides comprehensive coverage of all core functions:
 //! - calculate_dynamic_mint_amount: Round-number emission curve (steps at 10M, 20M, ... 100M, 200M, ...)
-//! - validate_memo_length: Memo minimum-length validation (no maximum)
+//! - validate_memo_length: Memo minimum-length validation in characters (no maximum)
 
 use super::*;
 
@@ -395,31 +395,52 @@ mod validate_memo_length_tests {
     }
 
     // ------------------------------------------------------------------------
-    // Binary Data Tests (Content Agnostic)
+    // Encoding Tests (the minimum counts UTF-8 characters, not bytes)
     // ------------------------------------------------------------------------
 
-    #[test]
-    fn test_memo_with_null_bytes() {
-        let memo_with_nulls = vec![0u8; 69];
-        let result = validate_memo_length(&memo_with_nulls, MEMO_MIN_LENGTH);
-        assert!(result.is_ok(), "Memo with null bytes should be accepted (content-agnostic)");
+    fn is_too_short(result: Result<bool>) -> bool {
+        result.unwrap_err() == ErrorCode::MemoTooShort.into()
     }
 
     #[test]
-    fn test_memo_with_all_255() {
-        let memo = vec![255u8; 69];
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
-        assert!(result.is_ok(), "Memo with 0xFF bytes should be accepted");
+    fn test_memo_null_bytes_are_characters() {
+        // NUL is a valid one-byte UTF-8 character
+        assert!(validate_memo_length(&[0u8; 69], MEMO_MIN_LENGTH).unwrap());
     }
 
     #[test]
-    fn test_memo_with_mixed_binary() {
-        let mut memo = Vec::new();
-        for i in 0..69 {
-            memo.push((i % 256) as u8);
-        }
-        let result = validate_memo_length(&memo, MEMO_MIN_LENGTH);
-        assert!(result.is_ok(), "Memo with mixed binary data should be accepted");
+    fn test_memo_continuation_bytes_not_counted() {
+        // Bytes 0x80..=0xBF continue a character; the memo program rejects such memos anyway,
+        // but they must never add to the count
+        assert!(is_too_short(validate_memo_length(&[0x80u8; 200], MEMO_MIN_LENGTH)));
+        let memo = [&[b'x'; 68][..], &[0xBFu8; 10][..]].concat();
+        assert!(is_too_short(validate_memo_length(&memo, MEMO_MIN_LENGTH)));
+    }
+
+    #[test]
+    fn test_memo_two_byte_characters_counted_once() {
+        // 69 bytes but 35 characters: accepted under the former byte rule, rejected now
+        let memo = format!("{}R", "é".repeat(34));
+        assert_eq!((memo.len(), memo.chars().count()), (69, 35));
+        assert!(is_too_short(validate_memo_length(memo.as_bytes(), MEMO_MIN_LENGTH)));
+
+        assert!(is_too_short(validate_memo_length("é".repeat(68).as_bytes(), MEMO_MIN_LENGTH)));
+        assert!(validate_memo_length("é".repeat(69).as_bytes(), MEMO_MIN_LENGTH).unwrap());
+    }
+
+    #[test]
+    fn test_memo_three_and_four_byte_characters() {
+        assert!(is_too_short(validate_memo_length("中".repeat(68).as_bytes(), MEMO_MIN_LENGTH)));
+        assert!(validate_memo_length("中".repeat(69).as_bytes(), MEMO_MIN_LENGTH).unwrap());
+        assert!(is_too_short(validate_memo_length("🌍".repeat(68).as_bytes(), MEMO_MIN_LENGTH)));
+        assert!(validate_memo_length("🌍".repeat(69).as_bytes(), MEMO_MIN_LENGTH).unwrap());
+    }
+
+    #[test]
+    fn test_memo_long_multibyte_accepted() {
+        // Counting stops at the minimum; long memos of any character width are accepted
+        assert!(validate_memo_length("é".repeat(400).as_bytes(), MEMO_MIN_LENGTH).unwrap());
+        assert!(validate_memo_length(format!("{}{}", "x".repeat(68), "🌍".repeat(100)).as_bytes(), MEMO_MIN_LENGTH).unwrap());
     }
 
     // ------------------------------------------------------------------------
@@ -446,10 +467,11 @@ mod validate_memo_length_tests {
         // UTF-8 text with multi-byte characters (emoji and Chinese)
         let utf8_text = "Hello 世界 🌍 This is a UTF-8 memo with exactly 69 bytes total!!!";
         let utf8_memo = utf8_text.as_bytes().to_vec();
-        assert_eq!(utf8_memo.len(), 69);
-        
-        let result = validate_memo_length(&utf8_memo, MEMO_MIN_LENGTH);
-        assert!(result.is_ok(), "UTF-8 text memo should be accepted");
+        assert_eq!((utf8_memo.len(), utf8_text.chars().count()), (69, 62));
+        assert!(is_too_short(validate_memo_length(&utf8_memo, MEMO_MIN_LENGTH)), "62 characters is too short");
+
+        let padded = format!("{}{}", utf8_text, "!".repeat(7)); // 69 characters, 76 bytes
+        assert!(validate_memo_length(padded.as_bytes(), MEMO_MIN_LENGTH).unwrap(), "69 characters should be accepted");
     }
 
     #[test]
@@ -792,6 +814,14 @@ mod one_mint_per_transaction_tests {
     }
 
     #[test]
+    fn test_pda_constants_per_network() {
+        // The constants must be what find_program_address returns for this build's program id
+        // (run under both features: cargo test -p memo-mint --lib [--features mainnet])
+        assert_eq!(Pubkey::find_program_address(&[b"mint_authority"], &crate::ID), (MINT_AUTHORITY_PDA, MINT_AUTHORITY_BUMP));
+        assert_eq!(Pubkey::find_program_address(&[b"mint_state"], &crate::ID).0, MINT_STATE_PDA);
+    }
+
+    #[test]
     fn test_error_codes_unchanged_and_appended() {
         let code = |e: ErrorCode| u32::from(e);
         assert_eq!(code(ErrorCode::MemoRequired), 6000);
@@ -1023,5 +1053,95 @@ mod curve_digit_oracle_tests {
         for &(supply, expected) in cases {
             assert_eq!(calculate_dynamic_mint_amount(supply).unwrap(), expected, "supply {}", supply);
         }
+    }
+}
+
+// ============================================================================
+// Character count (8 bytes at a time) against str::chars
+// ============================================================================
+
+#[cfg(test)]
+mod count_characters_tests {
+    use super::*;
+
+    /// Characters of every UTF-8 width, with the first and last of each width
+    const CHARS: &[char] = &['\0', 'a', '\u{7F}', '\u{80}', '\u{E9}', '\u{7FF}', '\u{800}', '\u{4E2D}', '\u{FFFF}',
+        '\u{10000}', '\u{1F30D}', '\u{10FFFF}'];
+
+    fn chars_of(s: &str) -> usize {
+        s.len() - count_continuation_bytes(s.as_bytes())
+    }
+
+    /// xorshift64: deterministic, no extra dependency
+    fn next(x: &mut u64) -> u64 {
+        *x ^= *x << 13;
+        *x ^= *x >> 7;
+        *x ^= *x << 17;
+        *x
+    }
+
+    #[test]
+    fn test_count_matches_bytewise_on_any_bytes() {
+        // every byte value, at every position of a word and in the tail
+        for b in 0..=255u8 {
+            for len in 0..=24 {
+                for pos in 0..len {
+                    let mut v = vec![b'x'; len];
+                    v[pos] = b;
+                    assert_eq!(count_continuation_bytes(&v), (b & 0xC0 == 0x80) as usize, "byte {:#x} len {} pos {}", b, len, pos);
+                }
+            }
+            assert_eq!(count_continuation_bytes(&[b; 300]), if b & 0xC0 == 0x80 { 300 } else { 0 });
+        }
+        // random byte strings (invalid UTF-8 included), at every alignment of the slice
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..20_000 {
+            let len = (next(&mut x) % 320) as usize;
+            let buf: Vec<u8> = (0..len + 8).map(|_| next(&mut x) as u8).collect();
+            let skip = (next(&mut x) % 8) as usize;
+            let s = &buf[skip..skip + len];
+            assert_eq!(count_continuation_bytes(s), s.iter().filter(|&&b| b & 0xC0 == 0x80).count());
+        }
+    }
+
+    #[test]
+    fn test_count_matches_chars_on_edge_inputs() {
+        // every character width, 0..=300 characters, after 0..=8 ASCII bytes (moves the words)
+        for &c in CHARS {
+            for prefix in 0..=8 {
+                for n in 0..=300 {
+                    let s = format!("{}{}", "x".repeat(prefix), c.to_string().repeat(n));
+                    assert_eq!(chars_of(&s), s.chars().count(), "{:?} x {} after {} ASCII", c, n, prefix);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_count_and_minimum_match_chars_on_random_text() {
+        let mut x: u64 = 0xD1B5_4A32_D192_ED03;
+        for _ in 0..100_000 {
+            let n = (next(&mut x) % 300) as usize;
+            let s: String = (0..n).map(|_| CHARS[(next(&mut x) % CHARS.len() as u64) as usize]).collect();
+            let chars = s.chars().count();
+            assert_eq!(chars_of(&s), chars);
+            let ok = validate_memo_length(s.as_bytes(), MEMO_MIN_LENGTH);
+            assert_eq!(ok.is_ok(), chars >= MEMO_MIN_LENGTH, "{} bytes, {} characters", s.len(), chars);
+            if let Err(e) = ok {
+                assert!(e == ErrorCode::MemoTooShort.into());
+            }
+        }
+    }
+
+    #[test]
+    fn test_fast_path_bound_is_sound() {
+        // 68 four-byte characters (272 bytes) are counted and too short; one more byte of any
+        // character reaches the bound (273 bytes) and the minimum. Only the result is visible here;
+        // that 273 bytes skip the count is pinned by its compute units on chain (regression M24p)
+        let globe = "\u{1F30D}".repeat(68);
+        assert_eq!(globe.len(), 4 * (MEMO_MIN_LENGTH - 1));
+        assert!(validate_memo_length(globe.as_bytes(), MEMO_MIN_LENGTH).is_err());
+        assert!(validate_memo_length(format!("{}a", globe).as_bytes(), MEMO_MIN_LENGTH).unwrap());
+        assert!(validate_memo_length(format!("{}x", "\u{E9}".repeat(136)).as_bytes(), MEMO_MIN_LENGTH).unwrap());
     }
 }

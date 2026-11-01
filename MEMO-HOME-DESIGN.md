@@ -169,7 +169,7 @@ memo-home emits Anchor events for indexers: `CollectionCreated { collection, aut
 
 ### 4.6 Memos
 
-memo-home does not read or validate memos itself. `mine` and `burn` inherit memo-mint's and memo-burn's rules: an SPL Memo at index 0 (≥ 69 bytes; for burns, `BurnMemo` with `burn_amount` equal to the amount). Apps define and validate their own memo formats.
+memo-home does not read or validate memos itself. `mine` and `burn` inherit memo-mint's and memo-burn's rules: an SPL Memo at index 0 (for `mine`, at least 69 characters since memo-mint 0.5.0; for burns, at least 69 bytes and `BurnMemo` with `burn_amount` equal to the amount). Apps define and validate their own memo formats.
 
 ---
 

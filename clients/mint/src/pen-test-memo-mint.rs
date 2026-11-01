@@ -232,16 +232,16 @@ fn last_error_log(logs: &[String]) -> String {
         .unwrap_or_default()
 }
 
-/// Check every "Minted {amount} units to {owner}, supply before mint: {supply} units" line
-/// against the emission curve. Logs are truncated at 10 KB, so with many mints some lines
+/// Check every "Minted {amount} units, supply before mint: {supply} units" line (before Revision 5:
+/// "Minted {amount} units to {owner}, supply before mint: ...") against the emission curve. Logs are truncated at 10 KB, so with many mints some lines
 /// may be missing; those are reported as not verified.
 fn verify_mint_logs(logs: &[String], mint_count: usize) -> Result<String, String> {
     let mut verified = 0;
     for line in logs.iter().filter(|l| l.contains("Program log: Minted ")) {
         let words: Vec<&str> = line.split_whitespace().collect();
-        // Program log: Minted <amount> units to <owner>, supply before mint: <supply> units
+        // Program log: Minted <amount> units[ to <owner>], supply before mint: <supply> units
         let amount = words.get(3).and_then(|w| w.parse::<u64>().ok());
-        let supply = words.get(10).and_then(|w| w.parse::<u64>().ok());
+        let supply = words.iter().position(|w| *w == "mint:").and_then(|i| words.get(i + 1)).and_then(|w| w.parse::<u64>().ok());
         match (amount, supply) {
             (Some(amount), Some(supply)) => {
                 let expected = expected_mint_amount(supply);

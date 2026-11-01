@@ -3,8 +3,8 @@
 ## Executive Summary
 
 **Contract**: memo-id (`programs/memo-id`)
-**Audit Dates**: October 27, 2026 (pre-deployment review); October 28, 2026 (testnet deployment and wallet tests; second, adversarial review and fixes)
-**Auditor**: Pre-deployment security review. The reviewer read the whole program, the memo-home, memo-burn and memo-mint code it calls, and the design; ran the unit tests and the local-validator regression suite; and checked the X1 behaviour the program depends on (v0 transactions with a frozen Address Lookup Table) on X1 testnet. The second review was a multi-agent audit: six review dimensions (payment binding, name space, control, accounts and CPI, composition with memo-home and Core, free-form attacker), one skeptic trying to refute and one verifier assessing impact for each finding, and a completeness critic whose findings were verified the same way. 20 agents; 94 further attack ideas were checked and ruled out.
+**Audit Dates**: October 27, 2026 (pre-deployment review); October 28, 2026 (testnet deployment and wallet tests; second, adversarial review and fixes); October 30–31, 2026 (third review: static review, local-validator reproduction, mutation testing and stateful fuzzing)
+**Auditor**: Pre-deployment security review. The reviewer read the whole program, the memo-home, memo-burn and memo-mint code it calls, and the design; ran the unit tests and the local-validator regression suite; and checked the X1 behaviour the program depends on (v0 transactions with a frozen Address Lookup Table) on X1 testnet. The second review was a multi-agent audit: six review dimensions (payment binding, name space, control, accounts and CPI, composition with memo-home and Core, free-form attacker), one skeptic trying to refute and one verifier assessing impact for each finding, and a completeness critic whose findings were verified the same way. 20 agents; 94 further attack ideas were checked and ruled out. The third review repeated that method with eleven dimensions (adding state machine, economics and denial of service, operations and clients, specification, test gaps) against the Metaplex Core source matching X1's build, plus an offline differential fuzz of the pure functions (over 100M cases, 0 divergences) and a completeness critic. 60 findings were verified by a skeptic and an impact verifier each; 338 further ideas were ruled out. The findings that need chain state were then reproduced on the local validator, the regression suite was extended until every non-equivalent mutant of 71 was caught, and a model-based stateful fuzzer compared 8,000 random steps with the chain (Third review).
 **Version**: 0.1.0, 10 instructions. Program IDs: testnet `3U7nmWArstoRfkuGDsirEwiY6nngqjcooZxJ4Eh87MBt` (redeployed 2026-10-30 with the final `COLLECTION_URI`, slot 199245650, upgradeable; the earlier testnet programs `8FgBnyrx…` of 2026-10-27/28 and `GBuh5nWV…` of 2026-10-29 were closed on 2026-10-30); mainnet still the placeholder `Gji1DjBF…` until its keypair is set up.
 **Language**: Rust (Anchor 0.32.1)
 **Network**: X1 (SVM-based)
@@ -12,13 +12,19 @@
 
 ### Overall Assessment
 
-**Risk Level**: ✅ **LOW**. Deployed to testnet and tested there with the X1 wallet (see Testnet deployment and wallet tests); mainnet after the mainnet checklist.
+**Risk Level**: ✅ **LOW**. Deployed to testnet and tested there with the X1 wallet (see Testnet deployment and wallet tests); mainnet after the mainnet checklist, which now includes the owner's decisions on the third review's program findings (F19, F20 and the optional changes listed there).
 
-**Scope note**: both reviews are internal reviews by the development side, not an independent third-party audit. Testing is example-based (unit and regression cases); no fuzzing or formal verification was done.
+**Scope note**: all three reviews are internal reviews by the development side, not an independent third-party audit. Testing is example-based (unit and regression cases), plus, since the third review, mutation testing and a model-based stateful fuzzer on the local validator. No formal verification was done.
 
 No critical or high-severity issue was found. Name uniqueness, the binding of each burn to its operation, payer and ID, the controller rules and the integrity of the MEMO ID Collection all hold. One medium finding concerns marketplaces rather than the program itself: a listing does not stop the seller from issuing NFT SubIds, which are permanent, before the sale (F01). It has a cheap, exact check, like the Vault State nonce in memo-home.
 
 The second review found no critical, high or medium issue either. It found two low-severity program issues, both fixed: a keypair-addressed Core Asset's key holder could replace or close the Primary ID of the Asset's later owner (F13, which corrects F06), and the label `memo` let an ID contain `.memo.`, so a truncated name could read as someone else's (F14). It also corrected the resolution and display rules for apps (F15, F16), a transaction-size claim in the design (F17) and gaps in the regression suite (F18).
+
+The third review found no critical or high issue. It found one medium issue in the program: `issue_subid` ignores the Core freeze and delegate state that memo-home already treats as a listing, so a borrower or renter can strip permanent NFT SubIds from an ID pledged as collateral or rented out, and F01's counter check cannot prevent this (F19). It found nine low issues: the holder rule accepts any Core Asset, not only memo-home Assets (F20); F14 is only partly fixed and the display rule keeps the wrong labels (F21); records set through Core Asset Signers do not lapse on a sale (F22); no safe payment destination exists for a verified Asset target (F23); the exported helpers do not bind the Asset to the Registry (F24); the IDL gives wrong seeds for the Primary ID (F25); the permanent Collection URI depends on the domain `ardrive.net` (F26); and two deploy-tool issues (F27, F28). Eleven informational findings cover diagnostics, encoding, discovery, documentation and the test suite (F29–F39). The program was not changed during this review: program changes are proposed for the owner to decide (Third review, Decisions).
+
+Changes made during the third review (tests only):
+- Regression suite from 111 to 181 cases, run at two supplies (5M and 2.5T); rejections now assert the raising program and the Anchor error name, and every account the transaction names; skipped cases fail the run.
+- New `repro-memo-id-audit3` (64 cases, the findings as they behave today) and `fuzz-memo-id` (stateful fuzzer) bins.
 
 Changes made during the second review (testnet upgraded 2026-10-28):
 - Primary ID seed `[b"primary_id", kind, target]` (F13); the label `memo` is rejected at every level (F14).
@@ -38,11 +44,11 @@ Changes made during the first review:
 |---|---|---|
 | Critical | 0 | — |
 | High | 0 | — |
-| Medium | 1 | Documented; market-level check (F01) |
-| Low | 7 | Documented or accepted (F02–F05); fixed (F13, F14); rule changed (F15) |
-| Informational | 10 | Documented, by design, or checklist (F06–F12); F16–F18 documented or covered |
+| Medium | 2 | Documented; market-level check (F01); open, program change proposed (F19) |
+| Low | 16 | Documented or accepted (F02–F05); fixed (F13); partly fixed (F14, see F21); rule changed (F15); open (F20–F28) |
+| Informational | 21 | Documented, by design, or checklist (F06–F12); F16–F18 documented or covered; F29–F39 open or covered |
 
-Tests: 24 unit tests (`programs/memo-id/src/tests.rs`, testnet and mainnet builds) and 111 local-validator regression cases (`clients/regression/src/regression-memo-id.rs`), all passing on 2026-10-28. On X1 testnet: `smoke-test-memo-id` and X1 wallet tests up to a 253-byte ID, all passing on 2026-10-27/28.
+Tests: 24 unit tests (`programs/memo-id/src/tests.rs`, testnet and mainnet builds) and 181 local-validator regression cases (`clients/regression/src/regression-memo-id.rs`, each run at supplies of 5M and 2.5T), all passing on 2026-10-31, together with the curve, mint, burn, home and admin-init suites. The suite catches all 64 non-equivalent mutants of 71; 8,000 stateful fuzz steps found no difference between the model and the chain. On X1 testnet: `smoke-test-memo-id` and X1 wallet tests up to a 253-byte ID, all passing on 2026-10-27/28.
 
 ---
 
@@ -127,6 +133,8 @@ The URI can also change before the sale, though it is display-only.
 - `MEMO-ID-DESIGN.md` §5 now says that issued NFT SubIds do not lapse.
 - Publish this check in the integration rules for markets (mainnet checklist).
 
+**Correction (third review, F19)**: the check works for a buyer, who can refuse the purchase. It does not protect a lender or a renter, who takes the Asset back whatever the counter says, and memo-home already locks frozen or delegated Assets for exactly this reason. F19 proposes a program-level gate.
+
 ### 🟡 F02 (Low, documented): the price is bound to the supply at execution
 
 `burn_price` uses the mint's supply when the instruction runs, and the BurnMemo's `burn_amount` must equal it exactly. The transaction fails with `BurnAmountMismatch` (6019) if, between building and execution:
@@ -151,7 +159,7 @@ A Primary ID for an `Asset` target can only be cleared by that Asset's controlle
 
 - **F06 — Shared Primary ID address (superseded by F13).** `Address(X)` and `Asset(X)` targets shared the Primary ID address, because the seed was the target key only. The first review argued that only one party can act on both, because a keypair-addressed Core Asset needs that key's signature to be created. That holds at creation only: after a sale the key holder and the owner are different parties. The kind is now part of the seed (F13).
 - **F07 — Forward records can revive (by design).** A forward record is valid while `target_set_by` is the controller. If control returns to an earlier controller who set a record that nobody replaced, that record becomes valid again. This is the documented rule.
-- **F08 — Assets stuck in a non-memo-home Vault address.** An ID Asset sent to the Vault address of a non-memo-home Core Asset H is still controlled by H's owner through `holder`. memo-home cannot move it out, because Vault operations need a memo-home Asset. This is a user error; wallets and apps should transfer IDs only to wallets or to memo-home Assets' Vaults.
+- **F08 — Assets stuck in a non-memo-home Vault address (understated; see F20).** An ID Asset sent to the Vault address of a non-memo-home Core Asset H is still controlled by H's owner through `holder`. memo-home cannot move it out, because Vault operations need a memo-home Asset. This is a user error; wallets and apps should transfer IDs only to wallets or to memo-home Assets' Vaults. The third review showed that control then also passes to whoever holds delegates over H, and is lost for good if H is burned (F20).
 - **F09 — Rent of a deleted Record SubId.** The rent goes to the parent's current controller, not to whoever paid it.
 - **F10 — `COLLECTION_URI` is fixed at `init`.**
   - Testnet: the URI is whatever the build had at `init`; the current testnet Collection has the final URI (2026-10-30).
@@ -179,11 +187,11 @@ No verification could be forged (`is_verified` compares the kind), and memo-home
 
 **Fix**: the kind is part of the seed, `[b"primary_id", kind (0 Address, 1 Asset), target]`, in the `SetPrimary` constraint and in `primary_id_address`. The two records are now separate accounts. Regression K01–K05: a keypair Core Asset is created by the wallet and sold to Bob; Bob sets `Asset(X)`; the key holder sets `Address(X)` at its own address without touching Bob's record; writing `Address(X)` into Bob's account fails with `ConstraintSeeds`; clearing Bob's record fails with `NotController`.
 
-#### 🟡 F14 (Low, fixed): the label `memo` let an ID contain `.memo.`
+#### 🟡 F14 (Low, partly fixed; see F21): the label `memo` let an ID contain `.memo.`
 
 `valid_label` accepted `memo`. For 2–3 × 69 mints, an attacker could issue `memo.evil.memo` and then `xen-artist.memo.evil.memo`, set it as their Primary ID and have it verified. Wallets cut long names at the end (observed on testnet with the X1 wallet), so it could display as `xen-artist.memo…`.
 
-**Fix**: `valid_label` rejects `memo`, so `register` and `create_subid` reject it at every level and `valid_memo_id` rejects any ID containing `.memo.`. Regression R34 and S11; unit tests for `memo`, `memo.memo` and `a.memo.b.memo`. Other look-alikes, for example `xen-artist-memo.evil.memo`, remain possible and are a display matter (F16).
+**Fix**: `valid_label` rejects `memo`, so `register` and `create_subid` reject it at every level and `valid_memo_id` rejects any ID containing `.memo.`. Regression R34 and S11; unit tests for `memo`, `memo.memo` and `a.memo.b.memo`. Other look-alikes, for example `xen-artist-memo.evil.memo`, remain possible and are a display matter (F16). The third review found that any label that merely starts with `memo` (`memory`, `memos`, `memo1`) reproduces the original end-truncation scenario for one 69-mint registration, so the fix closes only the literal `.memo.` case (F21).
 
 #### 🟡 F15 (Low, rule changed): default resolution could send funds to a PDA
 
@@ -193,7 +201,7 @@ The design said that with no valid forward record a MEMO ID resolves to its cont
 
 #### ℹ️ F16 (Informational): the metadata JSON can name another ID
 
-`require_uri` checks only the scheme and length. A controller can point a cheap ID at JSON whose `name` is an expensive ID. The on-chain Asset name and `Registry.memo_id` are always the real ID, and verification is unaffected, but a market that shows the JSON name would mislead buyers. The skeptic rated this as by design, the impact verifier as low. **Rule**: apps and markets show the on-chain name, never the JSON name, and shorten long IDs in the middle (design §5).
+`require_uri` checks only the scheme and length. A controller can point a cheap ID at JSON whose `name` is an expensive ID. The on-chain Asset name and `Registry.memo_id` are always the real ID, and verification is unaffected, but a market that shows the JSON name would mislead buyers. The skeptic rated this as by design, the impact verifier as low. **Rule**: apps and markets show the on-chain name, never the JSON name, and shorten long IDs in the middle (design §5). The third review corrected which labels the shortened form must keep (F21).
 
 #### ℹ️ F17 (Informational): `issue_subid` to a fourth party near 253 bytes does not fit
 
@@ -203,6 +211,118 @@ The design's size table assumed the new owner is one of the signers. A separate 
 
 `issue_subid`, `delete_subid`, `update_uri` and `clear_primary` through a `holder` were only built for size measurements, never executed. **Covered**: V08–V11 run each of them while the ID sits in another MEMO ID Asset's Vault.
 
+### Third review (2026-10-30/31)
+
+Scope: the testnet program `3U7nmWAr…` (bytecode `c72d556f…`, rebuilt byte-identical from the source), the memo-home, memo-burn and memo-mint code it calls, Metaplex Core at the commit matching X1's build, the deploy and admin clients, the design and this report. Findings S00–S59 of the review were merged into F19–F39 below. Every finding that depends on chain state was reproduced on the local validator by `repro-memo-id-audit3` (X1 mainnet Core build, pinned hash); the Evidence lines name its cases. The program was not changed.
+
+#### 🟠 F19 (Medium, open): `issue_subid` ignores Core freeze and delegate state
+
+memo-home treats an Asset with a frozen FreezeDelegate or a TransferDelegate held by someone else as listed, and refuses every outflow from its Vault (`require_owner_not_listed`, `Listed` 6011). memo-id does not: `issue_subid` checks only the Core owner (`require_nft_controller`), never the parent Asset's plugins, and an issued NFT SubId can never be revoked.
+
+Scenario: Alice pledges `bank.memo` in an escrowless Core loan or rental; the lender L holds TransferDelegate and a frozen FreezeDelegate. Alice stays the Core owner, so she stays the controller. She issues `www.bank.memo`, `pay.bank.memo` and others to a second wallet for 69 mints each, then defaults. L unfreezes and takes `bank.memo`; its most valuable sub-names belong to Alice forever. The same works when `bank.memo` sits in the Vault of a frozen collateral Asset H: memo-home refuses to withdraw it, memo-id lets H's owner issue its SubIds through the holder. Any temporary controller (a renter, a flash-loan borrower, a custodian) can do the same.
+
+F01's counter check does not help here: a buyer can refuse a purchase when `nft_subids_issued` changed, but a lender at liquidation or an owner ending a rental takes the Asset back regardless, so the check only detects the loss.
+
+**Evidence**: S21-1 to S21-13. memo-home `withdraw_lamports` on the frozen Asset fails with `Listed`; Alice cannot unfreeze (Core `NoApprovals`) or revoke (`InvalidAuthority`); `issue_subid` on the frozen parent succeeds and burns exactly 69 MEMO; after L takes the parent, L gets `NotRecord` from `delete_subid` and `NotController` from `set_target` on the issued SubId; the holder variant behaves the same.
+
+**Proposed fix (program)**: in `issue_subid`, after `require_nft_controller`, reject when `memo_home::is_listed(parent_asset)`, and, with a holder, when `memo_home::is_listed(holder)`. This mirrors memo-home's outflow rule. Other controller actions can be undone by the next controller and can stay ungated. Keep F01's counter rule for offers that do not lock the Asset on chain, and extend it to any protocol that lends out or takes custody of an ID.
+
+#### 🟡 F20 (Low, open): the holder rule accepts any Core Asset
+
+`controller_of` follows a holder H when the Asset's owner is `vault_of(H)`, and returns H's Core owner. Nothing checks that H is a memo-home Asset, although the design and this report describe the rule as "the Vault of a memo-home Asset" and memo-home's own integration rule checks membership with the Collection Config. With a third-party H:
+- whoever holds a PermanentTransferDelegate over H can move H without the owner's signature and so take control of the ID, including issuing NFT SubIds; a buyer of H loses control again;
+- whoever holds a PermanentBurnDelegate can burn H, after which the ID can never be controlled again;
+- memo-home cannot move the ID out of H's Vault (`withdraw_asset` fails with `AccountNotInitialized` on `vault_state`).
+
+A related case: an ID transferred to a third-party Asset's own address X (instead of its Vault) is controlled by the holder of key X, not by X's owner. The design's sentence that "nobody can act as an Asset" holds only for memo-home and MEMO ID Assets, which are PDAs.
+
+**Evidence**: S17-1 to S17-16 (clawback without the buyer's signature, issue by the delegate, burn, `AccountNotInitialized` 3012); the fuzzer accepted 58 controller actions through a non-memo-home holder and saw all 110 withdrawals of those IDs fail, and accepted 78 actions signed by a keypair Asset's key.
+
+**Proposed fix (program)**: require the holder to be a memo-home Asset, for example by passing its Collection Config and checking `memo_home::is_home_asset`, as memo-home's integration rule does. This adds an account wherever a holder is used, so it is cheapest before mainnet. IDs already held by non-memo-home Assets on testnet would become uncontrollable (test data only). Clients should in any case refuse to transfer an ID to any Core Asset address or to the Vault of a non-memo-home Asset.
+
+#### 🟡 F21 (Low, open): F14 is only partly fixed, and the display rule keeps the wrong labels
+
+`valid_label` rejects only the exact label `memo`. An attacker registers `memory.memo` (69 mints), creates the free Record `xen-artist.memory.memo` pointing at itself and sets its Primary ID. The verified name begins with the 15 bytes `xen-artist.memo`, which is F14's original scenario. The middle-shortening rule adopted for F16 keeps the first label and `.memo`; but the first label of a SubId is chosen by the parent's controller, and every ID ends in `.memo`, so `xen-artist.<63-byte filler>.evil.memo` renders as `xen-artist.….memo` and hides the only label that says who owns it.
+
+**Options**: (a) reject every label that starts with `memo` (exact against prefix look-alikes, but also bans `memory`, `memorial`, `memos`); or (b) recommended: keep the label rule, and change the display rule: always show the second-level name (`<label>.memo`) in full and emphasised, shorten labels to its left, never cut the end, as browsers show the registrable domain. Optionally reserve `x1` as a label, as was done for `memo`.
+
+#### 🟡 F22 (Low, open): records set through a Core Asset Signer do not lapse when the controlling Asset is sold
+
+Core lets the owner of an Asset Z sign as its Asset Signer S = PDA(`["mpl-core-execute", Z]`, Core) through `ExecuteV1`, and X1's Core build has it.
+- An ID owned by S has controller S. Its forward record and the Primary IDs it sets are stamped S. When Z is sold, the ID's Core owner is still S, so the seller's records stay valid; only the buyer can clear them.
+- An `Address(S)` target is confirmed by S's own signature, and Address records never lapse. After a sale of Z, the seller's ID stays verified to, and resolves to, an address the buyer now signs for.
+- Under `ExecuteV1`, `register`, `issue_subid` and `update_uri` fail with `ReentrancyNotAllowed` (Core is already on the stack); the other instructions work. Such IDs must be moved out first.
+
+**Evidence**: S12-1 to S12-6, S23-1 to S23-6, S01-1 to S01-4.
+
+**Rule (no program change needed)**: design §5 and the market rules state that IDs owned by an Asset Signer (or any PDA whose control changes without its owner field changing) keep their records across a sale of the controlling Asset; markets selling Z inspect and clear them; apps point names at `Asset(Z)`, not at `Address(S)`, and show Address targets that are PDAs as unverified or with a warning. A target kind `AssetSigner(Z)` is a possible later extension.
+
+#### 🟡 F23 (Low, open): no safe payment destination for a verified Asset target
+
+F15 defines resolution only when no forward record is valid. For a verified `Asset(A)` target there is no rule. Paying the Asset address loses the funds (Core's permissionless `Collect` sweeps lamports above rent to Metaplex), and memo-home's "pay `vault_of(asset)`" rule loses them when A is not a memo-home Asset, since memo-home signs only for its own Assets' Vaults.
+
+**Rule (no program change needed)**: for `Asset(A)`, pay `vault_of(A)` only when A is a memo-home Asset; otherwise pay A's owner only when it is a wallet (the F15 rule); otherwise do not resolve for payments; never pay the Asset address. Add a client helper for it.
+
+#### 🟡 F24 (Low, open): the exported helpers do not bind the Asset to the Registry
+
+The program's own checks (`require_nft_controller`, `require_controller`, `require_target_controller`) bind the Asset to the Registry and a Record to its parent, but they are private. The exported `controller_of(asset, holder)` returns the owner of any Asset it is given, and `is_verified` trusts the controllers the caller passes. Design §5 instead documents `controller_of(registry, asset?, holder?)`, `forward_of` and `primary_of`, which do not exist. An integrator who follows the design, or passes an unchecked Asset, lets a former controller pass as verified for an ID it sold. The offline fuzz confirmed `is_verified` matches design §5 exactly when both controllers are correct (10M cases).
+
+**Fix (crate API and docs)**: export bound helpers (for example `controller_of_id(registry, parent, asset, holder)` that applies the program's checks, and a `forward_of` that computes validity itself), or rewrite design §5 to list the real functions and their trust assumptions.
+
+#### 🟡 F25 (Low, open): the IDL gives wrong seeds for the Primary ID
+
+The program derives the Primary ID from `[b"primary_id", target.kind_seed(), target.key()]`. Anchor 0.32.1's IDL generator turns a method-call seed into its receiver, so the published IDL (also on chain) says `["primary_id", arg target, arg target]`. `Target` serializes to 33 bytes, over the 32-byte seed limit, so IDL-driven resolvers (Anchor TS, Codama-generated SDKs) throw or derive an address the program rejects. This came with the F13 seed change.
+
+**Options**: (a) program: take `kind: u8` and `target_key: Pubkey` as instruction arguments, which the IDL can express, and check them against `target`; or (b) tooling: remove the `pda` entry for `primary` from the IDL before upload, document `primary_id_address` as the only derivation, and add a check that fails when the IDL seeds differ from the program's.
+
+#### 🟡 F26 (Low, open): the permanent Collection URI depends on the domain `ardrive.net`
+
+`COLLECTION_URI` is fixed at `init` (F10), and clients use the same URL as the default URI of every ID. Arweave content is immutable by txid, but wallets trust whatever the domain serves. If `ardrive.net` lapses, is resold or is compromised at any time in the Collection's lifetime, it can serve its own JSON (phishing text, image, `collection.name`) for the official Collection, and nobody can ever correct the on-chain URI. Clients can switch the default for new IDs; the Collection cannot.
+
+**Before mainnet `init`**: choose the dependency deliberately: re-test `arweave.net` (the txids have now been final for several days), or accept `ar://` for the Collection only (wallets do not display the Collection URI). Record the Arweave txids of the JSON and the image here so readers can re-resolve through any gateway.
+
+#### 🟡 F27 (Low, open): a pre-funded Collection address breaks `admin-init-memo-id`
+
+Anyone can compute the Collection PDA from the public program ID. A System transfer of about 0.0009 XNT creates a System-owned, empty account there. `admin-init-memo-id` sees an account, tries to verify it as the Collection, and exits with "unexpected MEMO ID Collection account" on every run, so a deploy stops after the program upgrade. The program itself is fine: a direct `init` sweeps the pre-fund (memo-home F09).
+
+**Evidence**: S26-1 to S26-5. **Fix (tooling)**: treat a System-owned account with empty data as not yet created and send `init`; do the same in `admin-init-burn-guard`.
+
+#### 🟡 F28 (Low, open): `deploy-mainnet.sh` with no arguments includes memo_id
+
+`ALL_PROGRAMS` includes memo_id, and a deploy without program names deploys all of them. Today a routine mainnet release aborts, because no mainnet memo-id keypair exists; once it exists, a routine release would launch memo-id on mainnet, irreversibly. `PROD-DEPLOYMENT.md` still describes eight programs, and `verify-deployment` checks only those.
+
+**Fix (tooling)**: keep memo_id out of the default set until its launch, or require an explicit confirmation for any first deployment on mainnet; add memo-id to `verify-deployment` and `PROD-DEPLOYMENT.md`.
+
+#### ℹ️ Informational
+
+- **F29 — A forged Borsh length prefix aborts instead of failing cleanly.** `parse_burn_memo` deserializes the attacker's bytes without checking length prefixes; Borsh pre-allocates up to the declared length, and the 32 KiB heap runs out. A payload prefix of 29,330 bytes or more, or a String prefix of `u32::MAX` inside the payload, ends in "memory allocation failed" instead of `InvalidMemoFormat`. Nothing changes and nothing is burned (S08-1 to S08-5); memo-burn guards this case on purpose. Optional program fix: check the outer prefix as memo-burn does, then build the expected payload and compare bytes instead of deserializing it (also cheaper).
+- **F30 — Error numbers collide across programs.** memo-home's `InvalidCoreAccount`, raised by `owner_of` inside memo-id's frame, surfaces as 6009, memo-id's `NotInHolderVault` (a wallet as target Asset, a burned Asset, a burned holder). memo-burn errors surface under memo-id's instruction index: paying from another wallet's token account reads as 6008 `NotController`. The raising program is the first "failed" log line, not the last (S00, S11, S20). A pre-funded address given where Anchor expects a memo-id account reports `AccountOwnedByWrongProgram` 3007, not 3012 (found by the fuzzer). The regression suite now asserts the program and the error name. Optional program fix: map memo-home helper errors to memo-id codes, or give memo-id its own error range.
+- **F31 — Registry bytes depend on history.** A Registry is allocated for a target; after `clear_target` Anchor writes the shorter serialization and leaves the last 33 bytes of the old one, while a Registry that never had a target has zeros there. Strict Borsh decoders (`try_from_slice`) fail on every target-less Registry. The fuzzer matched these bytes on every step. Rule: decode Registries by prefix; the bytes after `memo_id` are undefined. Optional before mainnet: a fixed-size target encoding, or zero the tail in `clear_target`.
+- **F32 — Held IDs cannot be verified from accounts readable by address.** The holder is supplied by the client and stored nowhere (Registry, Primary ID and Vault State do not record it; the Vault address is a one-way hash), so a reader using only `getAccountInfo` shows an ID held in a Vault as unverified. Finding the holder takes a Core `getProgramAccounts` search by owner. Optional before mainnet: record the holder used next to `target_set_by` and `set_by`; otherwise document the search.
+- **F33 — Documented account filters return the wrong accounts.** A `memcmp` on `parent` alone also returns issued NFT SubIds, which belong to someone else forever (presenting F01's harm as part of a sale). Primary IDs have the same layout at offsets 8, 9 and 41, and anyone can create one naming any Registry. Rule: filter on the Registry discriminator, `kind` = 1 and `parent`, and compare the count with `record_subids`; list NFT SubIds through the SubId Index.
+- **F34 — A memo is not evidence of a registration.** memo-burn does not record that a memo was used, so a memo-id-shaped BurnMemo can back a plain memo-burn burn with no memo-id instruction, or extra burns next to one. memo-id's state stays correct (one memo pays for at most one memo-id operation). Rule: count registrations from Registry and SubId Index state only (§2 reworded).
+- **F35 — X1's Core build.** Log strings in X1's Core identify a pre-Groups upstream build with security merge #270 but without #285 (UpdateV1 shrink reallocated before the memmove) and #306 (LinkedAppData membership check). `update_uri` shrinking the URI of an Asset with plugins relies on the older code path. memo-home's `parse_asset` is also more lenient than Core's loader on bytes only Core can write (invalid UTF-8 names, a short plugin header); unreachable. Recorded for §8 and `MEMO-HOME-AUDIT.md`; re-run the regression suites when X1 upgrades Core.
+- **F36 — Deploy-tool cross-checks.** The lookup table is filled and frozen from `Anchor.toml` values that nothing checks against the program's constants; prod-staging runs create a new frozen table on every memo-id deploy and the smoke test cannot use it; the `COLLECTION_URI` guard checks only that it is non-empty, and the idempotent admin check never compares the Collection's on-chain name and URI. Fix in the tooling.
+- **F37 — Documentation drift.** A legacy `issue_subid` of a short SubId fits when the owner pays and signs alone (about 1,124 bytes for `a.b.c.memo` with a 63-byte URI), so F12's "every `issue_subid` below the top level" is too strong, and the legacy column of the testnet size table is inconsistent with the v0 column (the gap should be a constant 336 bytes); `MEMO-HOME-DESIGN.md` §6.4 is stale (invalid example IDs, suffix levels, a public sale that does not exist, rent); design status lines, account counts (18 and 24, not about 25), CU figures and "64-byte limit" comments are out of date. One design sentence, that an app can register a MEMO ID in the same transaction that creates its Asset, holds only for app instructions that need no BurnMemo of their own, since both would need index 0.
+- **F38 — Test gaps (covered).** The 111-case suite never exercised: `create_subid`'s `HashMismatch`; the `WrongParent` constraints of `delete_subid` and `issue_subid`; an unsigned controller in any instruction; `issue_subid`'s URI check and `register`'s `UriTooLong` (a 257-byte URI fits as v0); the BurnMemo decoding errors; any reward other than 1 MEMO; memo-id at instruction index 1 (where real clients put it); several per-instruction call sites and success branches; `created_at`, bumps and events. V01's lapse check was vacuous; cases could skip silently; rejections matched by number only. All are now covered (Testing), except two defense-in-depth paths that need injected state: `ArithmeticOverflow` at u32 counters and `NotNft` inside `require_nft_controller`.
+- **F39 — Integration notes (disputed by the skeptic, kept as rules).** (a) Any ID owner can drop IDs into any wallet (`issue_subid` needs no signature from `new_owner`) with JSON it controls, inside the official Collection; Collection membership is not curation, and wallets and apps should title the group by the on-chain Collection name and ignore JSON `collection` fields. (b) A transaction holds at most one paid memo-id operation, and none together with another paid MEMO app operation.
+
+#### Decisions for the owner
+
+Program changes (none applied; all need a testnet upgrade or redeployment):
+
+| Finding | Change | Recommendation |
+|---|---|---|
+| F19 | `issue_subid` rejects a listed parent or holder | Make it: small, mirrors memo-home, closes the only Medium |
+| F20 | holder must be a memo-home Asset | Make it before mainnet: adds the Collection Config account where a holder is used |
+| F29 | check the BurnMemo prefixes, compare payload bytes | Optional: clean errors, fewer CU |
+| F25 | `set_primary` takes `kind` and key as arguments | Optional; or fix the IDL in tooling |
+| F30 | map memo-home helper errors, or an error offset | Optional |
+| F31, F32 | canonical Registry encoding; record the holder | Optional; layout changes are only cheap before mainnet |
+| F21 (a) | reject labels starting with `memo` | Not recommended; prefer the display rule (b) |
+
+Not program changes: F26 (the `COLLECTION_URI` choice, before mainnet `init`); tooling fixes F27, F28, F36; documentation and integration rules F21 (b), F22, F23, F24, F33, F34, F37, F39.
+
 ---
 
 ## Security Analysis by Category
@@ -211,7 +331,7 @@ The design's size table assumed the new owner is one of the signers. A separate 
 Every Registry is at `[b"memo_id", sha256(memo_id)]` and is created with `init`. The handler recomputes the full ID and requires the given hash to match (`HashMismatch`), so each ID has exactly one possible Registry address. The Asset address comes from the same hash, and memo-home checks it. `register` creates only second-level IDs (labels have no dot). SubIds are always deeper, so the two paths cannot collide. Labels are DNS hostname labels: `a-z`, `0-9` and `-`; no leading or trailing `-`; no `xn--`, which rules out punycode homographs. Full IDs are at most 253 bytes.
 
 ### 2. Payment binding ✅ SECURE
-`register` and `issue_subid` require index 0 to be an SPL Memo. It must hold a Base64 Borsh BurnMemo whose `burn_amount` equals the computed price. Its payload must name the operation, the payer and the exact ID. The burn itself goes through memo-burn, which reads the same memo. A memo therefore pays for one operation, one payer and one ID.
+`register` and `issue_subid` require index 0 to be an SPL Memo. It must hold a Base64 Borsh BurnMemo whose `burn_amount` equals the computed price. Its payload must name the operation, the payer and the exact ID. The burn itself goes through memo-burn, which reads the same memo. Each `register` and `issue_subid` burns its own price, and one memo can pay for at most one memo-id operation. A memo does not prove that the operation happened, since memo-burn does not record its use (F34); registrations are read from Registry state. A forged length prefix aborts the transaction instead of failing with `InvalidMemoFormat`, with nothing burned (F29).
 
 ### 3. Collection integrity ✅ SECURE
 Only the memo-id Authority PDA can sign memo-home `create_asset` and `update_asset` for the MEMO ID Collection. memo-id calls `create_asset` only:
@@ -220,13 +340,15 @@ Only the memo-id Authority PDA can sign memo-home `create_asset` and `update_ass
 
 `update_uri` never changes the name. Assets cannot be burned (memo-home Burn Guard). Their PDA addresses have no private key (memo-home F01).
 
-### 4. Control ✅ SECURE
+### 4. Control ⚠️ SECURE, with open findings F19 and F20
 Every controller action recomputes the controller from the Asset's Core owner on chain:
 - it checks that the Asset is the Registry's own (`WrongAsset`);
 - for a Record SubId, it checks the parent link (`WrongParent`);
 - it follows the holder rule one level only (`NotInHolderVault`).
 
-Forward and reverse records carry the controller that set them, so they lapse when control changes. Primary IDs are separate per target kind (F13). The regression suite covers lapsing on transfer and on sale, and every controller action through a holder (V01–V14), and a keypair Core Asset whose key holder and owner differ (K01–K05).
+Forward and reverse records carry the controller that set them, so they lapse when control changes. Primary IDs are separate per target kind (F13). The regression suite covers lapsing on transfer and on sale, and every controller action through a holder (V01–V16), and a keypair Core Asset whose key holder and owner differ (K01–K05). The stateful fuzzer recomputed the controller of every accepted action independently of the holder the client passed (8,000 steps, no difference).
+
+Open: the controller is the Core owner only. Core locks (freeze and transfer delegates) are not checked, so a temporary controller can issue permanent NFT SubIds (F19); the holder can be any Core Asset, so its delegates inherit control (F20); and when the owner is an Asset Signer PDA, records do not lapse on a sale of the controlling Asset (F22).
 
 ### 5. Arithmetic ✅ SECURE
 The price is computed in u128 with a checked multiply and a ceiling divide, then converted to u64 with a checked conversion. `nft_subids_issued` uses `checked_add`. `record_subids` uses checked increments and saturating decrements. Release builds have overflow checks.
@@ -250,7 +372,7 @@ memo-id relies on:
 - memo-mint (`mint_amount_at_supply`);
 - Metaplex Core and Token-2022.
 
-Their risks are recorded in their own audits (`MEMO-HOME-AUDIT.md` §9).
+Their risks are recorded in their own audits (`MEMO-HOME-AUDIT.md` §9). X1's Core build was identified as a pre-Groups upstream build with security merge #270 but without #285 and #306 (F35). The permanent Collection URI depends on the domain `ardrive.net` (F26).
 
 ---
 
@@ -277,6 +399,11 @@ Their risks are recorded in their own audits (`MEMO-HOME-AUDIT.md` §9).
   - markets: record and recheck `nft_subids_issued` (F01);
   - clients: create the payer's burn stats first (F03), retry on `BurnAmountMismatch` (F02), use v0 with the recorded lookup table (F12), check the size before signing `issue_subid` (F17);
   - apps: resolve only to wallet controllers (F15); show the on-chain name, never the JSON name, and shorten long IDs in the middle (F14, F16).
+  - third review: lenders, rental and custody protocols record and recheck `nft_subids_issued` too (F19); never transfer an ID to a Core Asset address or a non-memo-home Vault (F20); always show `<label>.memo` in full, never cut the end (F21); Asset Signer and PDA Address targets (F22); payment destination for Asset targets (F23); use only bound helpers (F24); derive Primary IDs with `primary_id_address` (F25); decode errors by the first failing program (F30); decode Registries by prefix (F31); account filters with the discriminator (F33); count registrations from state, not memos (F34); Collection membership is not curation (F39).
+- [ ] Third review program decisions (F19, F20; optional F25, F29–F32), then a testnet upgrade or redeployment, the regression suites and the smoke test.
+- [ ] Choose the `COLLECTION_URI` gateway deliberately and record the JSON and image txids (F26).
+- [ ] Deploy tooling: pre-funded Collection in `admin-init-memo-id` (F27); memo_id out of the default mainnet set until launch, and in `verify-deployment` and `PROD-DEPLOYMENT.md` (F28); lookup-table and Collection cross-checks, prod-staging table reuse (F36).
+- [ ] Documentation: design §3, §5, §6 and §7 and `MEMO-HOME-DESIGN.md` §6.4 (F21–F24, F33, F37, F39).
 - [ ] memo-app MEMO ID page: v0 + lookup table for `register` and `issue_subid`, including the Backpack path (which currently builds legacy `Transaction`s), and lookup-table parsing without `Buffer`.
 - [x] Independent adversarial review of memo-id and its memo-home interaction (second review, 2026-10-28; fixes F13 and F14).
 - [x] Testnet upgraded with the F13/F14 fixes on 2026-10-28 (slot 198692085, tx `4QewGuF8…`); on-chain bytecode `ce10b4fc…` equals the testnet build; IDL updated; Collection and lookup table unchanged. `smoke-test-memo-id` passed afterwards, including `set_primary` at the new kind-separated address (`smoke261028041132.memo`).
@@ -295,22 +422,50 @@ Their risks are recorded in their own audits (`MEMO-HOME-AUDIT.md` §9).
 - **BurnMemo**: valid memos, amount and version, malformed input, payload fields.
 - **Other**: URIs; Registry sizing and offsets; other account sizes; PDAs; controllers (owner, one-level Vault rule, NFT and Record IDs); forward lapsing; verification; Target controllers.
 
-### Local-validator regression (`clients/regression/src/regression-memo-id.rs`, 111 cases)
-`./scripts/run-regression-tests.sh id` loads X1 mainnet's Metaplex Core and Token-2022 builds, pinned by hash, together with memo-mint, memo-burn and memo-home. Each rejection asserts the exact error code and that the watched state did not change.
+### Local-validator regression (`clients/regression/src/regression-memo-id.rs`, 181 cases)
+`./scripts/run-regression-tests.sh id` loads X1 mainnet's Metaplex Core and Token-2022 builds, pinned by hash, together with memo-mint, memo-burn and memo-home. It runs the suite twice on fresh validators: at a supply of 5M (reward 1 MEMO) and at 2.5T (reward 8 units, where prices are fractions of a MEMO and the ceiling rounding shows). Each rejection asserts the error code, the program that raised it and, for Anchor programs, the error name, and that no account the transaction names changed except the fee payer's lamports. Successes assert exact account state, including `created_at`, bumps and events. A skipped case fails the run unless `MEMO_REGRESSION_ALLOW_SKIP=1`.
 
 | Area | Cases |
 |---|---|
-| `init` and the Collection address | I01–I03 |
-| `register`: labels, prices by length against an independent curve reference, BurnMemo and payload, URIs, signers | R01–R34 |
-| Record SubIds | S01–S11 |
-| NFT SubIds, SubId Index and counters | N01–N14 |
-| v0 transactions with the frozen lookup table | A01–A03 |
+| `init` and the Collection address | I01–I04 |
+| `register`: labels, prices by length against an independent curve reference, BurnMemo and payload decoding, instruction index, URIs, pre-funded addresses, program and sysvar substitution, Registry size | R01–R54 |
+| Record SubIds: hash binding, parent link, re-creation, separate payer, labels | S01–S22 |
+| NFT SubIds, SubId Index and counters: URIs, payload, parent link, index, pre-funded entry, issued Record with a target | N01–N30 |
+| Unsigned controller or signer in every gated instruction | G01–G08 |
+| v0 transactions with the frozen lookup table, 257-byte URIs | A01–A05 |
 | 253-byte IDs | L01–L05 |
-| Forward records | T01–T07 |
-| Primary IDs | P01–P10 |
+| Forward records | T01–T09 |
+| Primary IDs | P01–P15 |
 | Primary IDs of a keypair Core Asset with a separate key holder (F13) | K01–K05 |
-| Holder Vaults (every controller action through a holder), transfers and sales | V01–V14 |
-| `update_uri` | U01–U07 |
+| Holder Vaults (every controller action through a holder), transfers and sales | V01–V16 |
+| `update_uri` | U01–U10 |
+
+Full run on 2026-10-31 (`./scripts/run-regression-tests.sh`, with build; `target/deploy` hashes unchanged): curve 61/0, mint 48/0, burn 65/0, home 160/0, id 181/0 at 5M and 181/0 at 2.5T, admin-init 4/0.
+
+### Reproductions (`clients/regression/src/repro-memo-id-audit3.rs`, 64 cases)
+Each case asserts today's behaviour of a third-review finding (F19, F20, F22, F27, F29, F30), so a fix shows up as a deliberate failure. 64/0 on a fresh validator; on a used ledger the five F27 cases skip, which fails the run unless skips are allowed. It uses a throwaway HOME and keypair for the admin client and deletes them afterwards.
+
+### Mutation testing (third review)
+71 mutants of `programs/memo-id/src/lib.rs`, one edit each (removed checks, flipped comparisons, `Signer` and `Program` types loosened, wrong seeds, sizes, prices, stamps, events), each built and run on fresh validators at both supplies with `run-regression-tests.sh --so-dir`. The unmutated build in the scratch copy was byte-identical to `target/deploy/memo_id.so`.
+
+| | Mutants |
+|---|---|
+| Equivalent (identical binary, or no observable difference) | 7: M14 (off-chain `forward`; the unit tests catch it), M15, M40, M53, M54, M55, M56 |
+| Caught by the 170-case suite | 53 of 64 (M08, M09 and M47 only at 2.5T) |
+| Caught after 11 more cases (R50–R54, S22, N30, P15, U09, U10, I04) | 64 of 64 |
+
+The 111-case suite missed, among others, the removal of `create_subid`'s `HashMismatch`, both `WrongParent` constraints, every `Signer` check and `issue_subid`'s URI check (F38).
+
+### Stateful fuzzing (`clients/regression/src/fuzz-memo-id.rs`)
+`fuzz-memo-id --seed <n> --steps <n> [--edge]` drives four wallets through random sequences of every instruction plus Core transfers, memo-home withdrawals and pre-funding, with deliberately wrong variants (signers, holders, parents, Assets, indices, labels, URIs, memos, too little MEMO). Before each step a model predicts success or the exact error, raising program, error name and instruction index; after each step it compares every Registry byte for byte, Primary IDs, SubId Index entries, Vault States, lamports, Asset owners, names and URIs, MEMO balances, supply, burn statistics and events, and recomputes the counters and the name–Registry–Asset links from the chain alone.
+
+| Run | Steps | Mismatches |
+|---|---|---|
+| Seeds 1–3, supply 5M | 3,000 | 0 |
+| Seeds 4–5, supply 2.5T | 2,000 | 0 |
+| Seeds 6–8, `--edge` (253-byte names, long nesting) | 3,000 | 0 (1 step skipped: over 1,232 bytes, F17) |
+
+98 distinct (operation, outcome) pairs were reached. Against 17 non-equivalent mutants the fuzzer stopped at the first mismatch within 5–416 steps for all 17; on two equivalent mutants it ran 400 steps with no false alarm. Seed 1 re-ran identically.
 
 ### Testnet deployment and wallet tests (2026-10-27/28)
 
@@ -355,4 +510,6 @@ memo-id meets its design invariants for:
 - control that follows the Asset;
 - records that lapse when control changes.
 
-The only medium finding (F01) is a marketplace concern with an exact, cheap check, like memo-home's Vault State nonce. The adversarial second review found no critical, high or medium issue; its two program findings (F13, F14) are fixed and covered by regression cases. Deployed to testnet on 2026-10-27 and upgraded with the fixes on 2026-10-28; the smoke test passes. **Mainnet after the mainnet checklist.**
+The first medium finding (F01) is a marketplace concern with an exact, cheap check, like memo-home's Vault State nonce. The adversarial second review found no critical, high or medium issue; its two program findings (F13, F14) are fixed and covered by regression cases. Deployed to testnet on 2026-10-27 and upgraded with the fixes on 2026-10-28; the smoke test passes.
+
+The third review found no critical or high issue. Its medium finding (F19) and the holder finding (F20) are program issues with small, local fixes, proposed for the owner's decision; the rest are integration rules, documentation, tooling and optional hardening. The test evidence is now much stronger: every non-equivalent mutant is caught, and 8,000 stateful fuzz steps matched the model exactly. **Mainnet after the mainnet checklist, including the third review's decisions.**

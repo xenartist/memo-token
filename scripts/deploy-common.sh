@@ -16,6 +16,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KEYS_BASE="${HOME}/.config/solana/memo-token"
 TARGET_DEPLOY_DIR="${PROJECT_ROOT}/target/deploy"
 
+source "${SCRIPT_DIR}/anchor-build.sh"
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -444,6 +446,29 @@ verify_configuration() {
     fi
 }
 
+# Record a deployed program's ELF hash in deployments/<env>.sha256, which verify-deployment compares
+# the on-chain programs with (MEMO-MINT-AUDIT.md, MINT-16). Only for the network that <env> names:
+# prod staging (mainnet build on testnet) is not recorded.
+record_deployed_hash() {
+    local env=$1
+    local cluster=$2
+    local program=$3
+    local so_file=$4
+    [[ "${cluster}" =~ "${env}" ]] || return 0
+    local manifest="${PROJECT_ROOT}/deployments/${env}.sha256"
+    local hash=$(shasum -a 256 "${so_file}" | cut -c1-64)
+    local size=$(wc -c < "${so_file}" | tr -d ' ')
+    mkdir -p "$(dirname "${manifest}")"
+    touch "${manifest}"
+    local tmp="${manifest}.tmp"
+    awk -v p="${program}" -v line="${program} ${hash} ${size}" '
+        $1 == p { if (!done) print line; done = 1; next }
+        { print }
+        END { if (!done) print line }' "${manifest}" > "${tmp}"
+    mv "${tmp}" "${manifest}"
+    print_info "Recorded ${program} sha256 ${hash} (${size} bytes) in deployments/${env}.sha256 (commit it)"
+}
+
 # Main deployment function
 deploy_to_env() {
     local ENV=$1
@@ -573,13 +598,13 @@ deploy_to_env() {
         for program in "${SELECTED_PROGRAMS[@]}"; do
             local program_dash=$(get_program_name_dash "${program}")
             print_info "Building ${program_dash}..."
-            anchor build -p "${program_dash}" -- --features "${FEATURE_FLAG}"
+            anchor_build -p "${program_dash}" -- --features "${FEATURE_FLAG}"
         done
     else
         for program in "${SELECTED_PROGRAMS[@]}"; do
             local program_dash=$(get_program_name_dash "${program}")
             print_info "Building ${program_dash}..."
-            anchor build -p "${program_dash}"
+            anchor_build -p "${program_dash}"
         done
     fi
     
@@ -625,6 +650,7 @@ deploy_to_env() {
                     --provider.cluster "${CLUSTER}" \
                     --provider.wallet "${DEPLOY_WALLET}"
                 print_success "${program} upgraded: ${program_id}"
+                record_deployed_hash "${ENV}" "${CLUSTER}" "${program}" "${TARGET_DEPLOY_DIR}/${program}.so"
                 
                 # Keep the on-chain IDL in sync (create it if it does not exist yet)
                 local idl_file="${PROJECT_ROOT}/target/idl/${program}.json"
@@ -643,6 +669,7 @@ deploy_to_env() {
                     --program-name "${program}" \
                     --program-keypair "$(program_keypair_path "${program}" "${ENV}")"
                 print_success "${program} deployed: ${program_id}"
+                record_deployed_hash "${ENV}" "${CLUSTER}" "${program}" "${TARGET_DEPLOY_DIR}/${program}.so"
 
                 # Anyone can create a program's IDL account first; it must be ours
                 local idl_authority

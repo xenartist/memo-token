@@ -4,10 +4,36 @@
 |---|---|
 | Audit target | `memo-mint`, `memo-burn` (Anchor 0.32.1, Token-2022, decimals = 6, X1 chain) |
 | Code version | Branch `dev`, HEAD `ca4c8a0b` ("re-design memo emission curve") plus uncommitted working-tree changes. This report audits the **working tree** |
-| Report date | 2026-10-16 (deployment status updated 2026-10-17) |
-| Deployment status | Testnet and mainnet both run the audited code. Prod staging and mainnet were upgraded on 2026-10-17; see 8.4 |
+| Report date | 2026-10-16 (deployment status updated 2026-10-17; later changes listed in "Updates after this audit") |
+| Deployment status | Testnet and mainnet both run the audited code. Prod staging and mainnet were upgraded on 2026-10-17; see 8.4. Since 2026-11-01 both networks run memo-mint Revision 5, which is not the audited memo-mint code; memo-burn is unchanged (see "Updates after this audit") |
 | Audience | Project owner; third-party developers building on MEMO |
 | Severity definitions | Critical: unauthorized minting, burning other users' assets, breaking the supply cap, multiple mints in one transaction, theft of funds. High: a core invariant broken under realistic conditions, or permanent denial of service for minting or burning. Medium: an invariant broken under edge conditions, real harm to other users, or accounting errors with real impact. Low: minor accounting/logging/UX inconsistencies, defense-in-depth gaps. Info: observations, design notes, centralization and trust assumptions |
+
+---
+
+## Updates after this audit (2026-11-01)
+
+This report describes the code audited on 2026-10-16. Later changes are recorded in `MEMO-MINT-AUDIT.md` (Revision 5 and findings MINT-01 to MINT-23). The statements below no longer hold as written. The findings themselves are unchanged; only the facts they rest on have moved.
+
+- **memo-mint counts characters (Revision 5, deployed on testnet and mainnet on 2026-11-01).**
+  - The memo at index 0 must have at least 69 **characters** (Unicode scalar values), not 69 bytes. A 35-character, 69-byte memo such as `"é" × 34 + "R"` now fails with `MemoTooShort`.
+  - memo-burn is unchanged. It still compares the raw memo bytes with 69, and its Base64 memos have one byte per character.
+  - This affects M-15, INT-06 and BURN-02's remark that memo-mint's 69-byte minimum is exact.
+  - The Memo program's cost is not a flat ~350 CU per byte (5.4). It depends on the characters: 69 characters cost 20,097 CU in Extension B ideographs, 26,037 in ASCII and 767,024 in common CJK ideographs (MINT-07, MINT-08).
+- **MINT-01, recommendation 2.** A timestamp in the memo, or the payer as memo signer, does not prevent the same-slot 6008:
+  - Several memo-miner instances of one wallet that mint in the same second build identical instructions. 2.9% of 1,000 mainnet mints failed this way on 2026-10-31 (MINT-14).
+  - Clients need a memo that is unique per transaction. memo-miner 0.5.0 draws 69 random Extension B ideographs.
+- **INT-03.** The curve now exists in at least nine source copies across three repositories (memo-token, memo-sdk, memo-app). The recommendation stands.
+- **INT-08.** Its open item is closed. X1 allows 24,000,000 CU per writable account per block (SIMD-0306 active, 60M block limit) (MINT-17).
+- **INT-12.** SIMD-0459 (`syscall_parameter_address_restrictions`) has been active on mainnet since slot 87,958,112 (2026-10-23), so both networks run the same program runtime.
+  - The recommended re-run trigger has fired.
+  - The CPI-tampering harness was never committed, so recommendations 1 and 2 remain open (MINT-17).
+- **8.2, "Still not covered".**
+  - memo-mint's successful admin initialization is now covered by `regression-admin-init`, as a simulation without the admin key. memo-burn's successful initialization is still not covered; only its failure paths are.
+  - v0 transactions with address lookup tables are covered by M25 in `regression-memo-mint`.
+  - The same-slot false positive (MINT-01) is reproduced by the audit tools but has no regression case.
+  - Multisig owners and two-level nested CPI remain open.
+  - `regression-memo-mint` has grown from 48 to 107 cases.
 
 ---
 
@@ -351,6 +377,7 @@ Evidence types:
   1. Commit the malicious caller program and the LiteSVM harness as a regression suite, pinned to agave crate versions that match X1.
   2. Re-run after every X1 upgrade, and also when `syscall_parameter_address_restrictions`, `virtual_address_space_adjustments` or `account_data_direct_mapping` is activated on mainnet.
   3. Assert only "the transaction fails and state is unchanged". Do not assert a specific `InstructionError` variant, because the error codes differ between the two clusters.
+- **Update (2026-11-01)**: see "Updates after this audit".
 
 #### MINT-01 The one-mint fingerprint covers only the top-level instruction list: another transaction in the same slot, immediately next, with byte-identical instructions is rejected with 6008; the wording in `MEMO-MINT-AUDIT.md:110` was too broad
 - **Final severity**: Info (reported Low → Info; both reviewers agree)
@@ -375,7 +402,7 @@ Evidence types:
   1. Change `MEMO-MINT-AUDIT.md:110` to the exact condition: a mint is rejected only when the top-level instruction list (including account flags) is byte-identical to the **immediately preceding** recorded mint in the same slot; for direct calls and built-in apps, different users never collide.
   2. Clients: add a nonce or timestamp to the memo (the smoke tests already do this), or use `spl_memo::build_memo(.., &[payer])` to list the fee payer as a memo signer.
   3. Third-party integrations: list the end user as a signer in the top-level instruction, or require unique memos.
-- **Status**: fixed in MEMO-MINT-AUDIT.md (2026-10-16) (recommendation 1, documentation wording).
+- **Status**: fixed in MEMO-MINT-AUDIT.md (2026-10-16) (recommendation 1, documentation wording). Recommendation 2 proved insufficient on mainnet (MINT-14). See "Updates after this audit" (2026-11-01).
 
 #### MINT-04 `MintState` is written back at Anchor exit, after the Token-2022 `mint_to` CPI: safe today, but the documentation's "No state changes after CPI" is inaccurate
 - **Final severity**: Info (reported Info)
@@ -447,7 +474,7 @@ Evidence types:
 - **Failure scenario**: `[Memo(Base64 BurnMemo{amount=X}), burn X, burn X, process_mint]` succeeds: it burns 2X, counts 2 burns, and mints once along the curve.
 - **Evidence and reproduction**: reproduction `A-int06.log`: the combination above (X = 3 tokens) succeeds, burning 6,000,000 units, counting 2 burns, and minting 1,000,000 units once. Local B36 also passes.
 - **Recommendation**: no change needed. Warn indexers in the documentation: one memo does not correspond to one action; amounts and counts should be taken from program logs or from balance and supply changes.
-- **Status**: documented in README integration notes (2026-10-16).
+- **Status**: documented in README integration notes (2026-10-16). memo-mint now requires 69 characters, not 69 bytes. See "Updates after this audit" (2026-11-01).
 
 #### INT-07 `InterfaceAccount<Mint>` and `InterfaceAccount<TokenAccount>` also accept accounts owned by legacy SPL Token, but this cannot be exploited because the mint address is fixed and Token-2022 does its own checks
 - **Final severity**: Info (reported Info)
@@ -476,6 +503,7 @@ Evidence types:
   - The exact X1 per-writable-account block CU limit could not be verified from local source.
 - **Evidence**: local M19b/M19d: memo-mint uses about 15.6k–16k CU per call.
 - **Recommendation**: no code change needed. Clients should set a tight SetComputeUnitLimit (at index ≥ 1) and add a priority fee under congestion; document the shared write locks.
+- **Update (2026-11-01)**: see "Updates after this audit".
 
 #### BURN-04 A BurnMemo binds each `process_burn` instruction, not the whole transaction: one memo can back any number of burns of the same amount (top-level, CPI, or different signers)
 - **Final severity**: Info (reported Info)
@@ -543,7 +571,7 @@ Evidence types:
   - `general_purpose::STANDARD` requires canonical padding, so the length of any valid string is a multiple of 4. The shortest memo-burn memo that passes the 69-byte check and also decodes is therefore 72 characters (52–54 bytes after decoding, payload ≥ 39 bytes).
   - Memos of 69–71 characters pass the length check but cannot be decoded, so they return `InvalidMemoFormat` (6001) instead of `MemoTooShort`. The error message "Memo too short (minimum 69 bytes)" does not describe this case.
   - Memos produced by the official client are always far longer than 72 characters, because the user input alone is at least 69 characters before encoding. This only affects third-party integrators who build memos by hand.
-  - The effective on-chain rule is stricter than the stated one, so there is no security impact. memo-mint does not decode the memo, and its 69-byte on-chain minimum is exact.
+  - The effective on-chain rule is stricter than the stated one, so there is no security impact. memo-mint does not decode the memo, and its 69-byte on-chain minimum is exact (69 characters since memo-mint Revision 5; see "Updates after this audit").
 - **Failure scenario**: an integrator builds a memo by hand to the "69 bytes" rule and gets 6001 instead of a length error, which may lead them to misdiagnose the problem.
 - **Evidence and reproduction**:
   - Local B19 (68 bytes → 6010), B19b (72 bytes succeeds), B18 (no padding → 6001).
@@ -642,6 +670,7 @@ Evidence types:
   - Today all three agree for every u64 (proven by the harness, including all 57 intervals, the labels of all 55 curve values, and round-trip conversion).
   - They diverge only if the deployer performs an incomplete upgrade (the project has upgraded only memo-mint before). A divergence would not affect core invariants.
 - **Recommendation**: make the client depend on memo-mint and re-export the function, or add a cross-check test; enforce "a curve change must redeploy the 5 apps" in the deployment script (today it is only text in `MEMO-MINT-AUDIT.md:139`).
+- **Update (2026-11-01)**: see "Updates after this audit".
 
 #### INT-05 A burn memo is not bound to the calling program or the operation; a memo written for one app can be reused by a direct burn or an extra burn
 - **Final severity**: Info (reported Info)
@@ -1424,7 +1453,7 @@ Every failing case asserts the exact `InstructionError [index, Custom(code)]` an
 | B12 (`last_burn_time` not updated) | not caught | B00b, every exact-delta burn |
 | B13 (memo-burn admin check removed) | not caught | TEST-09.burn-non-admin |
 
-**Still not covered:** successful admin initialization (needs the admin key); unit tests for the user-stats cap and handler amount bounds (the logic is inline in `process_burn`, so it is covered on chain only); the same-slot false positive (MINT-01), v0 transactions with address lookup tables, multisig owners, and two-level nested CPI (needs a dedicated CPI test program).
+**Still not covered** (as of 2026-10-16; see "Updates after this audit"): successful admin initialization (needs the admin key); unit tests for the user-stats cap and handler amount bounds (the logic is inline in `process_burn`, so it is covered on chain only); the same-slot false positive (MINT-01), v0 transactions with address lookup tables, multisig owners, and two-level nested CPI (needs a dedicated CPI test program).
 
 **App note found while migrating:** a transaction with both a memo-blog mint and a memo-forum mint fails because memo-forum runs out of memory while Borsh-decoding a memo written for memo-blog. The transaction still fails as it should (only one mint per transaction is allowed), but without a clean error code. This is an app robustness issue in memo-forum, not a core issue.
 

@@ -19,7 +19,7 @@ Anyone can mint MEMO (Token-2022, 6 decimals) by sending a transaction to the me
 **Transaction structure**:
 
 ```
-[0]    SPL Memo, at least 69 bytes (required, must be the first instruction;
+[0]    SPL Memo, at least 69 characters (required, must be the first instruction;
        no contract maximum, the transaction size limit applies)
 [1..]  memo_mint::process_mint  (mint to yourself)
        or memo_mint::process_mint_to(recipient)  (mint to someone else's MEMO token account)
@@ -59,7 +59,8 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 ### Memo length
 
-- On chain, memo-mint and memo-burn check the raw memo instruction bytes against a minimum of 69 bytes (`MemoTooShort` below that); there is no maximum other than the transaction size.
+- On chain, memo-mint requires at least 69 **characters** (Unicode code points, not bytes) since program version 0.5.0, so `"é" × 34 + "R"` (69 bytes, 35 characters) fails with `MemoTooShort`. memo-burn checks the raw memo bytes against 69; its memos are Base64, where characters and bytes are the same. There is no maximum other than the transaction size.
+- Build the memo instruction without signer accounts (`spl_memo::build_memo(memo, &[])`). Listing the user as a memo signer only adds a `Signed by` log line, about 13,500 CU, and no MEMO program reads the memo's accounts.
 - In the project's design, 69 is the minimum the official client enforces on the **user's input before Borsh/Base64 encoding** (users type at least 69 characters). The encoded memo is then always far longer than 69.
 - memo-burn and the apps expect standard, padded Base64 of Borsh data. Padded Base64 lengths are multiples of 4, so the shortest memo memo-burn can decode is 72 characters: a 69–71-character memo fails with `InvalidMemoFormat` (6001), not `MemoTooShort` (6010). This only matters if you build memos by hand.
 
@@ -67,14 +68,14 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 - **One mint per transaction.** A second mint in the same transaction fails with `OneMintPerTransaction` (6008), whether it comes from another top-level instruction or from a CPI, including the app instructions that mint (`send_memo_to_group`, `mint_for_blog`, `mint_for_post`).
 - The reward is computed on chain from the current supply (see the curve above); callers cannot choose it.
-- Re-sending the same instructions (for example a retry with a new blockhash or another fee payer) that lands in the same slot as the first transaction fails with 6008 and still pays the fee. Put a nonce or timestamp in the memo to make every mint transaction unique.
+- Re-sending the same instructions (for example a retry with a new blockhash or another fee payer) that lands in the same slot as the first transaction fails with 6008 and still pays the fee. Make every mint transaction's memo unique: a per-second timestamp is not enough when several instances of one wallet mint at once (2.9% of mainnet mints failed this way on October 31, 2026). memo-miner draws 69 random CJK Extension B ideographs, which are also the cheapest valid memo.
 - Minting to any token account of the MEMO mint works, including accounts with CPI Guard enabled and multisig-owned accounts. `process_mint_to`'s `recipient` is only a consistency check against the token account owner, not an authorization.
 - While circulating supply is at the 10T cap, every mint fails with `SupplyLimitReached` (6005).
 
 ### Burning
 
 - **memo-burn minimum: 1 unit (0.000001 MEMO).** Any amount in units is allowed (no whole-token rule, no integer multiple), up to 1T MEMO per `process_burn` instruction. The memo's `burn_amount` must equal the instruction's `amount` exactly. Each user must call `initialize_user_global_burn_stats` once before their first burn.
-- **App minimums scale with the current mint reward**: `minimum = multiplier × reward at the current supply` (1 MEMO per mint today, so the multiplier is the minimum in MEMO while supply is at or below 10M):
+- **App minimums scale with the current mint reward**: `minimum = multiplier × reward at the current supply` (the reward has been 0.9 MEMO per mint since supply passed 10M; supply was 12.34M MEMO on November 1, 2026, so `create_chat_group` needs 37,862.1 MEMO):
 
   | Operation | Multiplier |
   |---|---|
@@ -92,7 +93,7 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 ### Indexing and statistics
 
-- **The burn amount is bound to each `process_burn` instruction, not to the transaction.** One memo can back several burns of the same amount (top-level or via CPI, even by different signers) and the transaction's one mint. Never count burns or mints by counting memos or reading memo text; use the per-instruction logs (`Burned N units from ...`, `Minted N units to ...`), the Token-2022 inner instructions, or balance and stats deltas, and attribute app burns by the calling program and app account changes.
+- **The burn amount is bound to each `process_burn` instruction, not to the transaction.** One memo can back several burns of the same amount (top-level or via CPI, even by different signers) and the transaction's one mint. Never count burns or mints by counting memos or reading memo text; use the per-instruction logs (`Burned N units from ...`, `Minted N units, supply before mint: ...`; since memo-mint Revision 5 the mint line no longer names the recipient: take it from the instruction, the `user` of `process_mint` or the `recipient` argument of `process_mint_to`), the Token-2022 inner instructions, or balance and stats deltas, and attribute app burns by the calling program and app account changes.
 - **`GlobalBurnStats` is a lower bound of supply reduction**: it counts only burns through memo-burn since it was initialized. Holders can burn directly through Token-2022 without a memo, which reduces supply without updating any stats. Use `mint.supply` for circulating supply.
 
 ## Prerequisites
@@ -110,7 +111,7 @@ curl --proto '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/solana-d
 
 ## Setup
 
-The workspace contains 8 programs under `programs/` (memo-mint, memo-burn, memo-home, memo-chat, memo-profile, memo-project, memo-blog, memo-forum) and one client crate under `clients/`. Program IDs, token mints, RPC and wallet for both networks are configured in `Anchor.toml`, which the clients read as the single source of truth.
+The workspace contains 9 programs under `programs/` (memo-mint, memo-burn, memo-home, memo-id, memo-chat, memo-profile, memo-project, memo-blog, memo-forum; memo-id is on testnet only) and one client crate under `clients/`. Program IDs, token mints, RPC and wallet for both networks are configured in `Anchor.toml`, which the clients read as the single source of truth.
 
 Build:
 
@@ -125,7 +126,7 @@ Each program selects its IDs with the `mainnet` cargo feature; without it the te
 ## Testing
 
 ```bash
-./scripts/run-unit-tests.sh                 # unit tests of all programs (or: ./scripts/run-unit-tests.sh memo-burn)
+./scripts/run-unit-tests.sh                 # unit tests of all programs, testnet and mainnet builds (or: ./scripts/run-unit-tests.sh memo-burn)
 ./scripts/run-regression-tests.sh           # on-chain regression suite for memo-mint / memo-burn (local validator)
 ./scripts/run-smoke-tests.sh --local        # smoke tests of all 7 programs against a local validator
 ./scripts/run-smoke-tests.sh                # smoke tests against the cluster in Anchor.toml (spends test MEMO)
@@ -154,12 +155,12 @@ The programs are already live on X1 testnet and mainnet, so a release is an **up
 2. Deploy:
 
    ```bash
-   ./scripts/deploy-testnet.sh                    # testnet, testnet IDs (runs unattended)
-   ./scripts/deploy-prod-staging-testnet.sh       # testnet, mainnet build — rehearsal before mainnet
-   ./scripts/deploy-mainnet.sh                    # mainnet (asks for confirmation)
+   ./scripts/deploy-testnet.sh memo_mint                  # testnet, testnet IDs (runs unattended)
+   ./scripts/deploy-prod-staging-testnet.sh memo_mint     # testnet, mainnet build — rehearsal before mainnet
+   ./scripts/deploy-mainnet.sh memo_mint                  # mainnet (asks for confirmation)
    ```
 
-   With no arguments all 8 programs are deployed or upgraded in order: `memo_mint` → `memo_burn` → `memo_home` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`. You can pass program names to upgrade a subset; they are still deployed in that order. **Never upgrade only the apps:** they depend on the behavior of the current memo-mint / memo-burn (for example fractional burn amounts), so upgrade memo-burn and memo-mint first or in the same run. The script creates the `mint_state` and `global_burn_stats` accounts after upgrading memo-mint / memo-burn if they do not exist yet, and the memo-home Burn Guard after deploying memo-home.
+   Name the programs to deploy or upgrade; they are deployed in this order: `memo_mint` → `memo_burn` → `memo_home` → `memo_id` → `memo_chat` → `memo_profile` → `memo_project` → `memo_blog` → `memo_forum`. Without arguments the scripts select all 9 programs, including `memo_id`, which is not on mainnet: the mainnet run aborts today (no `memo_id` program keypair) and would deploy memo-id once that keypair exists. After each deployment the script records the program's hash in `deployments/<network>.sha256`; commit that file. **Never upgrade only the apps:** they depend on the behavior of the current memo-mint / memo-burn (for example fractional burn amounts), so upgrade memo-burn and memo-mint first or in the same run. The script creates the `mint_state` and `global_burn_stats` accounts after upgrading memo-mint / memo-burn if they do not exist yet, and the memo-home Burn Guard after deploying memo-home.
 
 3. Verify (read-only, simulations only):
 
@@ -210,7 +211,7 @@ cargo run --bin test-memo-burn 1 short-memo           # should fail
 cargo run --bin test-memo-burn 1 long-memo            # exceeds the transaction size, should fail
 ```
 
-3. Chat groups. Creating a group burns at least 42,069 × the current mint reward (42,069 MEMO while the reward is 1 MEMO); the predefined test cases fetch the current minimum automatically.
+3. Chat groups. Creating a group burns at least 42,069 × the current mint reward (37,862.1 MEMO at today's reward of 0.9 MEMO); the predefined test cases fetch the current minimum automatically.
 
 ```bash
 cargo run --bin test-memo-chat-create-group -- valid-basic
@@ -253,5 +254,6 @@ The programs are currently upgradeable by the deploy admin key. The upgrade auth
 ## Development Notes
 
 - All keypairs are stored GPG-encrypted, one tree per network: `~/.config/solana/memo-token/<testnet|mainnet>/{authority,programs}/` (outside `target/`, which `anchor clean` deletes). `scripts/keys.sh unlock <network>` decrypts them into a RAM disk for a work session and `scripts/keys.sh lock` removes them; `scripts/setup-keypairs.sh` imports or generates missing keypairs. Program keypairs are only needed for a program's first deploy; the deploy scripts upgrade deployed programs by program ID with the upgrade authority.
+- The scripts build through `scripts/anchor-build.sh`. In a checkout without `target/deploy`, anchor-cli 0.32.1 rewrites the mainnet `declare_id!` of every program to random IDs. The helper creates the directory first, and stops and restores the sources if a build changes any `programs/*/src/lib.rs`. Before running `anchor build` or `anchor idl build` by hand in a fresh clone, run `mkdir -p target/deploy`.
 - Mint authority is a PDA derived from program ID
 - Each user needs to create their token account before minting

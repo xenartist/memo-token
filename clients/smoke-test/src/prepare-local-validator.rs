@@ -4,6 +4,7 @@
 /// leaderboards) and the MEMO token mint from a source cluster (testnet by default), then:
 ///   - sets the mint's supply to any value (to test the emission curve steps and burn minimums)
 ///   - creates the wallet's Token-2022 ATA with any balance (no need to mint large amounts)
+///   - plants a test-only shadow MintState for the regression suites (see SHADOW_MINT_STATE_SEED)
 /// Every account is written as <out-dir>/<pubkey>.json, loaded with `--account-dir`.
 ///
 /// Usage:
@@ -14,6 +15,7 @@
 /// Amounts accept up to 6 decimals (e.g. "10000000.000001").
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{account::Account, pubkey::Pubkey, rent::Rent};
 use spl_token_2022::{
@@ -40,6 +42,14 @@ const STATE_ACCOUNTS: &[(&str, &[u8])] = &[
     ("memo_project", b"burn_leaderboard"),
     ("memo_forum", b"global_counter"),
 ];
+
+/// Test-only "shadow MintState" for clients/regression (regression-memo-mint M21*,
+/// regression-admin-init): an account owned by memo-mint with MintState's discriminator, size and
+/// the PDA's bump, at sha256(this seed) instead of the MintState PDA. Nothing on a real network can
+/// create one (memo-mint only creates MintState at the PDA); the suites check that memo-mint rejects
+/// it (ConstraintSeeds). Same seed as clients/regression/src/harness.rs.
+const SHADOW_MINT_STATE_SEED: &[u8] = b"memo-token regression: shadow MintState";
+const MINT_STATE_SPACE: usize = 8 + 32 + 8 + 1 + 64;
 
 struct Args {
     out_dir: PathBuf,
@@ -159,6 +169,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     write_account(&args.out_dir, &ata, &ata_account)?;
     println!("  wallet ATA         {} (balance {} tokens)", ata, format_token_amount(args.balance));
+
+    // Shadow MintState (test only): discriminator, zero fingerprint and slot, the PDA's bump, zero reserved
+    let memo_mint = get_program_id("memo_mint")?;
+    let bump = Pubkey::find_program_address(&[b"mint_state"], &memo_mint).1;
+    let mut data = Sha256::digest(b"account:MintState")[..8].to_vec();
+    data.extend([0u8; 40]);
+    data.push(bump);
+    data.extend([0u8; 64]);
+    assert_eq!(data.len(), MINT_STATE_SPACE);
+    let shadow = Pubkey::new_from_array(Sha256::digest(SHADOW_MINT_STATE_SEED).into());
+    let shadow_account = Account {
+        lamports: Rent::default().minimum_balance(MINT_STATE_SPACE),
+        data,
+        owner: memo_mint,
+        executable: false,
+        rent_epoch: 0,
+    };
+    write_account(&args.out_dir, &shadow, &shadow_account)?;
+    println!("  shadow MintState   {} (test only, not the PDA)", shadow);
 
     Ok(())
 }

@@ -10,6 +10,9 @@
 #   ./scripts/run-unit-tests.sh --verbose memo-mint # Run with verbose output
 #   ./scripts/run-unit-tests.sh --nocapture memo-mint # Show println! output
 #   ./scripts/run-unit-tests.sh --help             # Show help
+#
+# Each contract is tested twice: the testnet build (default features) and the mainnet build
+# (--features mainnet), which selects the mainnet declare_id!, mints, admins and PDA constants.
 
 set -e
 
@@ -88,6 +91,8 @@ ${BOLD}OPTIONS:${NC}
     --nocapture         Show println! and stdout output from tests
     --test-threads N    Number of test threads (0 = all cores, 1 = sequential)
     --list, -l          List all available contracts
+
+Each contract is tested for the testnet build and for the mainnet build (--features mainnet).
 
 ${BOLD}CONTRACTS:${NC}
     memo-mint           Run tests for memo-mint contract
@@ -169,28 +174,37 @@ run_contract_tests() {
         return 0
     fi
     
-    # Build test command
-    local cmd="cargo test -p $contract_normalized --lib"
-    
-    # Add extra arguments
-    if [ -n "$EXTRA_ARGS" ]; then
-        cmd="$cmd -- $EXTRA_ARGS"
-    fi
-    
-    # Show command being run
-    if [ "$VERBOSE" = true ]; then
-        print_message "$CYAN" "Running: $cmd"
-        echo ""
-    fi
-    
-    # Run the tests
-    if eval "$cmd"; then
-        print_message "$GREEN" "✅ $contract_normalized tests passed"
-        return 0
-    else
-        print_message "$RED" "❌ $contract_normalized tests failed"
-        return 1
-    fi
+    # Test the testnet build, then the mainnet build: only the mainnet feature compiles in the
+    # mainnet program IDs and constants (e.g. memo-mint's hard-coded PDAs and bump)
+    local failed=0
+    local network
+    for network in testnet mainnet; do
+        local cmd="cargo test -p $contract_normalized --lib"
+        if [ "$network" = mainnet ]; then
+            cmd="$cmd --features mainnet"
+        fi
+
+        # Add extra arguments
+        if [ -n "$EXTRA_ARGS" ]; then
+            cmd="$cmd -- $EXTRA_ARGS"
+        fi
+
+        print_message "$BLUE" "▶ $contract_normalized ($network build)"
+        # Show command being run
+        if [ "$VERBOSE" = true ]; then
+            print_message "$CYAN" "Running: $cmd"
+            echo ""
+        fi
+
+        # Run the tests
+        if eval "$cmd"; then
+            print_message "$GREEN" "✅ $contract_normalized ($network build) tests passed"
+        else
+            print_message "$RED" "❌ $contract_normalized ($network build) tests failed"
+            failed=1
+        fi
+    done
+    return $failed
 }
 
 # Parse command line arguments

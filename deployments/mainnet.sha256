@@ -1,0 +1,12 @@
+# Programs deployed on X1 mainnet: <program> <sha256 of the ELF> <ELF bytes>
+# scripts/deploy-common.sh updates a line after each deployment to this network; verify-deployment
+# compares the on-chain programs with it (MEMO-MINT-AUDIT.md, MINT-16). First recorded from the
+# chain on November 1, 2026.
+memo_mint 1eb83794def585fbf570f3a4021be6acf28603cbe78cae19ad275840f2f59b9f 269416
+memo_burn 39d06125fca59a581b19fb9ab2925f79166b6d15dcfb4155de19b4e6faac3abf 293408
+memo_home 1db77c55d1c53f92a9238f2b792dcf18f208cf91182206b7995f57809f782137 533264
+memo_chat 2f779c0cb16d5e3bee8e142e9c91b1c72245c34d6510f34bfcac9bf2cbf5fb8e 451960
+memo_profile 897fbe0c6257ffae649fd06c701d4109f75c9b27c86d6fdd83480df9c91f8db3 351512
+memo_project 7902ca259785afb1553d78180234de4f19abea6ecdc2fb1a3a6bb2c67f958cb3 432032
+memo_blog 99264bf920fd2d3b15b12726890e2e533054fe4741b16cf26e0d20c4bd95d2cb 421040
+memo_forum 9fbf52ab526ab8677188280840e5cb7020378db61adf7bae3d59eccc1915c8ca 404208

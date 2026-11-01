@@ -29,6 +29,25 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("FVvewrVHqg2TPWXkesc3CJ7xxWn
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 
+// PDAs of this program and the mint_authority bump - different for testnet and mainnet. Constants,
+// so that a mint compares addresses instead of deriving them: find_program_address for
+// mint_authority charges 1,500 CU per bump it tries (testnet 1, bump 255; mainnet 2, bump 254)
+// and create_program_address for mint_state 1,500 CU. test_pda_constants_per_network checks them
+// against find_program_address under both features.
+#[cfg(feature = "mainnet")]
+pub const MINT_AUTHORITY_PDA: Pubkey = pubkey!("C1r27YsPiY6wbVvRY2cVCsaRKK5HiXxdvWhxJd5wapSh");
+#[cfg(feature = "mainnet")]
+pub const MINT_AUTHORITY_BUMP: u8 = 254;
+#[cfg(feature = "mainnet")]
+pub const MINT_STATE_PDA: Pubkey = pubkey!("EZheeAswQ9exUMpKFjHrQrczix5LSzjakroRFiMgJfWv");
+
+#[cfg(not(feature = "mainnet"))]
+pub const MINT_AUTHORITY_PDA: Pubkey = pubkey!("HDz8d6UjzAsGUjVgKKXPeSYrdME9YCFSAcRLJEZTKA91");
+#[cfg(not(feature = "mainnet"))]
+pub const MINT_AUTHORITY_BUMP: u8 = 255;
+#[cfg(not(feature = "mainnet"))]
+pub const MINT_STATE_PDA: Pubkey = pubkey!("7KF1A4PsYabWYf2DqueuN9Ybgbp4To1jPT1mBnG5nycq");
+
 // compile-time constant safety validation
 const _: () = {
     // ensure max supply calculation won't overflow
@@ -43,7 +62,8 @@ const _: () = {
     assert!(BASE_MINT_AMOUNT / 10u64.pow(CURVE_DECADES) >= 1, "Minimum mint amount must be positive");
 };
 
-// Memo length constraint: minimum only; the maximum is set by the transaction size limit
+// Memo length constraint: minimum only, in characters (UTF-8 code points, not bytes);
+// the maximum is set by the transaction size limit
 pub const MEMO_MIN_LENGTH: usize = 69;
 
 // Token decimal factor (decimal=6 means 1 token = 1,000,000 units)
@@ -131,7 +151,7 @@ pub mod memo_mint {
             &ctx.accounts.token_account,
             &ctx.accounts.token_program,
             &mut ctx.accounts.mint_state,
-            ctx.bumps.mint_authority,
+            MINT_AUTHORITY_BUMP,
         )
     }
 
@@ -150,7 +170,7 @@ pub mod memo_mint {
             &ctx.accounts.recipient_token_account,
             &ctx.accounts.token_program,
             &mut ctx.accounts.mint_state,
-            ctx.bumps.mint_authority,
+            MINT_AUTHORITY_BUMP,
         )
     }
 
@@ -185,8 +205,8 @@ fn execute_mint_operation<'info>(
     let fingerprint = transaction_fingerprint(&instructions.try_borrow_data()?)?;
     mint_state.record_mint(fingerprint, Clock::get()?.slot)?;
     
-    // mint_authority address and canonical bump are already verified by the
-    // `seeds = [b"mint_authority"], bump` constraint in the Accounts struct
+    // mint_authority is MINT_AUTHORITY_PDA (`address` constraint in the Accounts struct), whose
+    // canonical bump is MINT_AUTHORITY_BUMP
     
     // Get current supply and calculate dynamic mint amount
     let current_supply = mint.supply;
@@ -206,8 +226,10 @@ fn execute_mint_operation<'info>(
         amount
     )?;
     
-    // Log successful mint operation (integer units, 1 token = 1,000,000 units)
-    msg!("Minted {} units to {}, supply before mint: {} units", amount, token_account.owner, current_supply);
+    // Log successful mint operation (integer units, 1 token = 1,000,000 units). The owner is not
+    // logged: base58 formatting costs about 2,500 CU, and the transaction already names it (the
+    // user of process_mint, the recipient argument of process_mint_to)
+    msg!("Minted {} units, supply before mint: {} units", amount, current_supply);
     
     Ok(())
 }
@@ -247,24 +269,61 @@ fn check_memo_instruction(instructions: &AccountInfo) -> Result<bool> {
         }
     }
 }
-/// Validate memo data length; Ok(true) when the memo is at least `min_length` bytes
-/// There is no maximum: the transaction size limit bounds the memo length
+/// Validate the memo length; Ok(true) when the memo has at least `min_length` characters (code points).
+/// Counting characters instead of bytes keeps multi-byte characters from reaching the minimum with
+/// fewer characters. There is no maximum: the transaction size limit bounds the memo length
 fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
-    let memo_length = memo_data.len();
-    
-    // Ensure data is not empty
-    if memo_data.is_empty() {
-        msg!("Memo data is empty");
+    // The memo program at index 0 has already rejected invalid UTF-8, so a character takes 1 to 4
+    // bytes and starts with exactly one byte that is not a continuation byte (0b10xxxxxx).
+    // Fast paths first: counting costs compute units. min_length - 1 characters take at most
+    // 4 * (min_length - 1) bytes, so a longer memo has enough characters
+    let len = memo_data.len();
+    let enough = len >= min_length
+        && (len > 4 * min_length.saturating_sub(1)
+            || memo_data.is_ascii()
+            || len - count_continuation_bytes(memo_data) >= min_length);
+    if !enough {
+        log_memo_too_short(memo_data, min_length);
         return Err(ErrorCode::MemoTooShort.into());
     }
-    
-    // Check minimum length requirement
-    if memo_length < min_length {
-        msg!("Memo too short: {} bytes (minimum: {})", memo_length, min_length);
-        return Err(ErrorCode::MemoTooShort.into());
-    }
-    
+
     Ok(true)
+}
+
+/// Log line of a rejected memo, in the unit that falls short of the minimum. Out of line and cold,
+/// so the check above compiles exactly as without it; it counts the characters again, which only a
+/// rejected memo pays for
+#[cold]
+#[inline(never)]
+fn log_memo_too_short(memo_data: &[u8], min_length: usize) {
+    let len = memo_data.len();
+    if len < min_length {
+        // fewer bytes than the minimum number of characters
+        msg!("Memo too short: {} bytes", len);
+    } else {
+        msg!("Memo too short: {} characters (minimum: {})", len - count_continuation_bytes(memo_data), min_length);
+    }
+}
+
+/// Number of UTF-8 continuation bytes (0b10xxxxxx) in `data`, counted 8 bytes at a time. Wrapping
+/// on purpose: the multiply overflows by design (only its top byte is kept), so `*` would panic
+/// with overflow-checks = true; the sum stays below data.len(), so `+` would only add a check
+fn count_continuation_bytes(data: &[u8]) -> usize {
+    const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+    const LOW_BITS: u64 = 0x0101_0101_0101_0101;
+    let mut count = 0usize;
+    let mut chunks = data.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_le_bytes(chunk.try_into().unwrap());
+        // bit 7 of a byte stays set when the byte is 0b10xxxxxx (bit 7 set, bit 6 clear)
+        let marks = word & !(word << 1) & HIGH_BITS;
+        // one per marked byte, summed into the top byte (at most 8, so no carry between bytes)
+        count = count.wrapping_add(((marks >> 7).wrapping_mul(LOW_BITS) >> 56) as usize);
+    }
+    for &b in chunks.remainder() {
+        count = count.wrapping_add((b & 0xC0 == 0x80) as usize);
+    }
+    count
 }
 
 /// Emission curve value (in lamports) at the given supply, without the hard cap check.
@@ -324,7 +383,6 @@ fn calculate_dynamic_mint_amount(current_supply: u64) -> Result<u64> {
 /// Account structure for token minting instruction (original version)
 #[derive(Accounts)]
 pub struct ProcessMint<'info> {
-    #[account(mut)]
     pub user: Signer<'info>,
     
     #[account(
@@ -333,11 +391,8 @@ pub struct ProcessMint<'info> {
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
-    /// CHECK: PDA serving as mint authority
-    #[account(
-        seeds = [b"mint_authority"],
-        bump
-    )]
+    /// CHECK: PDA serving as mint authority (seeds = [b"mint_authority"])
+    #[account(address = MINT_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub mint_authority: AccountInfo<'info>,
     
     #[account(
@@ -353,12 +408,9 @@ pub struct ProcessMint<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
 
-    /// One-mint-per-transaction state (last, so existing account order is unchanged)
-    #[account(
-        mut,
-        seeds = [b"mint_state"],
-        bump = mint_state.bump
-    )]
+    /// One-mint-per-transaction state (last, so existing account order is unchanged), the PDA of
+    /// seeds = [b"mint_state"]
+    #[account(mut, address = MINT_STATE_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub mint_state: Account<'info, MintState>,
 }
 
@@ -366,7 +418,6 @@ pub struct ProcessMint<'info> {
 #[derive(Accounts)]
 #[instruction(recipient: Pubkey)]
 pub struct ProcessMintTo<'info> {
-    #[account(mut)]
     pub caller: Signer<'info>,  // Can be user or contract
     
     #[account(
@@ -375,11 +426,8 @@ pub struct ProcessMintTo<'info> {
     )]
     pub mint: InterfaceAccount<'info, Mint>,
     
-    /// CHECK: PDA serving as mint authority
-    #[account(
-        seeds = [b"mint_authority"],
-        bump
-    )]
+    /// CHECK: PDA serving as mint authority (seeds = [b"mint_authority"])
+    #[account(address = MINT_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub mint_authority: AccountInfo<'info>,
     
     #[account(
@@ -395,12 +443,9 @@ pub struct ProcessMintTo<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
 
-    /// One-mint-per-transaction state (last, so existing account order is unchanged)
-    #[account(
-        mut,
-        seeds = [b"mint_state"],
-        bump = mint_state.bump
-    )]
+    /// One-mint-per-transaction state (last, so existing account order is unchanged), the PDA of
+    /// seeds = [b"mint_state"]
+    #[account(mut, address = MINT_STATE_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub mint_state: Account<'info, MintState>,
 }
 
@@ -431,7 +476,7 @@ pub enum ErrorCode {
     #[msg("Transaction must include a memo instruction.")]
     MemoRequired,
 
-    #[msg("Memo too short. Must be at least 69 bytes.")]
+    #[msg("Memo too short. Must be at least 69 characters.")]
     MemoTooShort,
     
     #[msg("Invalid token account: Account must belong to the correct mint.")]

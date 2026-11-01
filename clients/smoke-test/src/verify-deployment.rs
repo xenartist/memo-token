@@ -8,6 +8,14 @@
 //   cargo run --bin verify-deployment                 # simulate as the deploy admin
 //   cargo run --bin verify-deployment -- <USER>       # simulate as a wallet that holds MEMO
 //
+// Bytecode: on the network that program_env names (the RPC URL contains "testnet" or "mainnet"), each
+// program's ELF is compared with deployments/<program_env>.sha256, which the deploy scripts update
+// after every deployment there. A memo-mint-only upgrade then leaves the other programs' recorded
+// hashes valid, although a rebuild of them from the new tree differs (MEMO-MINT-AUDIT.md, MINT-16).
+// Elsewhere (prod staging: mainnet IDs on testnet), and for a program missing from the manifest, it
+// is compared with the local build in target/deploy. memo-id is skipped when its account does not
+// exist and the manifest does not list it (memo-id is not on mainnet); any other missing program fails.
+//
 // Simulations skip signature verification, so <USER> can be any address. The mint simulations
 // need its MEMO token account; the burn simulations also need its user global burn stats
 // account and at least 1 MEMO. Missing prerequisites are reported as SKIP.
@@ -38,11 +46,17 @@ use borsh::BorshSerialize;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::str::FromStr;
-use memo_token_client::{get_authority_keypair_path, get_program_id, get_rpc_url, get_token_mint};
+use memo_token_client::{get_authority_keypair_path, get_program_env, get_program_id, get_rpc_url, get_token_mint};
+use std::collections::HashMap;
 
-const PROGRAMS: [&str; 8] = [
-    "memo_mint", "memo_burn", "memo_home", "memo_chat", "memo_profile", "memo_project", "memo_blog", "memo_forum",
+const PROGRAMS: [&str; 9] = [
+    "memo_mint", "memo_burn", "memo_home", "memo_id", "memo_chat", "memo_profile", "memo_project", "memo_blog", "memo_forum",
 ];
+
+/// sha256 of X1's SPL Memo program (MemoSq4g..., BPFLoader2, not upgradeable; the same on testnet
+/// and mainnet). memo-mint counts memo characters assuming valid UTF-8, which this program enforces
+/// in the same transaction (MEMO-MINT-AUDIT.md, MINT-11).
+const X1_MEMO_SHA256: &str = "f520eaf096361abbb9639ea4dc3e5388a87b9330e121f476607b87c46ef67954";
 
 const MINT_STATE_SPACE: usize = 8 + 32 + 8 + 1 + 64;
 const GLOBAL_BURN_STATS_SPACE: usize = 8 + 16 + 8 + 8 + 1 + 64;
@@ -106,6 +120,8 @@ fn main() {
 fn run() -> Result<Report, Box<dyn std::error::Error>> {
     println!("=== MEMO TOKEN DEPLOYMENT VERIFICATION (read-only, nothing is sent) ===");
     let rpc_url = get_rpc_url();
+    let program_env = get_program_env();
+    let manifest = load_manifest(&rpc_url, &program_env)?;
     let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
     let mut report = Report::default();
 
@@ -133,10 +149,16 @@ fn run() -> Result<Report, Box<dyn std::error::Error>> {
     println!();
     println!("[1/4] Programs");
     let deploy_dir = find_project_root().join("target/deploy");
+    match &manifest {
+        Some((path, _)) => println!("Bytecode reference: {} (local build for programs it does not list)", path.display()),
+        None => println!("Bytecode reference: local builds in {} (no manifest for this network)", deploy_dir.display()),
+    }
     for name in PROGRAMS {
         let program_id = get_program_id(name)?;
-        check_program(&client, &mut report, name, &program_id, &admin, &deploy_dir.join(format!("{}.so", name)));
+        let recorded = manifest.as_ref().and_then(|(path, m)| m.get(name).map(|h| (path.as_path(), h.as_str())));
+        check_program(&client, &mut report, name, &program_id, &admin, &deploy_dir.join(format!("{}.so", name)), recorded);
     }
+    check_memo_program(&client, &mut report);
 
     // 2. Token mint authority is the memo-mint PDA
     println!();
@@ -290,11 +312,19 @@ fn check_program(
     program_id: &Pubkey,
     admin: &Pubkey,
     local_so: &PathBuf,
+    recorded: Option<(&std::path::Path, &str)>,
 ) {
     println!("  {} {}", name, program_id);
-    let program = match client.get_account(program_id) {
-        Ok(account) => account,
-        Err(e) => return report.fail(format!("{}: program not found: {}", name, e)),
+    // Only a confirmed absence skips memo_id; an RPC error fails like for every other program
+    let program = match client.get_account_with_commitment(program_id, CommitmentConfig::confirmed()) {
+        Ok(response) => match response.value {
+            Some(account) => account,
+            None if recorded.is_none() && name == "memo_id" => {
+                return report.skip(format!("{}: not deployed on this network", name));
+            }
+            None => return report.fail(format!("{}: program not found", name)),
+        },
+        Err(e) => return report.fail(format!("{}: cannot read the program account: {}", name, e)),
     };
     if program.owner != bpf_loader_upgradeable::id() || !program.executable {
         return report.fail(format!("{}: not an upgradeable program (owner {})", name, program.owner));
@@ -318,9 +348,21 @@ fn check_program(
     );
 
     // Program data is the ELF followed by zero padding (an account extended for upgrades)
+    let onchain = &programdata.data[metadata_len..];
+    if let Some((manifest, expected)) = recorded {
+        return match elf_len(onchain) {
+            Some(len) if onchain[len..].iter().all(|b| *b == 0) => {
+                let hash = hex::encode(Sha256::digest(&onchain[..len]));
+                report.check(
+                    hash == expected,
+                    format!("{}: on-chain ELF sha256 {} ({} bytes) matches {} ({})", name, &hash[..16], len, manifest.display(), &expected[..16.min(expected.len())]),
+                );
+            }
+            _ => report.fail(format!("{}: cannot find the ELF end in the program data", name)),
+        };
+    }
     match std::fs::read(local_so) {
         Ok(local) => {
-            let onchain = &programdata.data[metadata_len..];
             let matches = onchain.len() >= local.len()
                 && onchain[..local.len()] == local[..]
                 && onchain[local.len()..].iter().all(|b| *b == 0);
@@ -330,6 +372,57 @@ fn check_program(
             );
         }
         Err(_) => report.skip(format!("{}: no local build at {} to compare", name, local_so.display())),
+    }
+}
+
+/// deployments/<program_env>.sha256 as program -> sha256, when the RPC URL is that network's
+fn load_manifest(rpc_url: &str, program_env: &str) -> Result<Option<(PathBuf, HashMap<String, String>)>, String> {
+    if !rpc_url.contains(program_env) {
+        return Ok(None);
+    }
+    let path = find_project_root().join("deployments").join(format!("{}.sha256", program_env));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) => return Ok(None),
+    };
+    let mut manifest = HashMap::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 || fields[1].len() != 64 || !fields[1].bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("{}: malformed line: {}", path.display(), line));
+        }
+        manifest.insert(fields[0].to_string(), fields[1].to_ascii_lowercase());
+    }
+    Ok(Some((path, manifest)))
+}
+
+/// Length of a 64-bit ELF: the section header table is its last part (e_shoff + e_shnum * e_shentsize)
+fn elf_len(data: &[u8]) -> Option<usize> {
+    if data.get(..4)? != b"\x7fELF" {
+        return None;
+    }
+    let shoff = u64::from_le_bytes(data.get(0x28..0x30)?.try_into().ok()?) as usize;
+    let shentsize = u16::from_le_bytes(data.get(0x3A..0x3C)?.try_into().ok()?) as usize;
+    let shnum = u16::from_le_bytes(data.get(0x3C..0x3E)?.try_into().ok()?) as usize;
+    let len = shoff.checked_add(shentsize.checked_mul(shnum)?)?;
+    (len <= data.len()).then_some(len)
+}
+
+/// The SPL Memo program memo-mint relies on: X1's non-upgradeable build with the pinned hash
+fn check_memo_program(client: &RpcClient, report: &mut Report) {
+    println!("  spl_memo {}", spl_memo::id());
+    match client.get_account(&spl_memo::id()) {
+        Ok(account) => {
+            let hash: String = Sha256::digest(&account.data).iter().map(|b| format!("{:02x}", b)).collect();
+            report.check(
+                account.owner == solana_sdk::bpf_loader::id() && account.executable && hash == X1_MEMO_SHA256,
+                format!(
+                    "spl_memo: X1's build, not upgradeable (owner {}, sha256 {}, pinned {})",
+                    account.owner, &hash[..16], &X1_MEMO_SHA256[..16]
+                ),
+            );
+        }
+        Err(e) => report.fail(format!("spl_memo: program not found: {}", e)),
     }
 }
 

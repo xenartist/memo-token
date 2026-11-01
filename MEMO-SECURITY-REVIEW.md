@@ -5,6 +5,8 @@
 - **Method**: each program was reviewed from 3 independent angles (access control / account validation, memo parsing and CPI, arithmetic / state / economics) over 3 rounds, plus 1 cross-program / deployment reviewer. After merging and deduplicating, each finding was checked independently by 3 adversarial verifiers (exploitability, code accuracy, existing mitigations / documentation); memo-chat / project / blog / forum findings were batch-verified by 2 verifiers per program. More than 150 verification verdicts in total. Apart from one live check with `solana program show` on X1 mainnet, no on-chain testing was done.
 - **Baseline commit**: `8b6707f6` (branch `dev`)
 
+> **Superseded.** This review describes the code at `8b6707f6` and is kept for history. For memo-mint and memo-burn, see `MEMO-CORE-AUDIT-2026-10-16.md` and `MEMO-MINT-AUDIT.md` (Revision 5). For the other programs, see their `MEMO-*-AUDIT.md`. Statements here about memo rules, rewards, program counts and deployment may be out of date.
+
 ---
 
 ## 1. Overall Conclusion

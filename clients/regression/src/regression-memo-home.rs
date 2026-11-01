@@ -6,9 +6,10 @@
 //! by CPI with its PDA as Authority. Covers the Burn Guard, Collections and Assets at memo-home
 //! PDAs (fixed Authority, share cap, max_assets, royalties, name/URI limits, pre-funded
 //! addresses), the Core paths around memo-home (including the Collection-address update
-//! authority), mining with the share split, Vault outflows for any token with the Vault State
-//! nonce, listing protection, Vault burns, withdraw_asset, signer checks and the app CPI path.
-//! Every case asserts the exact outcome.
+//! authority), mining with the share split (and memo-mint's Revision 5 character minimum on the
+//! caller's memo), Vault outflows for any token with the Vault State nonce, listing protection,
+//! Vault burns, withdraw_asset, signer checks and the app CPI path. 162 cases. Every case asserts
+//! the exact outcome.
 //!
 //! Run through scripts/run-regression-tests.sh, or against a running local validator:
 //!   MEMO_RPC_URL=http://127.0.0.1:8899 MEMO_WALLET=target/local-validator/wallet.json \
@@ -60,8 +61,13 @@ const INVALID_OWNER: u32 = 6020;
 const MEMO_ACCOUNT_NOT_CLOSABLE: u32 = 6022;
 const TOKEN_ACCOUNT_NOT_EMPTY: u32 = 6023;
 const INVALID_DESTINATION: u32 = 6024;
-// memo-mint / memo-burn error codes (surface at the memo-home instruction)
+// memo-mint / memo-burn error codes (surface at the memo-home instruction). Every memo-mint code
+// (6000-6008) is also a memo-home code (e.g. 6000 InvalidShareBps / MemoRequired, 6001
+// InvalidMaxAssets / MemoTooShort, 6008 ShareTooHigh / OneMintPerTransaction), so the mine cases
+// that expect a memo-mint number also name the failing program and the Anchor error
+// (Expect::Raised).
 const MINT_MEMO_REQUIRED: u32 = 6000;
+const MINT_MEMO_TOO_SHORT: u32 = 6001;
 const MINT_ONE_PER_TRANSACTION: u32 = 6008;
 const BURN_AMOUNT_MISMATCH: u32 = 6009;
 // Anchor
@@ -982,7 +988,8 @@ fn main() {
         out
     };
     e.reject("H20", "mine without the SPL Memo at index 0 (memo-mint MemoRequired)",
-        vec![cu(400_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)], &sender, &[&app], Expect::Custom(1, MINT_MEMO_REQUIRED), &[s_ta], &[]);
+        vec![cu(400_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)], &sender, &[&app],
+        Expect::Raised(1, MINT_MEMO_REQUIRED, e.mint_prog, "MemoRequired"), &[s_ta], &[]);
     let out = mine_check("H21", "first mine creates the Vault token account; 30% share rounded down to the sender, the rest in the Vault (nonce unchanged)",
         mine_tx(3000, "m1"), &[&app], &room, 3000);
     println!("     CU mine (first, creates the Vault token account): memo-home {} of tx", consumed(&out, &prog));
@@ -992,16 +999,16 @@ fn main() {
     mine_check("H23b", "mine with share 33.33% (on-chain rounding down)",
         vec![e.text_memo("m3b", 80), cu(400_000), h.mine(&sp, &ap, &col2, &other, &s_ta, 3333)], &[&app], &other, 3333);
     e.reject("H24", "mine with share_bps above max_share_bps (3001 > 3000)", mine_tx(3001, "m4"), &sender, &[&app],
-        Expect::Custom(2, SHARE_TOO_HIGH), &[vault_ta, s_ta], &[]);
+        Expect::Raised(2, SHARE_TOO_HIGH, prog, "ShareTooHigh"), &[vault_ta, s_ta], &[]);
     e.reject("H25", "mine signed by someone other than the Authority",
         vec![e.text_memo("m5", 80), cu(400_000), h.mine(&sp, &xp, &col, &room, &s_ta, 3000)], &sender, &[&x],
-        Expect::Custom(2, UNAUTHORIZED), &[vault_ta, s_ta], &[]);
+        Expect::Raised(2, UNAUTHORIZED, prog, "Unauthorized"), &[vault_ta, s_ta], &[]);
     e.reject("H26", "mine for an Asset of another Collection",
         vec![e.text_memo("m6", 80), cu(400_000), h.mine(&sp, &ap, &col, &other, &s_ta, 3000)], &sender, &[&app],
-        Expect::Custom(2, WRONG_COLLECTION), &[vault_ta, s_ta], &[]);
+        Expect::Raised(2, WRONG_COLLECTION, prog, "WrongCollection"), &[vault_ta, s_ta], &[]);
     e.reject("H26b", "app2 mines into app's Asset with its own config",
         vec![e.text_memo("m6b", 80), cu(400_000), h.mine(&sp, &a2p, &col3, &room, &s_ta, 3000)], &sender, &[&app2],
-        Expect::Custom(2, WRONG_COLLECTION), &[vault_ta, s_ta], &[]);
+        Expect::Raised(2, WRONG_COLLECTION, prog, "WrongCollection"), &[vault_ta, s_ta], &[]);
     {
         let m2 = e.new_mint(&wp);
         let wrong_ta = ata_of(&sp, &m2.pubkey(), &t22());
@@ -1026,10 +1033,17 @@ fn main() {
     }
     e.reject("H28", "two mines in one transaction (memo-mint OneMintPerTransaction)",
         vec![e.text_memo("m9", 80), cu(800_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)],
-        &sender, &[&app], Expect::Custom(3, MINT_ONE_PER_TRANSACTION), &[vault_ta, s_ta], &[]);
+        &sender, &[&app], Expect::Raised(3, MINT_ONE_PER_TRANSACTION, e.mint_prog, "OneMintPerTransaction"), &[vault_ta, s_ta], &[]);
     e.reject("H29", "mine with the Vault's own token account as the share recipient",
         vec![e.text_memo("m10", 80), cu(400_000), h.mine(&sp, &ap, &col, &room, &vault_ta, 3000)], &sender, &[&app],
         Expect::Custom(2, INVALID_DESTINATION), &[vault_ta, s_ta], &[]);
+    // mine passes the caller's own memo to memo-mint's process_mint_to (CPI), which applies the
+    // Revision 5 minimum of 69 characters (memo-sdk's memo_lengths vectors "é"x34+"R" / "é"x69)
+    e.reject_untouched("H29b", "mine with a 69-byte memo of 35 characters ('é' x 34 + 'R'): memo-mint MemoTooShort through the CPI",
+        vec![memo_ix(format!("{}R", "é".repeat(34)).as_bytes()), cu(400_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)], &sender, &[&app],
+        Expect::Raised(2, MINT_MEMO_TOO_SHORT, e.mint_prog, "MemoTooShort"), &[vault_ta, s_ta], &[]);
+    mine_check("H29c", "mine with a 138-byte memo of 69 characters ('é' x 69) at 400,000 CU",
+        vec![memo_ix("é".repeat(69).as_bytes()), cu(400_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)], &[&app], &room, 3000);
 
     // ---------------- Withdraw ----------------
     let b_ta = e.ata(&bp);

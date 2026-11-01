@@ -24,17 +24,23 @@
 #            initializes them; used by the regression suite to test the admin-only init)
 # --so-dir   load <name>.so from this directory instead of target/deploy when present
 #            (e.g. a mutated build for mutation testing); implies --no-build
-# --refresh-external  dump the external programs (Metaplex Core, Token-2022, SPL Token, ATA) from
+# --refresh-external  dump the external programs (Metaplex Core, Token-2022, SPL Token, ATA, Memo) from
 #            X1 mainnet again instead of using the copies in target/local-validator/external
 #
 # The external programs are X1 mainnet's own builds, not the ones bundled with the test
 # validator. Each start prints their sha256 and warns when one differs from the hash pinned
-# below (the version the regression suites were last checked against).
+# below (the version the regression suites were last checked against). memo-mint's character
+# count relies on the Memo program rejecting invalid UTF-8 (MEMO-MINT-AUDIT.md, MINT-11), so the
+# validator runs X1's Memo build instead of the bundled one, and a different Memo hash stops the start.
+#
+# Test-only account: prepare-local-validator also plants a "shadow MintState" (owned by memo-mint,
+# MintState's layout, not at its PDA) for the regression suites' seeds-constraint cases.
 
 set -e
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+source "$ROOT/scripts/anchor-build.sh"
 DIR="$ROOT/target/local-validator"
 LEDGER="$DIR/ledger"
 ACCOUNTS="$DIR/accounts"
@@ -49,7 +55,8 @@ MAINNET_RPC_URL="https://rpc.mainnet.x1.xyz"
 EXTERNAL_PROGRAMS="mpl_core CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d e471b0c92e1f70eab2e7e6ee9e39968b6506d3abf4ea86c6a8a1d876308f098c
 spl_token_2022 TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb d32c6364ed5d2a0ad68a8f4b04baff9b24d2b7e60df1bcdd1894071d07d69de6
 spl_token TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA 8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697
-spl_associated_token_account ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL 9ba8d4dfec9ca6ba8480f7f4edcc1a90184271db44e238ea0f09bba47ad2d8a9"
+spl_associated_token_account ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL 9ba8d4dfec9ca6ba8480f7f4edcc1a90184271db44e238ea0f09bba47ad2d8a9
+spl_memo MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr f520eaf096361abbb9639ea4dc3e5388a87b9330e121f476607b87c46ef67954"
 # Test-only programs (clients/regression/test-programs, built by run-regression-tests.sh into
 # target/test-programs): <file name> <program id>
 TEST_PROGRAMS="transfer_hook_test HCwbzCbQRg4YH2pDkwa9hDDGqu64axLquG6mAKSdnbhr
@@ -109,7 +116,7 @@ start() {
     # The .so files must carry the testnet program IDs (the default build, no mainnet feature)
     if [ "$build" = true ]; then
         echo "Building programs (testnet IDs)..."
-        anchor build
+        anchor_build
     fi
 
     if [ ! -f "$WALLET" ]; then
@@ -158,6 +165,11 @@ start() {
         hash=$(shasum -a 256 "$ext_so" | cut -c1-64)
         if [ "$hash" = "$pinned" ]; then
             echo "External $file: sha256 $hash (pinned)"
+        elif [ "$file" = spl_memo ]; then
+            echo "ERROR: external $file: sha256 $hash differs from the pinned $pinned"
+            echo "       memo-mint's character rule relies on this build's UTF-8 check (MINT-11): review the new"
+            echo "       Memo program, re-run the suites, then update the pin"
+            exit 1
         else
             echo "WARNING: external $file: sha256 $hash differs from the pinned $pinned"
             echo "         (X1 upgraded it, or the dump is stale: re-run the suites, then update the pin)"
@@ -218,7 +230,7 @@ case "${1:-}" in
     stop) stop_validator ;;
     status) status ;;
     *)
-        sed -n '3,34p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac
