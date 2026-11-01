@@ -161,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         
         // Create memo instruction
-        let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+        let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
         
         // Create mint instruction
         let mint_ix = create_mint_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &token_account);

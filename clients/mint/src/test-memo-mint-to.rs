@@ -128,7 +128,7 @@ fn test_custom_length(target_length: usize) -> Result<(), Box<dyn std::error::Er
     println!();
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
@@ -262,7 +262,7 @@ fn test_short_memo() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
@@ -305,7 +305,7 @@ fn test_memo_exact_69() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
@@ -378,7 +378,7 @@ fn test_valid_memo() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo content: {}", memo_text);
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
@@ -440,7 +440,7 @@ fn test_memo_exact_700() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);
@@ -509,7 +509,7 @@ fn test_long_memo() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memo content preview: {}...", &memo_text[..100]);
     
     // Create memo instruction
-    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(memo_text.as_bytes(), &[]);
     
     // Create mint-to instruction
     let mint_ix = create_mint_to_instruction(&program_id, &payer.pubkey(), &mint_address, &mint_authority_pda, &recipient_token_account, &recipient);

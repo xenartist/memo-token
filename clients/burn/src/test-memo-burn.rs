@@ -225,7 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Create memo instruction
             let memo_ix = spl_memo::build_memo(
                 &memo_bytes,
-                &[&payer.pubkey()],
+                &[],
             );
 
             // Simulate transaction to get optimal CU limit

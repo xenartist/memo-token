@@ -414,7 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create instructions
     let memo_ix = spl_memo::build_memo(
         &memo_bytes,
-        &[&payer.pubkey()],
+        &[],
     );
 
     let burn_ix = burn_for_project_instruction(

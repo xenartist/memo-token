@@ -373,7 +373,7 @@ fn create_and_simulate_raw_string(
     println!("  ✅ Length validation passed");
     
     // Simulate CU consumption
-    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
     let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
     
     let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
@@ -409,7 +409,7 @@ fn create_and_simulate_base64(
     println!("  ✅ Length validation passed");
     
     // Simulate CU consumption
-    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
     let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
     
     let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
@@ -445,7 +445,7 @@ fn create_and_simulate_base58(
     println!("  ✅ Length validation passed");
     
     // Simulate CU consumption
-    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
     let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
     
     let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
@@ -487,7 +487,7 @@ fn create_and_simulate_borsh_base64(
     println!("  ✅ Length validation passed");
     
     // Simulate CU consumption
-    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
     let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
     
     let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;
@@ -529,7 +529,7 @@ fn create_and_simulate_borsh_base58(
     println!("  ✅ Length validation passed");
     
     // Simulate CU consumption
-    let memo_ix = spl_memo::build_memo(&memo_bytes, &[&payer.pubkey()]);
+    let memo_ix = spl_memo::build_memo(&memo_bytes, &[]);
     let mint_ix = create_mint_instruction(program_id, &payer.pubkey(), mint_address, mint_authority_pda, token_account);
     
     let simulated_cu = simulate_transaction_cu(client, payer, vec![memo_ix, mint_ix])?;

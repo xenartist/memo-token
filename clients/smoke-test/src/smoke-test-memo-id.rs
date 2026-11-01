@@ -62,7 +62,7 @@ fn burn_memo(amount: u64, operation: &str, user: &Pubkey, memo_id: &str) -> Inst
     raw.extend(amount.to_le_bytes());
     raw.extend((payload.len() as u32).to_le_bytes());
     raw.extend(payload);
-    spl_memo::build_memo(general_purpose::STANDARD.encode(raw).as_bytes(), &[user])
+    spl_memo::build_memo(general_purpose::STANDARD.encode(raw).as_bytes(), &[])
 }
 
 /// What one sent transaction cost
@@ -323,7 +323,7 @@ fn run() -> Result<(), String> {
             break;
         }
         let memo = format!("memo-id smoke test: MEMO for the registration burn, mint {} at {}", mints + 1, chrono::Utc::now().timestamp());
-        let mut ixs = vec![spl_memo::build_memo(memo.as_bytes(), &[&w])];
+        let mut ixs = vec![spl_memo::build_memo(memo.as_bytes(), &[])];
         if mints == 0 {
             ixs.push(create_associated_token_account_idempotent(&w, &w, &mint, &token_2022_id()));
         }

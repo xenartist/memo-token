@@ -534,7 +534,7 @@ fn run_test(params: TestParams, min_burn: u64) -> Result<(), Box<dyn std::error:
     // Create instructions
     let memo_ix = spl_memo::build_memo(
         &memo_bytes,
-        &[&payer.pubkey()],
+        &[],
     );
 
     let create_group_ix = create_chat_group_instruction(

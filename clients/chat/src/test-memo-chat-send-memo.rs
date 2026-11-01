@@ -460,7 +460,7 @@ fn run_test(params: TestParams) -> Result<(), Box<dyn std::error::Error>> {
     // Create instructions
     let memo_ix = spl_memo::build_memo(
         &memo_bytes,
-        &[&payer.pubkey()],
+        &[],
     );
 
     let send_memo_ix = send_memo_to_group_instruction(

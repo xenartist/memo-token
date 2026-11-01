@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create memo instruction (must be at index 0)
     let memo_ix = spl_memo::build_memo(
         &memo_bytes,
-        &[&payer.pubkey()],
+        &[],
     );
 
     // Create burn instruction data using Anchor's discriminator calculation
