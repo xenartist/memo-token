@@ -3,9 +3,9 @@
 ## Executive Summary
 
 **Contract**: memo-home (`programs/memo-home`)
-**Audit Dates**: October 20, 2026 (first review of v1); October 20, 2026 (second, exhaustive review and fixes, this report)
+**Audit Dates**: October 20, 2026 (first review of v1); October 20, 2026 (second, exhaustive review and fixes); November 2, 2026 (re-audit and 0.2.0, see "Re-audit")
 **Auditor**: Pre-production security review. The second review was a multi-agent audit: 11 review dimensions (custody, mining, Core parsing, Core CPI and direct-Core paths, Anchor accounts, Token-2022 extensions, griefing, app composability, test adequacy, docs and deployment, free-form attacker), two adversarial verifiers per finding (one trying to refute it, one assessing impact with a reproduction), and two follow-up rounds from a completeness critic. Reproductions ran in LiteSVM against copies of the X1 mainnet Metaplex Core bytecode; every fix is covered by the local-validator regression suite.
-**Version**: 0.1.0 (pre-deployment), 11 instructions. Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (both deployed 2026-10-20, upgradeable)
+**Version**: 0.2.0, 12 instructions (0.1.0 with 11 instructions deployed 2026-10-20, 253-byte names deployed 2026-10-22 at `85832fd8`). Program IDs: testnet `J1pxwy8V4xKvPgS5HMUn5jFo3u7At3MW4BvFWKg48Qcv`, mainnet `ArrrsGh5biKJYpiKMYJ6FD3AxCY7Fhd9Gv761ZCymzzs` (both deployed 2026-10-20, upgradeable)
 **Language**: Rust (Anchor 0.32.1)
 **Network**: X1 (SVM-based)
 **Design reference**: `MEMO-HOME-DESIGN.md`
@@ -19,7 +19,7 @@ The second review found one high-severity issue that the first review and its re
 Other changes from this review:
 - `create_collection` requires the Authority's signature.
 - Each Asset has a **Vault State** whose `nonce` grows with every owner outflow. A market or bidder can now require that nothing left the Vault since listing, in every listing style, which addresses the listing limitation accepted in the first review (M-1).
-- Names and URIs are limited to 64 and 256 bytes.
+- Names and URIs are limited to 64 and 256 bytes (names raised to 253 bytes on 2026-10-22, `85832fd8`, for MEMO ID).
 - The Vault's MEMO token account can no longer be closed.
 - Parser hardening, self-transfer and owner checks, and a separate payer for Core and memo-burn fees.
 - A compile-time network guard, `mine` return data and withdraw-all.
@@ -37,7 +37,7 @@ Other changes from this review:
 | Low | 20 | 8 fixed, 1 mitigated, 5 documented, 6 deployment-checklist items |
 | Informational | 43 | Fixed, documented or checklist; 2 refuted, 1 not adopted (F40), 1 not applicable (F56) |
 
-Tests after the fixes: 41 unit tests (`programs/memo-home/src/tests.rs`) and 160 local-validator regression cases (`clients/regression/src/regression-memo-home.rs`).
+Tests after the fixes: 41 unit tests (`programs/memo-home/src/tests.rs`) and 160 local-validator regression cases (`clients/regression/src/regression-memo-home.rs`). After the re-audit (0.2.0): 43 unit tests and 198 regression cases.
 
 ---
 
@@ -59,16 +59,17 @@ It has no admin key, no fees, no app data and no memo parsing.
 | `init_burn_guard` | anyone, once | creates the global Burn Guard Oracle account with fixed content (burn Rejected, everything else Pass) |
 | `create_collection(seed, name, uri, max_share_bps, max_assets?, royalty?)` | Authority (+ payer) | Core `CreateCollectionV2` at the PDA `[b"collection", authority, seed]`, signed by that PDA. It sets memo-home's Program Authority as update authority and adds the Burn Guard Oracle, plus the optional MasterEdition (`max_supply`) and Royalties plugins, all with plugin authority None. It also creates the Collection Config. `authority`, `max_share_bps` and `max_assets` are immutable |
 | `update_collection(name?, uri?)` | Authority | Core `UpdateCollectionV1` (name/URI only) |
-| `create_asset(seed, name, uri)` + `owner` account | Authority (+ payer) | Rejects at `max_assets` or when `owner` is the Core program. Then Core `CreateV1` at the PDA `[b"asset", collection, seed]`, signed by that PDA and the Program Authority, and creates the Vault State |
+| `create_asset(seed, name, uri)` + `owner` account | Authority (+ payer) | Rejects at `max_assets`, or when `owner` is the Core program, the new Asset or its own Vault (0.2.0). Then Core `CreateV1` at the PDA `[b"asset", collection, seed]`, signed by that PDA and the Program Authority, and creates the Vault State |
 | `update_asset(name?, uri?)` | Authority | Core `UpdateV1` (name/URI only, update authority unchanged) |
+| `advance_nonce` (0.2.0) | Authority | adds 1 to the Asset's Vault State `nonce` when the app changes state bound to the Asset; event `NonceAdvanced` |
 | `mine(share_bps)` → `MineResult { reward, share }` | Authority (+ any caller) | Creates the Vault MEMO token account if missing and runs memo-mint `process_mint_to` into the Vault. It then pays `reward × share_bps / 10000` (rounded down, `share_bps ≤ max_share_bps`) to a MEMO token account other than the Vault's |
 | `withdraw(amount)` | current owner, not listed | any SPL Token / Token-2022 token out of the Vault (`u64::MAX` = whole balance); transfer-hook extra accounts forwarded as non-signers |
 | `withdraw_lamports(amount)` | current owner, not listed | native XNT out of the Vault, leaving 0 or at least the rent-exempt minimum |
-| `close_token_account` | current owner, not listed | closes an empty (amount 0) Vault token account other than the MEMO one, rent to any address |
+| `close_token_account` | current owner, not listed | closes a Vault token account with token amount 0, other than the MEMO one; all its lamports to any address |
 | `withdraw_asset` | current owner (+ payer), not listed | Core `TransferV1` of a Core Asset owned by the Vault; plugin accounts forwarded as non-signers |
-| `burn(amount)` | current owner (+ payer), not listed | memo-burn `process_burn` from the Vault, the Vault signing as the user; first use initializes the Vault's `UserGlobalBurnStats` (the payer tops up the rent) |
+| `burn(amount)` | current owner (+ payer), not listed | memo-burn `process_burn` from the Vault, the Vault signing as the user; first use initializes the Vault's `UserGlobalBurnStats` (the payer tops up only the missing rent, 0.2.0) |
 
-Every owner outflow adds 1 to the Vault State `nonce` and rejects a destination equal to its source.
+Every owner outflow adds 1 to the Vault State `nonce` and rejects a destination equal to its source (since 0.2.0 also for `withdraw_asset`, and for `withdraw` to another token account of the same Vault).
 
 ### Accounts
 
@@ -80,16 +81,160 @@ Every owner outflow adds 1 to the Vault State `nonce` and rejects a destination 
 | Collection Config | `[b"collection_config", collection]` | collection, authority, seed, max_share_bps, max_assets, creator, created_at, bump (152 bytes) |
 | Core Asset | `[b"asset", collection, seed]` | created by Core; memo-home signs with these seeds only inside `create_asset` |
 | Vault | `[b"vault", asset]` | system account; owns token accounts and Core Assets; signs only token transfers/closes, System transfers, Core `TransferV1` and memo-burn |
-| Vault State | `[b"vault_state", asset]` | `nonce`, bump (17 bytes); created with the Asset, never closed |
+| Vault State | `[b"vault_state", asset]` | `nonce` (owner outflows and `advance_nonce`), bump (17 bytes); created with the Asset, never closed |
 
-### Compute units (local validator, X1 mainnet Core / Token-2022 / SPL Token / ATA builds)
+### Compute units (0.2.0, local validator and LiteSVM, X1 mainnet Core / Token-2022 / SPL Token / ATA builds)
 
-| Instruction | CU (memo-home instruction) |
+| Instruction | CU (memo-home instruction, including its CPIs) |
 |---|---|
-| `create_collection` | 34.7k |
-| `create_asset` | 41–44k (PDA address, Vault State creation) |
-| `mine` | 51–71k (64–84k when it creates the Vault MEMO token account); memo-mint's share depends on the supply tier |
-| `burn` | 55–63k (77–80k with the burn-stats initialization) |
+| `create_collection` | 30.1k |
+| `create_asset` | 34.1k (PDA address, Vault State creation) |
+| `mine` | 31–37k (51–68k when it creates the Vault MEMO token account); memo-mint's share depends on the supply tier |
+| `withdraw` / `withdraw_lamports` / `close_token_account` | 15.3k / 11.1k / 14.5–17.5k |
+| `burn` | 36.1k (51.0k with the burn-stats initialization) |
+| `advance_nonce` | 6.4k |
+
+0.1.0 figures and the comparison: see "Re-audit".
+
+---
+
+## Re-audit (November 2, 2026)
+
+**Scope**: `programs/memo-home` at commit `85832fd8` (0.1.0 with 253-byte names, the build deployed on both networks), its unit tests, the regression suite and its two test programs, the smoke test, this report, `MEMO-HOME-DESIGN.md`, and how memo-id and future apps call it by CPI. It followed the memo-mint (Revision 5) and memo-burn (Revision 4) re-audits, to the same depth, so that the three core programs are reviewed together before locking.
+
+**Method**: independent review lenses (Vault custody, mining, Core parsing and Core CPI, Anchor accounts, Token-2022 extensions, griefing and DoS, app composability, compute units, tests, docs and deployment, free-form attacker). Every finding was checked by two reviewers who tried to refute it, one on correctness and one on impact, and a completeness critic looked for areas no lens covered. Reproductions ran in LiteSVM 0.13.1 with X1 mainnet's Metaplex Core, Token-2022, SPL Token, ATA and Memo dumps, and on the local validator.
+
+**Result**: no critical, high or medium findings. 40 findings survived verification; after merging duplicates, 17 low and 9 informational remain (HOME-R01 to HOME-R26, below). The owner accepted every recommended change on November 2, 2026, and memo-home 0.2.0 implements them.
+
+**Verified properties** (selection):
+- Both deployed binaries reproduce bit for bit from `85832fd8`: testnet `b111033a…` and mainnet `1db77c55…` (`deployments/*.sha256`). That upgrade (253-byte names) was deployed to both networks but not recorded here before (HOME-R24).
+- Every owner outflow re-reads the Core Asset (owner, Collection, listing) at the time it runs; no stale ownership or listing state exists.
+- The Vault PDA signs only Token / Token-2022 transfers and closes, System transfers, Core `TransferV1` and memo-burn; forwarded remaining accounts never get a signature.
+- The Program Authority signs only Core `CreateV1`, `UpdateV1` and `UpdateCollectionV1`, with the update authority unchanged.
+- On X1's Core, only the Collection's update authority (memo-home's Program Authority, which never signs it) can add external plugin adapters or permanent delegates to a memo-home Asset, and a foreign Asset cannot join a memo-home Collection. These are now pinned by regression cases (HOME-R15).
+- Every account memo-home passes to memo-mint and memo-burn without its own check is checked there; substitutions through `mine` and `burn` now fail in regression (HOME-R16).
+
+### Findings
+
+| ID | Severity | Status | Title |
+|---|---|---|---|
+| HOME-R01 | Low | Fixed in 0.2.0 | `withdraw_asset` accepted the Vault itself as new owner; `withdraw` accepted another Vault token account |
+| HOME-R02 | Low | Fixed in 0.2.0 | `create_asset` accepted the new Asset or its own Vault as owner |
+| HOME-R03 | Low | Fixed in 0.2.0 | An owner could orphan its own Vault with a frozen FreezeDelegate held by nobody |
+| HOME-R04 | Low | Fixed in 0.2.0 | `mine` called ATA `CreateIdempotent` on every mine |
+| HOME-R05 | Low | Fixed in 0.2.0 | Core parsers built an Anchor error on every read |
+| HOME-R06 | Info | Fixed in 0.2.0 | Program Authority and Burn Guard re-derived on every call |
+| HOME-R07 | Low | Fixed in 0.2.0 | The first Vault burn took an extra rent minimum from the payer |
+| HOME-R08 | Low | Fixed in 0.2.0 | The Vault State nonce could not cover app state bound to an Asset |
+| HOME-R09 | Info | Documented | A `mine` transaction leaves room for only about 450 memo bytes |
+| HOME-R10 | Info | Corrected | Design §5.3 said nested Vaults need their own nonce checks |
+| HOME-R11 | Info | Documented | CPI depth of `withdraw` with a transfer hook |
+| HOME-R12 | Low | Documented | `close_token_account` moves all lamports, not only the rent |
+| HOME-R13 | Low | Documented | Lamports above rent in the Vault MEMO token account are locked |
+| HOME-R14 | Info | Documented | Withheld transfer fees block `close_token_account` |
+| HOME-R15 | Low | Fixed (tests) | No regression case pinned the Core rejections the Burn Guard and membership rely on |
+| HOME-R16 | Low | Fixed (tests) | No regression case substituted the accounts passed to memo-mint and memo-burn |
+| HOME-R17 | Low | Open | No test runs a Vault burn through an app CPI or with a program-owned owner |
+| HOME-R18 | Low | Open | No regression case pins Token-2022's signer de-escalation for a hostile transfer hook |
+| HOME-R19 | Low | Open | Token-2022 extension behavior described for Vaults is untested beyond transfer hooks |
+| HOME-R20 | Info | Open | No regression bound on compute units or on the largest transaction that fits |
+| HOME-R21 | Info | Partly fixed | Instruction paths and error codes no case exercised |
+| HOME-R22 | Info | Corrected | F63's rationale was wrong |
+| HOME-R23 | Info | Recorded (F50) | X1's Core matches no upstream release; the UpdateV1 shrink fix is unknown |
+| HOME-R24 | Low | Corrected | Stale records: 64-byte name limit, deployment hashes, test counts |
+| HOME-R25 | Low | Recorded | HEAD no longer builds the deployed memo-home (memo-mint and memo-burn changed) |
+| HOME-R26 | Info | Updated | Compute-unit figures predated memo-mint Revision 5 and memo-burn Revision 4 |
+
+#### 🟡 HOME-R01 (Low, fixed): self-destinations in `withdraw_asset` and `withdraw`
+
+The design and F30 say that every owner outflow rejects a destination equal to its source. `withdraw_asset` did not compare `new_owner` with the Vault, and Core's `TransferV1` has no self-transfer check, so the call succeeded: nothing moved, the nonce rose by 1 and `AssetWithdrawn { new_owner: vault }` was logged. `withdraw` had the same gap for a destination token account owned by the same Vault. Funds were never at risk (only the owner can call either, and a higher nonce only cancels the owner's own listings), but an indexer that trusted the event would record an outflow that never happened. **0.2.0**: both reject with `InvalidDestination` (regression H62b, H62c, H39c).
+
+#### 🟡 HOME-R02 (Low, fixed): self-locking owners in `create_asset`
+
+`create_asset` accepted the Asset's own address or its own Vault as `owner`. Such an Asset is locked from birth: its owner is a PDA memo-home never signs for as an owner, so neither the Asset nor anything mined into its Vault could ever leave. memo-id's `issue_subid` passes a caller-chosen recipient to `create_asset`. **0.2.0**: both are rejected with `InvalidOwner` (H11i, H11j).
+
+#### 🟡 HOME-R03 (Low, fixed): an owner could orphan its own Vault
+
+Any delegate whose authority was not Owner counted as listed, and a frozen FreezeDelegate always did. An owner could add a FreezeDelegate with authority None (or UpdateAuthority), freeze it, and never be able to thaw it: memo-home would then treat the Asset as listed forever and reject every outflow, while `mine` kept paying into the Vault. This contradicted invariant 4. **0.2.0**: only a delegate a third party holds (plugin authority `Address`) counts as listed; permanent delegates and unknown values still fail closed. A frozen Asset still cannot be transferred, but its owner can empty the Vault (H38b, H38d, H38e; unit tests `third_party_delegate_after_unlisted_ones_is_found` and the updated listing tests). Every market style in design §5.3 uses an `Address` delegate or escrow, so listing protection is unchanged.
+
+#### 🟡 HOME-R04, HOME-R05 (Low, fixed) and HOME-R06 (Info, fixed): compute units
+
+- `mine` invoked ATA `CreateIdempotent` on every call (8.6k–17.6k CU). It now does so only when the Vault MEMO token account is not yet owned by Token-2022 (H21b, H22b).
+- The Core parsers built an Anchor error value (with its file and line) on every byte they read and then dropped it (`ok_or` instead of `ok_or_else`): about 8.5k CU per owner outflow and 4.3k per `mine`.
+- The Program Authority and Burn Guard PDAs were found by `find_program_address` on every call. They are now address constants per network (`PROGRAM_AUTHORITY_PDA` with its bump, `BURN_GUARD_PDA`), checked by `address = … @ ConstraintSeeds`, pinned by the unit test `test_pda_constants_per_network`; substitutions are rejected in H11k–H11m. memo-id benefits through its CPIs.
+
+See the table under "Compute units" for the measured effect.
+
+#### 🟡 HOME-R07 (Low, fixed): first Vault burn top-up
+
+On the first Vault burn the payer topped the Vault up to the stats rent plus the Vault's own rent minimum (0.00089 XNT), which the owner could withdraw at once. **0.2.0**: the payer pays only what is missing: the stats rent when the Vault is empty (it ends at 0), otherwise the stats rent plus the Vault's rent minimum, less what it holds (H50, H55).
+
+#### 🟡 HOME-R08 (Low, fixed): app state and the nonce
+
+Apps on memo-home keep value outside the Vault (room settings, moderators, SubIds, files). A seller can change it before a sale without any outflow, so the nonce a buyer recorded stays the same. VaultState has no spare bytes, so this could only be addressed before locking. **0.2.0** adds `advance_nonce`, signed by the Collection's Authority: it adds 1 to the Asset's nonce and emits `NonceAdvanced { asset, nonce }`. Apps call it whenever they change state bound to an Asset (design §5.3, §6.1). It moves nothing and needs no listing check (H140–H142b).
+
+#### 🟡 HOME-R12, HOME-R13, HOME-R14 (documented)
+
+- `close_token_account` checks only that the token amount is 0. Lamports sent straight to a token account (or to wrapped XNT without `SyncNative`) leave with the rent. The owner signs and the nonce rises, so custody holds; the code comment and the design now say "all its lamports".
+- The Vault MEMO token account cannot be closed (F02), and memo-home has no `WithdrawExcessLamports`, so lamports above its rent stay there for good; the same holds for lamports sent to memo-home PDAs. Design §5.9 now says never to send XNT there. Adding an owner-gated `withdraw_excess_lamports` before locking remains possible; the owner did not request it.
+- Token-2022 refuses to close an account with withheld transfer fees; the permissionless `HarvestWithheldTokensToMint` must run first. Design §4.3 and §5.9 and the code comment now say so.
+
+#### 🟡 HOME-R15, HOME-R16 (Low, fixed in tests)
+
+New regression cases:
+- **Core rejections**: the owner's `AddPluginV1` of PermanentBurn, PermanentTransfer and PermanentFreeze delegates, UpdateDelegate, Attributes and AddBlocker on a memo-home Asset; `AddExternalPluginAdapterV1` (Oracle by the owner and by a stranger, AppData by the owner); a stranger's `UpdateV2` moving their own Asset into a memo-home Collection. Each is rejected by Core, and the Asset's data and the Collection count are unchanged (H40f–H40q). After an X1 Core upgrade, these cases show whether the Burn Guard and membership assumptions still hold.
+- **Dependency accounts**: `mine` with the shadow MintState or a wrong mint authority, `burn` with another user's stats, an empty non-PDA account as the Vault stats (memo-home's initialization branch) and the shadow GlobalBurnStats. Each is rejected by memo-mint or memo-burn (`ConstraintSeeds`) and nothing changes (H27e, H27f, H54b–H54d).
+
+#### Open items (HOME-R17 to HOME-R21)
+
+These are test gaps; the behavior was checked by reading the code and, where noted in the findings file, in LiteSVM:
+- **R17**: a Vault burn through an app CPI, and with a program-owned Asset owner (the case the separate payer of F31 serves). Needs a burn path in the `home-app` test program.
+- **R18**: a hostile transfer hook that tries to use the Vault's signature. Token-2022 de-escalates the source owner to a non-signer before invoking the hook; Vault custody against such hooks depends on that.
+- **R19**: transfer-fee, MemoTransfer, non-transferable, permanent-delegate and default-frozen mints in a Vault, and a hook that makes its own CPI (depth).
+- **R20**: upper bounds on CU per instruction and maximum-size `mine` and Vault-burn transactions (memo-burn has the same gap, BURN-R15).
+- **R21**: fixed: `withdraw_asset` to the Vault (H62b), a burn with another Asset's Vault State (H54e), `update_asset` with a 257-byte URI (H15e), `update_collection` with a 254-byte name (H18g). Still open: `close_token_account` with the closed account as destination; error codes never asserted on-chain (`NotHomeCollection`, `InvalidCoreAccount`, `ArithmeticOverflow`, `InvalidVaultState`). `AddressInUse` is defense in depth: the System program's "account in use" fires first on every path the suite can reach.
+
+#### HOME-R22 (Info, corrected): F63 rationale
+
+F63 said external plugin adapters are ignored because anyone can attach a data section to an Asset on X1's Core. That is wrong: Core rejects `DataSection` outright, and Oracle, LifecycleHook and AppData adapters on an Asset need its update authority, which for a memo-home Asset is the Program Authority (it never signs that). The external registry of a memo-home Asset is therefore always empty, and ignoring it is safe; H40l–H40n pin this.
+
+#### HOME-R23 (Info, recorded): X1's Core build
+
+Strings in the pinned `mpl_core.so` (`e471b0c9…`) show features of upstream 0.10.0 and the 0.12.0 FreezeExecute hardening, but none of the Groups strings of 0.11.0: it is a custom or backported build. Whether it contains upstream #285 (0.15.1, `UpdateV1` reallocating before the memmove when a name or URI shrinks on an Asset with plugins) cannot be told from strings. `update_asset` takes that path when the owner has added a delegate. In LiteSVM a 253-to-1-byte rename of such an Asset kept the plugin registry intact. Added to the F50 checklist item.
+
+#### HOME-R24, HOME-R25 (corrected and recorded)
+
+- The summary and design gave a 64-byte name limit; the code allows 253 since `85832fd8`. The deployment records named mainnet `7be70db1…` and 160 regression cases. Corrected below.
+- With memo-mint 0.5.0 and memo-burn 0.3.0 in the workspace, the HEAD build of memo-home 0.1.0 already differed from the deployed bytecode, although memo-home's own source had not changed: memo-home links both crates for its CPIs. The behavior is equivalent. A deploy script run without a program name would have upgraded memo-home too; always name the program. memo-id embeds memo-home and is rebuilt and redeployed with it.
+
+### Revision 0.2.0 changes
+
+- `withdraw_asset` rejects `new_owner == vault`; `withdraw` rejects a destination owned by the Vault (`InvalidDestination`).
+- `create_asset` rejects `owner` equal to the Asset or its Vault (`InvalidOwner`).
+- Listing rule: only third-party (`Address`) delegates count; `require_owner_not_listed` parses the Asset once.
+- `mine` skips ATA `CreateIdempotent` once the Vault MEMO token account exists.
+- Core parsers build errors lazily (`ok_or_else`).
+- `PROGRAM_AUTHORITY_PDA`, `PROGRAM_AUTHORITY_BUMP` and `BURN_GUARD_PDA` are address constants per network.
+- First Vault burn: the payer tops up only what is missing.
+- New instruction `advance_nonce` (Authority) and event `NonceAdvanced`.
+- No account layout changed: Collection Config, Vault State and Burn Guard are as in 0.1.0, so existing accounts keep working.
+
+### Compute units, 0.1.0 → 0.2.0
+
+LiteSVM 0.13.1 with X1 mainnet's Core, Token-2022, ATA and Memo builds and the same memo-mint build; the same transactions run against both memo-home binaries. memo-home's figure includes its CPIs. The two values are two Asset seeds (PDA bump searches differ).
+
+| Instruction | memo-home 0.1.0 | memo-home 0.2.0 | Change |
+|---|---|---|---|
+| `mine` (Vault token account exists, 30% share) | 53,065 / 44,065 | 34,184 / 31,184 | −36% / −29% |
+| `mine`, whole transaction (memo of 80 bytes, memo-mint, Token-2022) | 79,252 / 70,252 | 60,371 / 57,371 | −24% / −18% |
+| `mine` (first, creates the Vault token account) | 64,500 / 55,500 | 60,269 / 51,269 | −7% / −8% |
+| `withdraw` | 24,067 | 15,284 | −37% |
+| `withdraw_lamports` | 19,882 | 11,107 | −44% |
+| `close_token_account` | 26,238 / 23,238 | 17,463 / 14,463 | −33% / −38% |
+
+Local validator (regression suite, one run each, random keys): `create_collection` 37.7k → 30.1k, `create_asset` 41–44k → 34.1k (it now derives `vault_of(asset)` once, about 3k, for HOME-R02), Vault `burn` 52.7k → 36.1k, first Vault `burn` 69.5k → 51.0k, `advance_nonce` 6.4k.
+
+The size check confirmed HOME-R09: a legacy `[memo, mine, SetComputeUnitLimit]` transaction with two signers is 1,232 bytes with a 450-byte memo and does not fit at 480.
 
 ---
 
@@ -151,7 +296,7 @@ Offers, bids and pool trades are filled by a transaction the seller builds (F60)
 | F58 | (disputed) The memo-mint/memo-burn versions memo-home depends on are not pinned by the deploy tooling | **Checklist**: compare their ProgramData hashes before deploying or locking memo-home |
 | F60 | (disputed) Offers, bids, AMM and loan fills are built by the seller | **Mitigated** by the Vault State nonce; design §5.3 |
 | F62 | memo-home had no Vault-state commitment, and one cannot be added after locking | **Fixed**: Vault State `[b"vault_state", asset]`, created with the Asset, `nonce` +1 on every owner outflow, reported in the outflow events, read with `vault_nonce_of`. Tests: H11, H21 (mining leaves it unchanged), H30 (and other outflow cases), H33b (a failed outflow does not change it), H80b, H129b |
-| F63 | (disputed) The listing parser failed open on Core values it did not know | **Fixed**: a plugin type above 18 (Groups) or an unknown authority tag counts as listed; unit test `unknown_values_fail_closed`. External plugin adapters stay ignored: anyone can attach a data section to an Asset on X1's Core, so failing closed there would let a third party freeze every Vault |
+| F63 | (disputed) The listing parser failed open on Core values it did not know | **Fixed**: a plugin type above 18 (Groups) or an unknown authority tag counts as listed; unit test `unknown_values_fail_closed`. External plugin adapters stay ignored. *Corrected 2026-11-02 (HOME-R22)*: the original reason (anyone can attach a data section) was wrong; on X1's Core only the Program Authority could add an external adapter to a memo-home Asset and it never does, so the external registry is always empty (H40l–H40n) |
 | F64 | An Asset keypair was a lifelong key for the NFT's address: its generator controlled tokens sent to that address and could sign "as the NFT" in other programs | **Fixed**: Asset addresses are PDAs `[b"asset", collection, seed]` |
 
 ### ℹ️ Informational findings
@@ -191,7 +336,7 @@ Offers, bids and pool trades are filled by a transaction the seller builds (F60)
 | F47 | The cost table called 0.00375 XNT "rent" (it includes Core's 0.0015 XNT fee) | **Corrected** (design §3, §7) |
 | F48 | (disputed) Stale numbers | **Corrected** |
 | F49 | Minor wording mismatches | **Corrected** |
-| F50 | (disputed) The exact X1 Core version is unknown | **Checklist**: the tested bytecode is pinned by hash. Before mainnet, ask the X1 operators for the Core version, or record the residual risk in §9 |
+| F50 | (disputed) The exact X1 Core version is unknown | **Checklist**: the tested bytecode is pinned by hash. Before mainnet, ask the X1 operators for the Core version, or record the residual risk in §9. HOME-R23: the build has 0.10.0 features and the 0.12.0 FreezeExecute hardening but not 0.11.0 Groups (a custom build); ask specifically about upstream #285 (`UpdateV1` shrink with plugins) |
 | F51 | The F01 fix must bind a signer and a caller seed, and clear pre-funded lamports | **Done** as part of F01 |
 | F52 | (disputed) Granting Vault access to Assets outside the Collection would widen trust | **Agreed**: not done; Vault access requires Collection membership. The Vault State's existence also marks memo-home provenance |
 | F53 | An X1 Core upgrade will not fix F01 | Recorded (F01) |
@@ -232,7 +377,7 @@ No private key exists for any Collection or Asset address. The Program Authority
 The Collection-level Oracle rejects every Asset burn, with or without the guard account, by the owner or by a BurnDelegate (H40–H40e). Permanent burn delegates, whose force-approve could override it, cannot be added after creation. Since F01, no key can take an Asset out of its Collection to escape the Guard.
 
 ### 5. Core parsing ✅ SECURE
-`parse_asset`, `parse_collection` and `asset_data_is_listed` match the Core Borsh layouts. They use bounds-checked reads and checked arithmetic, and fail closed on unknown keys, tags, plugin types and authority tags, as well as on truncation, oversized lengths and malformed registries. Any delegate authority other than Owner counts as listed.
+`parse_asset`, `parse_collection` and `asset_data_is_listed` match the Core Borsh layouts. They use bounds-checked reads and checked arithmetic, and fail closed on unknown keys, tags, plugin types and authority tags, as well as on truncation, oversized lengths and malformed registries. Since 0.2.0, a Freeze, Transfer or Burn Delegate counts as listed only when a third party (`Address`) holds it (HOME-R03); permanent delegates and unknown values count always.
 
 ### 6. CPI and signatures ✅ SECURE
 The Vault signature reaches only these instructions, and forwarded remaining accounts are always non-signers:
@@ -283,7 +428,9 @@ Tested builds (X1 mainnet, dumped 2026-10-20):
 - [x] Deployed to mainnet 2026-10-20 (slot 87306447, commit 073fd001), before locking, to keep testnet and mainnet on the same code: memo-mint and memo-burn on-chain matched the audited builds (`2423c17f…`, `39d06125…`) beforehand (F58); bytecode `7be70db1…` matches the `--features mainnet` build; IDL authority is the deploy admin; Burn Guard `2xwsdHfP…` initialized and verified. The items below remain before locking memo-home.
 - [ ] Verify the deployed bytecode against a reproducible `--features mainnet` build.
 - [ ] Run `./scripts/local-validator.sh start --refresh-external` (or `run-regression-tests.sh` after deleting `target/local-validator/external`). If X1 upgraded a program, re-run the suites against the new build and update the pins (F26).
-- [ ] Ask the X1 operators for the Core version and its upstream fixes (F50), or record the residual risk here.
+- [x] Deployed 2026-10-22 to both networks at `85832fd8` (253-byte names): testnet `b111033a…`, mainnet `1db77c55…`; both reproduce bit for bit from that commit (re-audit, 2026-11-02).
+- [ ] memo-home 0.2.0: deploy to testnet with `./scripts/deploy-testnet.sh memo_home` (always name the program, HOME-R25), then rebuild and redeploy memo-id, which embeds memo-home; smoke tests; then mainnet.
+- [ ] Ask the X1 operators for the Core version and its upstream fixes (F50), in particular #285 (HOME-R23), or record the residual risk here.
 - [ ] Check that memo-mint and memo-burn on-chain match the audited builds (ProgramData hash) (F58).
 - [ ] Lock order (F57): memo-mint and memo-burn are made immutable first; memo-home last. Never finalize memo-home while either is upgradeable.
 - [ ] Before locking, upload the final `--features mainnet` IDL and check its addresses, then `anchor idl erase-authority` (or build with `no-idl` and publish the IDL in the repo) (F15).
@@ -293,32 +440,33 @@ Tested builds (X1 mainnet, dumped 2026-10-20):
 
 ## Testing
 
-### Unit tests (`programs/memo-home/src/tests.rs`, 41 tests, both networks)
+### Unit tests (`programs/memo-home/src/tests.rs`, 43 tests, both networks)
 - **Share, arguments and supply**: share rounding (including the 1-unit tail of the emission curve), royalty validation (including duplicates), name/URI limits, `max_assets` against `num_minted`.
 - **Parsing**: Core Asset and Collection parsing (all update-authority variants, truncation including `seq`, bad tags, huge lengths and offsets). Listing detection for every plugin type and authority, with fixtures built from literal mpl-core values and fail-closed unknown values.
 - **Helpers**: the exported account helpers over real `AccountInfo`s (Core, System and memo-home owners; owner-checked Config; Vault State address check).
 - **Encodings and accounts**: exact Core instruction encodings; the fixed set of Core instructions memo-home signs; account sizes, PDAs (off curve) and network constants.
 
-### Local-validator regression (`clients/regression/src/regression-memo-home.rs`, 160 cases)
-`./scripts/run-regression-tests.sh home` loads X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds, pinned by hash, together with memo-mint, memo-burn and the two test-only programs in `clients/regression/test-programs/`. Every rejection asserts the exact error code and that the watched state did not change.
+### Local-validator regression (`clients/regression/src/regression-memo-home.rs`, 198 cases)
+`./scripts/run-regression-tests.sh home` loads X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds, pinned by hash, together with memo-mint, memo-burn and the test-only programs in `clients/regression/test-programs/` (`home-app`, an app that calls memo-home by CPI; `transfer-hook`, a hook program for Token-2022 mints; `home-web`, the prototype behind the `home://` extension). Every rejection asserts the exact error code and that the watched state did not change.
 
 | Area | Cases |
 |---|---|
-| Burn Guard | H01–H02, H40–H40e |
+| Burn Guard and the Core rejections it relies on | H01–H02, H40–H40q |
 | Collections, plugin authorities and limits | H03–H07b |
-| Authority consent, Program Authority, PDA addresses and pre-funding | H08–H09d, H11–H11h |
+| Authority consent, Program Authority, PDA addresses, owners and pre-funding | H08–H09d, H11–H11m |
 | Core paths around memo-home | H14–H14e, H19–H19g |
-| Updates and cross-app isolation | H15–H18f, H17b–c, H26b |
-| Mining | H20–H29 |
-| Withdrawals and the Vault State nonce | H30–H39b |
-| Listing styles | H36–H38c, H80–H82b |
+| Updates, limits and cross-app isolation | H15–H18g, H17b–c, H26b |
+| Mining, including dependency-account substitution | H20–H29c |
+| Withdrawals and the Vault State nonce | H30–H39c |
+| Listing styles and the third-party listing rule | H36–H38e, H80–H82b |
 | Transfer hooks | H89–H91 |
-| Vault burns | H50–H55 |
-| `withdraw_asset`, nesting and forwarding | H60–H66b |
+| Vault burns, including dependency-account substitution | H50–H55 |
+| `withdraw_asset`, nesting and forwarding | H60–H66b (H62b–c: the Vault as new owner) |
 | XNT, closes, wrapped XNT, withdraw-all | H100–H114b |
 | Correct key without its signature | H120–H129b |
 | App program by CPI | H130–H136 |
 | Non-memo-home Assets | H70 |
+| `advance_nonce` | H140–H142b |
 
 ---
 
@@ -331,3 +479,5 @@ After the fixes, memo-home meets its design invariants for:
 - burn prevention.
 
 The high-severity finding (F01) came from a Core behavior that the first review did not model. It is fixed structurally: no key exists for any address memo-home creates. Listings remain a market-level concern, but the Vault State nonce now gives every market and bidder an exact, cheap check. **Approved for testnet deployment** after the testnet checklist; mainnet after the mainnet checklist.
+
+**Re-audit (November 2, 2026)**: no critical, high or medium findings. memo-home 0.2.0 fixes the low findings that needed code (self-destinations, self-locking owners, self-orphaned Vaults, the first-burn top-up), saves 18–44% of compute units per instruction, and adds `advance_nonce` so app state is covered by the same nonce check before the program is locked. 0.2.0 is approved for testnet deployment, together with a rebuilt memo-id; mainnet after the testnet smoke tests.

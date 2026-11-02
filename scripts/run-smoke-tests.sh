@@ -6,7 +6,7 @@
 #   ./scripts/run-smoke-tests.sh                      # Run all smoke tests
 #   ./scripts/run-smoke-tests.sh memo-mint            # Run single smoke test
 #   ./scripts/run-smoke-tests.sh memo-mint memo-burn  # Run multiple smoke tests
-#   ./scripts/run-smoke-tests.sh --local memo-chat    # Run against ./scripts/local-validator.sh
+#   ./scripts/run-smoke-tests.sh --local memo-burn    # Run against ./scripts/local-validator.sh
 #   ./scripts/run-smoke-tests.sh --help               # Show help
 
 set -e
@@ -20,17 +20,15 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
-# Available smoke tests (these should match the [[bin]] names in Cargo.toml)
+# Available smoke tests (these should match the [[bin]] names in Cargo.toml). The legacy apps
+# (memo-profile, memo-project, memo-chat, memo-blog, memo-forum) are left out: the app layer will be
+# redesigned on memo-home, NFTs and memo-id. Their smoke-test binaries still exist
+# (cargo run --bin smoke-test-memo-<app>).
 AVAILABLE_SMOKE_TESTS=(
     "memo-mint"
     "memo-burn"
     "memo-home"
     "memo-id"
-    "memo-profile"
-    "memo-project"
-    "memo-chat"
-    "memo-blog"
-    "memo-forum"
 )
 
 # Function to normalize test name (convert underscore to hyphen)
@@ -85,10 +83,6 @@ ${BOLD}TESTS:${NC}
     memo-burn                Run memo-burn smoke test (includes init + burn + verify)
     memo-home                Run memo-home smoke test (Collection, Asset, mine, withdraw, Vault burn)
     memo-id                  Run memo-id smoke test (register, Primary ID, NFT SubId; v0 + lookup table)
-    memo-profile             Run memo-profile smoke test (includes create + update + delete)
-    memo-project             Run memo-project smoke test (includes create + verify)
-    memo-blog                Run memo-blog smoke test (includes create + update + burn + mint)
-    memo-forum               Run memo-forum smoke test (includes create + burn + mint)
     memo_mint                Alternative naming (underscore)
 
 ${BOLD}EXAMPLES:${NC}

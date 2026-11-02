@@ -1,4 +1,6 @@
 use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_config::RpcSimulateTransactionConfig;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{
     signature::{read_keypair_file, Signer},
     pubkey::Pubkey,
@@ -53,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("─────────────────────────────────────────────────────────────────");
     println!("RPC URL:        {}", rpc_url);
     
-    let client = RpcClient::new(rpc_url);
+    let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
 
     // Load wallet
     let payer = read_keypair_file(
@@ -123,14 +125,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let balance_before = match client.get_token_account_balance(&token_account) {
         Ok(balance) => {
-            let current_balance = balance.ui_amount.unwrap_or(0.0);
-            println!("Token Balance:  {} tokens", current_balance);
+            let current_balance: u64 = balance.amount.parse()?;
+            println!("Token Balance:  {} tokens ({} units)", current_balance as f64 / DECIMAL_FACTOR as f64, current_balance);
             
-            if current_balance < BURN_AMOUNT_TOKENS as f64 {
+            if current_balance < BURN_AMOUNT_TOKENS * DECIMAL_FACTOR {
                 println!();
                 println!("❌ Insufficient token balance!");
                 println!("Required:       {} tokens", BURN_AMOUNT_TOKENS);
-                println!("Available:      {} tokens", current_balance);
+                println!("Available:      {} units", current_balance);
                 println!();
                 println!("╔═══════════════════════════════════════════════════════════════╗");
                 println!("║                    ❌ SMOKE TEST FAILED                       ║");
@@ -212,11 +214,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_latest_blockhash()
         .expect("Failed to get recent blockhash");
 
-    // Create transaction with proper instruction order:
-    // [0] memo, [1] burn, [2] compute budget
-    let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(300_000);
+    // Global burn statistics before the burn (other users may burn at the same time on a shared
+    // network, so the check after the burn is "at least")
+    let global_before = get_global_burn_stats(&client)?;
+
+    // Simulate first, then send with the simulated CU plus a small margin: on X1 the fee follows
+    // the requested limit. Instruction order: [0] memo, [1] burn, [2] compute budget
+    let sim_transaction = Transaction::new_signed_with_payer(
+        &[memo_ix.clone(), burn_ix.clone(), ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+    let simulation = client.simulate_transaction_with_config(&sim_transaction, RpcSimulateTransactionConfig {
+        sig_verify: false,
+        commitment: Some(CommitmentConfig::confirmed()),
+        ..Default::default()
+    })?;
+    if let Some(err) = simulation.value.err {
+        println!("❌ Simulation failed: {:?}", err);
+        for log in simulation.value.logs.unwrap_or_default() {
+            println!("   {}", log);
+        }
+        return Err(format!("Simulation failed: {:?}", err).into());
+    }
+    let simulated_cu = simulation.value.units_consumed.ok_or("Simulation did not return units consumed")?;
+    let cu_limit = simulated_cu as u32 + 50;
+    println!("Simulated CU:   {} (limit {})", simulated_cu, cu_limit);
+
     let transaction = Transaction::new_signed_with_payer(
-        &[memo_ix, burn_ix, compute_budget_ix],
+        &[memo_ix, burn_ix, ComputeBudgetInstruction::set_compute_unit_limit(cu_limit)],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -235,29 +262,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Burned Amount:  {} tokens", BURN_AMOUNT_TOKENS);
             println!();
             
-            // Check new balance
-            if let Ok(balance) = client.get_token_account_balance(&token_account) {
-                let balance_after = balance.ui_amount.unwrap_or(0.0);
-                let burned = balance_before - balance_after;
-                
-                println!("─────────────────────────────────────────────────────────────────");
-                println!("💰 Token Balance Verification");
-                println!("─────────────────────────────────────────────────────────────────");
-                println!("Balance Before: {} tokens", balance_before);
-                println!("Balance After:  {} tokens", balance_after);
-                println!("Burned:         {} tokens", burned);
-                
-                // Verify burn amount
-                let expected_burned = BURN_AMOUNT_TOKENS as f64;
-                let tolerance = 0.000001;
-                
-                if (burned - expected_burned).abs() < tolerance {
-                    println!("✅ Token balance verified");
-                } else {
-                    println!("⚠️  Warning: Burn amount mismatch");
-                    println!("   Expected: {} tokens", expected_burned);
-                    println!("   Actual:   {} tokens", burned);
-                }
+            // Check new balance (integer units)
+            let balance_after: u64 = client.get_token_account_balance(&token_account)?.amount.parse()?;
+            let burned = balance_before.checked_sub(balance_after);
+            let balance_ok = burned == Some(burn_amount);
+
+            println!("─────────────────────────────────────────────────────────────────");
+            println!("💰 Token Balance Verification");
+            println!("─────────────────────────────────────────────────────────────────");
+            println!("Balance Before: {} units", balance_before);
+            println!("Balance After:  {} units", balance_after);
+            if balance_ok {
+                println!("✅ Token balance verified: -{} units", burn_amount);
+            } else {
+                println!("❌ Burn amount mismatch: expected -{} units, got {:?}", burn_amount, burned);
             }
             println!();
             
@@ -275,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             
             // Verify statistics changes
-            let mut all_checks_passed = true;
+            let mut all_checks_passed = balance_ok;
             
             println!("Verification:");
             
@@ -305,15 +323,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 all_checks_passed = false;
             }
             
-            // Check last burn time updated
-            if stats_after.last_burn_time > stats_before.last_burn_time {
+            // Check last burn time: it must equal the block time of the burn transaction (an earlier
+            // burn in the same second leaves the value unchanged, so "increased" is not the test)
+            let block_time = client.get_signature_statuses(&[signature]).ok()
+                .and_then(|r| r.value.into_iter().next().flatten())
+                .and_then(|status| client.get_block_time(status.slot).ok());
+            if block_time.is_some() && Some(stats_after.last_burn_time) == block_time {
                 println!("  ✅ Last burn time updated: {} -> {}",
                     stats_before.last_burn_time, stats_after.last_burn_time);
             } else {
-                println!("  ❌ Last burn time not updated");
+                println!("  ❌ Last burn time {} does not equal the block time {:?}", stats_after.last_burn_time, block_time);
                 all_checks_passed = false;
             }
             
+            // Check the global statistics counted the burn (at least: others may burn concurrently)
+            let global_after = get_global_burn_stats(&client)?;
+            if global_after.0 >= global_before.0 + burn_amount as u128 && global_after.1 > global_before.1 {
+                println!("  ✅ Global stats counted the burn: {} -> {} units, {} -> {} burns",
+                    global_before.0, global_after.0, global_before.1, global_after.1);
+            } else {
+                println!("  ❌ Global stats did not count the burn: {:?} -> {:?}", global_before, global_after);
+                all_checks_passed = false;
+            }
+
             // Check user pubkey matches
             if stats_after.user == payer.pubkey() {
                 println!("  ✅ User pubkey verified: {}", stats_after.user);
@@ -418,3 +450,12 @@ fn get_burn_stats(
     Ok(stats)
 }
 
+
+/// GlobalBurnStats total_burned (u128, offset 8) and burn_count (u64, offset 24)
+fn get_global_burn_stats(client: &RpcClient) -> Result<(u128, u64), Box<dyn std::error::Error>> {
+    let data = client.get_account(&memo_token_client::global_burn_stats_pda())?.data;
+    if data.len() < 32 {
+        return Err("GlobalBurnStats data too short".into());
+    }
+    Ok((u128::from_le_bytes(data[8..24].try_into()?), u64::from_le_bytes(data[24..32].try_into()?)))
+}

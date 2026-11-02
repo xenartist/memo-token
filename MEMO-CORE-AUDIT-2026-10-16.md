@@ -11,9 +11,9 @@
 
 ---
 
-## Updates after this audit (2026-11-01)
+## Updates after this audit (2026-11-01, 2026-11-02)
 
-This report describes the code audited on 2026-10-16. Later changes are recorded in `MEMO-MINT-AUDIT.md` (Revision 5 and findings MINT-01 to MINT-23). The statements below no longer hold as written. The findings themselves are unchanged; only the facts they rest on have moved.
+This report describes the code audited on 2026-10-16. Later changes are recorded in `MEMO-MINT-AUDIT.md` (Revision 5 and findings MINT-01 to MINT-23) and `MEMO-BURN-AUDIT.md` (re-audit of November 2, 2026, Revision 4 and findings BURN-R01 to BURN-R22). The statements below no longer hold as written. The findings themselves are unchanged; only the facts they rest on have moved.
 
 - **memo-mint counts characters (Revision 5, deployed on testnet and mainnet on 2026-11-01).**
   - The memo at index 0 must have at least 69 **characters** (Unicode scalar values), not 69 bytes. A 35-character, 69-byte memo such as `"é" × 34 + "R"` now fails with `MemoTooShort`.
@@ -28,8 +28,14 @@ This report describes the code audited on 2026-10-16. Later changes are recorded
 - **INT-12.** SIMD-0459 (`syscall_parameter_address_restrictions`) has been active on mainnet since slot 87,958,112 (2026-10-23), so both networks run the same program runtime.
   - The recommended re-run trigger has fired.
   - The CPI-tampering harness was never committed, so recommendations 1 and 2 remain open (MINT-17).
+- **memo-burn re-audit (2026-11-02).** Revision 4 (0.3.0) checks `GlobalBurnStats` by a per-network address constant, logs only `Burned {amount} units` and drops the separate UTF-8 check: about 4,300 CU less per burn, with the same accounts and rules. Corrections to this report (BURN-R16):
+  - TEST-09 was marked addressed, but memo-burn's admin success path had no test until BURN-R01.
+  - TEST-05/06: the burn smoke test kept float balances and never read `GlobalBurnStats` until BURN-R14; the regression suites covered both behaviours.
+  - 8.2 / TEST-08: some library-only tests remain in memo-burn's `tests.rs`.
+  - B-6, B-7 and BURN-04 cite local cases B03 and B37. B03's behaviours are in `regression-memo-curve`; B37 (one app memo backing an app burn and a direct burn) was not committed (BURN-R15). 5.1 is stale: `check_memo_instruction` is unit-tested since the follow-up. B-12 is stale: the error codes are pinned by `test_error_codes_unchanged_and_appended` (TEST-10).
+  - Logs: indexers must not count burns from log text (BURN-R03).
 - **8.2, "Still not covered".**
-  - memo-mint's successful admin initialization is now covered by `regression-admin-init`, as a simulation without the admin key. memo-burn's successful initialization is still not covered; only its failure paths are.
+  - The successful admin initialization of both `MintState` and `GlobalBurnStats` is now covered by `regression-admin-init`, as a simulation without the admin key (memo-burn's since November 2, 2026, BURN-R01).
   - v0 transactions with address lookup tables are covered by M25 in `regression-memo-mint`.
   - The same-slot false positive (MINT-01) is reproduced by the audit tools but has no regression case.
   - Multisig owners and two-level nested CPI remain open.

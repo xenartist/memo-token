@@ -5,12 +5,12 @@
 //!   ./scripts/local-validator.sh start --no-core-state
 //! Checks: minting and burning fail with AccountNotInitialized before initialization, and a
 //! non-admin cannot initialize either account (UnauthorizedAdmin, account still absent).
-//! memo-mint's successful initialization by the admin runs without the admin key, in
-//! simulateTransaction with signature verification off (nothing lands): the MintState it creates
-//! (owner, size, discriminator, canonical bump, zero fields), a mint right after it in the same
-//! transaction, a second initialization, initialization at an address that is not the PDA, and
+//! The admin's successful initialization of each account runs without the admin key, in
+//! simulateTransaction with signature verification off (nothing lands): the account it creates
+//! (owner, size, discriminator, canonical bump, zero fields), a mint or burn right after it in the
+//! same transaction, a second initialization, initialization at an address that is not the PDA, and
 //! that nothing persists. Also: the admin not signing, and the shadow MintState on a fresh
-//! deployment. 11 cases.
+//! deployment. 17 cases.
 
 #[path = "harness.rs"]
 #[allow(dead_code)]
@@ -29,6 +29,9 @@ const BURN_UNAUTHORIZED_ADMIN: u32 = 6012;
 /// memo-mint's AUTHORIZED_ADMIN_PUBKEY (testnet build, the one the local validator runs)
 const MINT_ADMIN: Pubkey = solana_sdk::pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 const MINT_STATE_SPACE: usize = 8 + 32 + 8 + 1 + 64;
+/// memo-burn's AUTHORIZED_ADMIN_PUBKEY (testnet build): the same key as memo-mint's
+const BURN_ADMIN: Pubkey = MINT_ADMIN;
+const GLOBAL_BURN_STATS_SPACE: usize = 8 + 16 + 8 + 8 + 1 + 64;
 
 fn main() {
     let e = Env::new("regression-admin-init");
@@ -122,6 +125,58 @@ fn main() {
 
     e.reject("TEST-09.init-not-persisted", "after the simulations MintState still does not exist: process_mint fails as before initialization",
         vec![e.text_memo("after-sim", 69), e.mint_ix(&ap)], a, &[], Expect::Raised(1, ANCHOR_ACCOUNT_NOT_INITIALIZED, e.mint_prog, "AccountNotInitialized"), &watch, &users);
+
+    // ---------------- memo-burn initialization by the admin, simulated ----------------
+    // Same technique as for memo-mint above (MEMO-BURN-AUDIT.md, re-audit finding BURN-R01)
+    let gbs_init_ix = |admin: &Pubkey, stats: &Pubkey, admin_signs: bool| Instruction::new_with_bytes(e.burn_prog, &disc("initialize_global_burn_stats"), vec![
+        AccountMeta::new(*admin, admin_signs), AccountMeta::new(*stats, false), AccountMeta::new_readonly(system_program(), false)]);
+    let gbs_bump = Pubkey::find_program_address(&[b"global_burn_stats"], &e.burn_prog).1;
+    let gbs_rent = e.c.get_minimum_balance_for_rent_exemption(GLOBAL_BURN_STATS_SPACE).unwrap();
+    // GlobalBurnStats as created: memo-burn-owned, rent-exempt, 105 bytes, discriminator, the given
+    // total and count, last_burn_time set exactly when count > 0, the canonical bump, reserved zero
+    let gbs_is = |acc: &Option<(Pubkey, u64, Vec<u8>)>, total: u128, count: u64| match acc {
+        Some((owner, lamports, d)) => *owner == e.burn_prog && *lamports == gbs_rent && d.len() == GLOBAL_BURN_STATS_SPACE
+            && d[..8] == account_disc("GlobalBurnStats")[..] && d[8..24] == total.to_le_bytes() && d[24..32] == count.to_le_bytes()
+            && (i64::from_le_bytes(d[32..40].try_into().unwrap()) > 0) == (count > 0) && d[40] == gbs_bump
+            && d[41..].iter().all(|&x| x == 0),
+        None => false,
+    };
+
+    let (out, acc) = e.simulate_unsigned(&[gbs_init_ix(&BURN_ADMIN, &e.gbs, true)], &BURN_ADMIN, &[e.gbs]);
+    e.record("TEST-09.burn-admin-init", &format!("the admin initializes GlobalBurnStats (simulated): memo-burn-owned, {} bytes, discriminator, zero counters, canonical bump {}, zero reserved", GLOBAL_BURN_STATS_SPACE, gbs_bump),
+        out.ok() && gbs_is(&acc[0], 0, 0), &format!("{}; {}; logs {:?}", out.brief(), show(&acc[0]), out.logs));
+
+    // [memo, initialize_global_burn_stats, process_burn]: the new GlobalBurnStats works for the first burn
+    {
+        let ixs = vec![memo_ix(&e.burn_memo(1, UNIT, "init-then-burn")), gbs_init_ix(&BURN_ADMIN, &e.gbs, true), e.burn_ix(&ap, UNIT)];
+        let before = e.snap(&[a_ta], &[]);
+        let (out, acc) = e.simulate_unsigned(&ixs, &BURN_ADMIN, &[e.gbs, a_ta, e.mint]);
+        let amount = |i: usize, at: usize| acc[i].as_ref().filter(|x| x.2.len() >= at + 8).map(|x| u64::from_le_bytes(x.2[at..at + 8].try_into().unwrap()));
+        let pass = out.ok() && out.logs.contains(&burned_log(UNIT)) && gbs_is(&acc[0], UNIT as u128, 1)
+            && amount(1, 64) == before.bal(&a_ta).checked_sub(UNIT) && amount(2, 36) == before.supply.checked_sub(UNIT);
+        e.record("TEST-09.burn-admin-init-then-burn", "[memo, initialize_global_burn_stats, process_burn] (simulated): the first burn uses the new GlobalBurnStats, which then counts it",
+            pass, &format!("{}; token account {:?} (was {}); supply {:?} (was {}); {}", out.brief(), amount(1, 64),
+                before.bal(&a_ta), amount(2, 36), before.supply, show(&acc[0])));
+    }
+
+    let (out, _) = e.simulate_unsigned(&[gbs_init_ix(&BURN_ADMIN, &e.gbs, true), gbs_init_ix(&BURN_ADMIN, &e.gbs, true)], &BURN_ADMIN, &[]);
+    let expect = Expect::RaisedBy(1, SYSTEM_ACCOUNT_IN_USE, system_program());
+    e.record("TEST-09.burn-admin-init-twice", "the admin initializes GlobalBurnStats twice in one transaction (simulated): the second fails in the System program",
+        expect.matches(&out), &format!("expected {}; got {} ({:?})", expect.describe(), out.brief(), out.failed_program()));
+
+    let (out, _) = e.simulate_unsigned(&[gbs_init_ix(&BURN_ADMIN, &Pubkey::new_unique(), true)], &BURN_ADMIN, &[]);
+    let expect = Expect::Raised(0, ANCHOR_CONSTRAINT_SEEDS, e.burn_prog, "ConstraintSeeds");
+    e.record("TEST-09.burn-admin-init-not-pda", "the admin initializes GlobalBurnStats at an address that is not the PDA (simulated)",
+        expect.matches(&out), &format!("expected {}; got {} ({:?} in {:?})", expect.describe(), out.brief(), out.error_name(), out.failed_program()));
+
+    let out = e.exec(&[gbs_init_ix(&BURN_ADMIN, &e.gbs, false)], a, &[]);
+    let expect = Expect::Raised(0, ANCHOR_ACCOUNT_NOT_SIGNER, e.burn_prog, "AccountNotSigner");
+    let exists = e.data(&e.gbs).is_some();
+    e.record("TEST-09.burn-admin-not-signer", "initialize_global_burn_stats naming the admin, who does not sign (fee payer A): creates nothing",
+        expect.matches(&out) && !exists, &format!("expected {}; got {} ({:?}); GlobalBurnStats exists afterwards: {}", expect.describe(), out.brief(), out.error_name(), exists));
+
+    e.reject("TEST-09.burn-init-not-persisted", "after the simulations GlobalBurnStats still does not exist: process_burn fails as before initialization",
+        vec![memo_ix(&e.burn_memo(1, UNIT, "after-sim")), e.burn_ix(&ap, UNIT)], a, &[], Expect::Raised(1, ANCHOR_ACCOUNT_NOT_INITIALIZED, e.burn_prog, "AccountNotInitialized"), &watch, &users);
 
     // The shadow MintState (planted by prepare-local-validator, not the PDA) cannot stand in for
     // the missing one

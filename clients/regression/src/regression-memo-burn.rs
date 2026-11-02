@@ -190,7 +190,8 @@ fn main() {
             && before.supply - after.supply == 2 * x
             && ua1.total == ua0.total + x && ua1.count == ua0.count + 1 && Some(ua1.last_time) == out.block_time
             && ub1.total == ub0.total + x && ub1.count == ub0.count + 1 && Some(ub1.last_time) == out.block_time
-            && g1.total == g0.total + 2 * x as u128 && g1.count == g0.count + 2 && Some(g1.last_time) == out.block_time;
+            && g1.total == g0.total + 2 * x as u128 && g1.count == g0.count + 2 && Some(g1.last_time) == out.block_time
+            && out.logs.iter().filter(|l| **l == burned_log(x)).count() == 2;
         e.record("B23c", "A and B each burn X with one memo: each user's stats +X/+1, global +2X/+2", pass,
             &format!("{}; {}", out.brief(), before.diff(&after)));
     }
@@ -244,6 +245,9 @@ fn main() {
         e.reject("B31b", "memo-mint MintState as global_burn_stats",
             vec![memo_ix(&e.burn_memo(1, x, "ms-as-gbs")), e.burn_ix_with(x, with(6, AccountMeta::new(e.mint_state, false)))],
             a, &[], at1(ANCHOR_OWNED_BY_WRONG_PROGRAM), &watch, &users);
+        e.reject("B31d", "shadow GlobalBurnStats (memo-burn-owned, right discriminator and size, not the PDA) as global_burn_stats",
+            vec![memo_ix(&e.burn_memo(1, x, "shadow-gbs")), e.burn_ix_with(x, with(6, AccountMeta::new(shadow_global_burn_stats(), false)))],
+            a, &[], at1(ANCHOR_CONSTRAINT_SEEDS), &watch, &users);
         e.reject("B31c", "global_burn_stats read-only",
             vec![memo_ix(&e.burn_memo(1, x, "gbs-ro")), e.burn_ix_with(x, with(6, AccountMeta::new_readonly(e.gbs, false)))],
             a, &[], at1(ANCHOR_CONSTRAINT_MUT), &watch, &users);
@@ -286,7 +290,8 @@ fn main() {
         let pass = out.ok()
             && after.bal(&a_ta) as i128 - before.bal(&a_ta) as i128 == reward as i128 - x as i128
             && after.user(&ap).total == before.user(&ap).total + x
-            && after.global().count == before.global().count + 1;
+            && after.global().count == before.global().count + 1
+            && out.logs.contains(&burned_log(x));
         e.record("B36", "one burn memo backs process_mint and process_burn(X) (balance delta = reward - X)", pass,
             &format!("{}; reward {}; {}", out.brief(), reward, before.diff(&after)));
     }

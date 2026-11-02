@@ -29,6 +29,15 @@ pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("FVvewrVHqg2TPWXkesc3CJ7xxWn
 #[cfg(not(feature = "mainnet"))]
 pub const AUTHORIZED_ADMIN_PUBKEY: Pubkey = pubkey!("Gkxz6ogojD7Ni58N4SnJXy6xDxSvH5kPFCz92sTZWBVn");
 
+// GlobalBurnStats PDA ([b"global_burn_stats"]) - different for testnet and mainnet. A constant, so
+// that a burn compares the address instead of deriving it (create_program_address charges 1,500 CU).
+// test_pda_constants_per_network checks it against find_program_address under both features.
+#[cfg(feature = "mainnet")]
+pub const GLOBAL_BURN_STATS_PDA: Pubkey = pubkey!("73xgyJWmEocTF5BguwZ4bJAP8irpSyFZBsooL4yoDUFa");
+
+#[cfg(not(feature = "mainnet"))]
+pub const GLOBAL_BURN_STATS_PDA: Pubkey = pubkey!("HY5VzmHtf3braVAz7ihJWsAfp3hyPHiycfcUbA3en26j");
+
 // Memo length constraint: minimum only; the maximum is set by the transaction size limit
 pub const MEMO_MIN_LENGTH: usize = 69;
 
@@ -58,12 +67,10 @@ pub const MAX_BURN_PER_INSTRUCTION: u64 = 1_000_000_000_000 * DECIMAL_FACTOR;
 // Current version of BurnMemo structure
 pub const BURN_MEMO_VERSION: u8 = 1;
 
-// Maximum user global burn amount (prevent overflow, set to reasonable limit)
-// Note: This is set to 18 trillion tokens (1.8x of max supply) because:
-// 1. It tracks CUMULATIVE burns across the token's lifetime
-// 2. In a dynamic economy with mint+burn cycles, cumulative burns can exceed max supply
-// 3. Example: User burns 5T, ecosystem remints 5T, user burns 5T again = 10T cumulative
-// 4. This higher limit ensures active users' contributions are fully tracked
+// Maximum user global burn amount: a policy cap of 18 trillion tokens (1.8x the max supply), just
+// below u64::MAX (about 18.45T tokens). saturating_add is what prevents overflow; the cap only stops
+// the per-user total slightly earlier. The total is cumulative: with mint and burn cycles it can
+// exceed the max supply (a user burns 5T, 5T is reminted, the user burns 5T again = 10T)
 pub const MAX_USER_GLOBAL_BURN_AMOUNT: u64 = 18_000_000_000_000 * DECIMAL_FACTOR; // Reserve space for safety
 
 /// User global burn statistics tracking account
@@ -86,7 +93,8 @@ impl UserGlobalBurnStats {
 }
 
 /// Global burn statistics across all users (one account, seeds = [b"global_burn_stats"])
-/// Counts every burn made through memo-burn, including burns from programs calling it via CPI.
+/// Counts every burn made through memo-burn since the account was initialized, including burns
+/// from programs calling it via CPI.
 /// Both counters saturate at their type's maximum instead of overflowing.
 #[account]
 pub struct GlobalBurnStats {
@@ -216,9 +224,10 @@ pub mod memo_burn {
         // Update global burn statistics
         ctx.accounts.global_burn_stats.record_burn(amount, timestamp);
         
-        // Log successful burn (integer units, 1 token = 1,000,000 units)
-        msg!("Burned {} units from {}, user total burned: {} units, burn count: {}",
-             amount, ctx.accounts.user.key(), user_burn_stats.total_burned, user_burn_stats.burn_count);
+        // Log successful burn (integer units, 1 token = 1,000,000 units). The user and the stats are
+        // not logged: base58 formatting costs about 2,300 CU, the transaction already names the user,
+        // and the totals are in the stats accounts; a fixed line also keeps the CU independent of them
+        msg!("Burned {} units", amount);
         
         Ok(())
     }
@@ -226,14 +235,10 @@ pub mod memo_burn {
 
 /// validate Borsh-formatted memo data (with Base64 decoding)
 fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
-    // First, decode the Base64-encoded memo data
-    let base64_str = std::str::from_utf8(memo_data)
-        .map_err(|_| {
-            msg!("Invalid UTF-8 in memo data");
-            ErrorCode::InvalidMemoFormat
-        })?;
-    
-    let decoded_data = general_purpose::STANDARD.decode(base64_str)
+    // First, decode the Base64-encoded memo data. No separate UTF-8 check: the memo program at
+    // index 0 has already rejected invalid UTF-8, and decoding rejects any byte outside the Base64
+    // alphabet with the same error
+    let decoded_data = general_purpose::STANDARD.decode(memo_data)
         .map_err(|_| {
             msg!("Invalid Base64 encoding in memo");
             ErrorCode::InvalidMemoFormat
@@ -246,7 +251,8 @@ fn validate_memo_amount(memo_data: &[u8], expected_amount: u64) -> Result<()> {
     }
     
     // Check the payload length prefix against the bytes actually present
-    // (a forged prefix must be rejected cleanly; Borsh would allocate the declared length)
+    // (a forged prefix must be rejected cleanly; the payload is not deserialized with Borsh, whose
+    // Vec reader would first allocate up to the declared length, beyond the 32 KiB heap)
     let mut len_bytes = [0u8; 4];
     len_bytes.copy_from_slice(&decoded_data[BORSH_PAYLOAD_LEN_OFFSET..BORSH_FIXED_OVERHEAD]);
     let declared_payload_len = u32::from_le_bytes(len_bytes) as usize;
@@ -307,7 +313,8 @@ fn validate_memo_length(memo_data: &[u8], min_length: usize) -> Result<bool> {
 /// Compute budget instructions also occupy an instruction index, so they must be
 /// placed at index 1 or later; a compute budget instruction at index 0 makes the burn fail.
 ///
-/// Returns the memo data when a valid memo is at index 0, otherwise None.
+/// Returns the memo data when a memo of at least 69 bytes is at index 0, None when index 0 is not a
+/// memo or process_burn is at index 0, and Err(MemoTooShort) for a shorter memo at index 0.
 fn check_memo_instruction(instructions: &AccountInfo) -> Result<Option<Vec<u8>>> {
     // Get current instruction index
     let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(instructions)?;
@@ -409,12 +416,11 @@ pub struct ProcessBurn<'info> {
     #[account(address = INSTRUCTIONS_ID)]
     pub instructions: AccountInfo<'info>,
     
-    /// Global burn statistics account (last, so existing account order is unchanged)
-    #[account(
-        mut,
-        seeds = [b"global_burn_stats"],
-        bump = global_burn_stats.bump
-    )]
+    /// Global burn statistics account (last, so existing account order is unchanged). Checked
+    /// against the PDA constant. A substituted account fails the owner or discriminator check first,
+    /// since GlobalBurnStats exists only at the PDA; the address check (ConstraintSeeds, as the
+    /// former seeds check) is defense in depth
+    #[account(mut, address = GLOBAL_BURN_STATS_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub global_burn_stats: Account<'info, GlobalBurnStats>,
 }
 

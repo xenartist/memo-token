@@ -3,7 +3,7 @@
 # compares the on-chain programs with it (MEMO-MINT-AUDIT.md, MINT-16). First recorded from the
 # chain on November 1, 2026.
 memo_mint d9b4f75196e6721d056f4d216f40dfcebadd1791e9ffea17c67dd4398bbb67ac 269416
-memo_burn eecad89398ed9c2b4a17c7a8f176c15813eaefbaa685c233c58282ab4fa018ee 293408
+memo_burn 46d526ef40fee688c3298b7ca740345e2359eb3c6f5bee5cf3e632efc78f772f 290544
 memo_home b111033a9caf7f5b75dcd47586cc0bcb3013747f5fd51fc767f09b8aa36013b7 533264
 memo_id c72d556fed13aee1b514b49e2032596ac98c768f57326f108759340c851786b2 492920
 memo_chat 24a5487176c828af32db22b6bd27ad98609c1bfbd18ea52c120ba58b6082ecd9 451960

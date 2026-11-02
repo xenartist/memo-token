@@ -8,8 +8,8 @@
 //! addresses), the Core paths around memo-home (including the Collection-address update
 //! authority), mining with the share split (and memo-mint's Revision 5 character minimum on the
 //! caller's memo), Vault outflows for any token with the Vault State nonce, listing protection,
-//! Vault burns, withdraw_asset, signer checks and the app CPI path. 162 cases. Every case asserts
-//! the exact outcome.
+//! Vault burns, withdraw_asset, advance_nonce, signer checks and the app CPI path. 198 cases.
+//! Every case asserts the exact outcome.
 //!
 //! Run through scripts/run-regression-tests.sh, or against a running local validator:
 //!   MEMO_RPC_URL=http://127.0.0.1:8899 MEMO_WALLET=target/local-validator/wallet.json \
@@ -481,6 +481,55 @@ fn core_update_v2_eject(asset: &Pubkey, col: &Pubkey, payer: &Pubkey, authority:
     }
 }
 
+/// AddPluginV1 of a plugin with empty or default data and the default plugin authority, signed by
+/// `owner` (types 4 UpdateDelegate, 5 PermanentFreezeDelegate, 6 Attributes, 7 PermanentTransfer-
+/// Delegate, 8 PermanentBurnDelegate, 11 AddBlocker)
+fn core_add_plugin(asset: &Pubkey, col: &Pubkey, owner: &Pubkey, plugin_type: u8) -> Instruction {
+    let mut d = vec![2u8, plugin_type];
+    match plugin_type {
+        5 => d.push(0),                      // { frozen: false }
+        4 | 6 => d.extend([0u8, 0, 0, 0]),   // empty Vec
+        _ => {}
+    }
+    d.push(0); // init_authority: None
+    core_ix(d, asset, Some(col), owner, None, vec![])
+}
+
+/// AddExternalPluginAdapterV1 Oracle { base_address: signer, checks Transfer (can reject) }
+fn core_add_external_oracle(asset: &Pubkey, col: &Pubkey, signer: &Pubkey) -> Instruction {
+    let mut d = vec![22u8, 1];
+    d.extend(signer.as_ref());
+    d.push(0); // init_plugin_authority: None
+    d.extend([1u8, 0, 0, 0, 1, 4, 0, 0, 0]); // [(Transfer, CAN_REJECT)]
+    d.extend([0u8, 0]); // base_address_config, results_offset: None
+    core_ix(d, asset, Some(col), signer, None, vec![])
+}
+
+/// AddExternalPluginAdapterV1 AppData { data_authority: Owner }
+fn core_add_external_app_data(asset: &Pubkey, col: &Pubkey, signer: &Pubkey) -> Instruction {
+    core_ix(vec![22u8, 2, 1, 0, 0], asset, Some(col), signer, None, vec![])
+}
+
+/// UpdateV2 { name: None, uri: None, new_update_authority: Collection(col) } of an Asset outside any
+/// Collection, signed by its update authority `ua`
+fn core_update_v2_join(asset: &Pubkey, col: &Pubkey, ua: &Pubkey) -> Instruction {
+    let mut d = vec![30u8, 0, 0, 1, 2];
+    d.extend(col.as_ref());
+    Instruction {
+        program_id: CORE,
+        accounts: vec![
+            AccountMeta::new(*asset, false),
+            AccountMeta::new_readonly(CORE, false), // collection: none
+            AccountMeta::new(*ua, true),
+            AccountMeta::new_readonly(CORE, false), // authority: the payer
+            AccountMeta::new(*col, false),          // new_collection
+            AccountMeta::new_readonly(system_program(), false),
+            AccountMeta::new_readonly(CORE, false),
+        ],
+        data: d,
+    }
+}
+
 /// CreateCollectionV2 at a keypair address with `ua` as update authority and, optionally, an
 /// Oracle (base `oracle`) that checks Transfer
 fn core_create_collection(col: &Pubkey, ua: &Pubkey, payer: &Pubkey, oracle_on_transfer: Option<&Pubkey>) -> Instruction {
@@ -832,6 +881,25 @@ fn main() {
         let (ix, _) = h.create_asset(&wp, &ap, &col, "core-owner", &CORE, "x");
         e.reject("H11b", "create_asset for the Core program as owner (Core would give the Asset to the payer)", vec![ix], w, &[&app],
             Expect::Custom(0, INVALID_OWNER), &[], &[]);
+        // the new Asset itself or its own Vault as owner would lock it for good (0.2.0)
+        let s = seed("self-owned");
+        let a = h.asset_addr(&col, &s);
+        for (id, owner, what) in [("H11i", h.vault(&a), "its own Vault"), ("H11j", a, "the Asset's own address")] {
+            e.reject(id, &format!("create_asset with {} as owner (nobody could ever sign as owner)", what),
+                vec![h.create_asset_at(&wp, &ap, &h.config(&col), &col, &a, &s, &owner, "x", ASSET_URI)], w, &[&app],
+                Expect::Custom(0, INVALID_OWNER), &[], &[]);
+        }
+        // The Program Authority is checked against its address constant in every instruction (0.2.0)
+        let mut ix = h.create_asset(&wp, &ap, &col, "pa-check", &bp, "x").0;
+        ix.accounts[7] = AccountMeta::new_readonly(wp, false);
+        let mut ix2 = h.update_asset(&wp, &ap, &col, &room, Some("x"));
+        ix2.accounts[5] = AccountMeta::new_readonly(wp, false);
+        let mut ix3 = h.update_collection(&wp, &ap, &col, Some("x"));
+        ix3.accounts[4] = AccountMeta::new_readonly(wp, false);
+        for (id, what, ix) in [("H11k", "create_asset", ix), ("H11l", "update_asset", ix2), ("H11m", "update_collection", ix3)] {
+            e.reject(id, &format!("{} with another account as the Program Authority", what), vec![ix], w, &[&app],
+                Expect::Custom(0, ANCHOR_CONSTRAINT_SEEDS), &[], &[]);
+        }
         let (ix, _) = h.create_asset(&wp, &ap, &col, "room1", &cp, "dup");
         e.reject("H11c", "create_asset with a seed already used in the Collection", vec![ix], w, &[&app],
             Expect::Custom(0, SYSTEM_ACCOUNT_IN_USE), &[], &[]);
@@ -920,6 +988,8 @@ fn main() {
         Expect::Custom(0, NOTHING_TO_UPDATE), &[], &[]);
     e.reject("H15d", "update_asset with a 254-byte name", vec![h.update_asset(&wp, &ap, &col, &room, Some(&"n".repeat(254)))], w, &[&app],
         Expect::Custom(0, NAME_TOO_LONG), &[], &[]);
+    e.reject("H15e", "update_asset with a 257-byte URI", vec![h.update_asset_with(&wp, &ap, &h.config(&col), &col, &room, None, Some(&"u".repeat(257)))],
+        w, &[&app], Expect::Custom(0, URI_TOO_LONG), &[], &[]);
     e.reject("H16", "update_asset signed by someone other than the Authority",
         vec![h.update_asset(&xp, &xp, &col, &room, Some("hacked"))], &x, &[], Expect::Custom(0, UNAUTHORIZED), &[], &[]);
     let (ix, col2) = h.create_collection(&wp, &ap, "other", "Other", 10_000, None, None);
@@ -937,6 +1007,8 @@ fn main() {
         Expect::Custom(0, UNAUTHORIZED), &[], &[]);
     e.reject("H18d", "update_collection with a 257-byte URI", vec![h.update_collection_with(&wp, &ap, &h.config(&col), &col, None, Some(&"u".repeat(257)))],
         w, &[&app], Expect::Custom(0, URI_TOO_LONG), &[], &[]);
+    e.reject("H18g", "update_collection with a 254-byte name", vec![h.update_collection(&wp, &ap, &col, Some(&"n".repeat(254)))],
+        w, &[&app], Expect::Custom(0, NAME_TOO_LONG), &[], &[]);
 
     // A Collection of another app: no cross-app access
     let (ix, col3) = h.create_collection(&wp, &a2p, "app2", "App2 Rooms", 10_000, None, None);
@@ -993,7 +1065,9 @@ fn main() {
     let out = mine_check("H21", "first mine creates the Vault token account; 30% share rounded down to the sender, the rest in the Vault (nonce unchanged)",
         mine_tx(3000, "m1"), &[&app], &room, 3000);
     println!("     CU mine (first, creates the Vault token account): memo-home {} of tx", consumed(&out, &prog));
+    e.record("H21b", "  ... the first mine invoked the ATA program to create it", out.logs.iter().any(|l| l.starts_with(&format!("Program {} invoke", ATA_PROGRAM))), "");
     let out = mine_check("H22", "second mine with the Vault token account already present", mine_tx(3000, "m2"), &[&app], &room, 3000);
+    e.record("H22b", "  ... a later mine does not invoke the ATA program (0.2.0: it exists, owned by Token-2022)", !out.logs.iter().any(|l| l.starts_with(&format!("Program {} invoke", ATA_PROGRAM))), "");
     println!("     CU mine: memo-home {}", consumed(&out, &prog));
     mine_check("H23", "mine with share 0: the whole reward stays in the Vault", mine_tx(0, "m3"), &[&app], &room, 0);
     mine_check("H23b", "mine with share 33.33% (on-chain rounding down)",
@@ -1030,6 +1104,17 @@ fn main() {
         ix.accounts[13] = AccountMeta::new_readonly(e.burn_prog, false);
         e.reject("H27d", "mine with another program as memo-mint", vec![e.text_memo("m8c", 80), cu(400_000), ix], &sender, &[&app],
             Expect::Custom(2, ANCHOR_INVALID_PROGRAM_ID), &[vault_ta, s_ta], &[]);
+        // memo-home passes mint_authority and mint_state to memo-mint unchecked; memo-mint pins both
+        let mut ix = h.mine(&sp, &ap, &col, &room, &s_ta, 3000);
+        ix.accounts[9] = AccountMeta::new(shadow_mint_state(), false);
+        e.reject("H27e", "mine with the shadow MintState (memo-mint-owned, not the PDA): memo-mint rejects it through the CPI",
+            vec![e.text_memo("m8d", 80), cu(400_000), ix], &sender, &[&app], Expect::RaisedBy(2, ANCHOR_CONSTRAINT_SEEDS, e.mint_prog),
+            &[vault_ta, s_ta], &[]);
+        let mut ix = h.mine(&sp, &ap, &col, &room, &s_ta, 3000);
+        ix.accounts[8] = AccountMeta::new_readonly(Keypair::new().pubkey(), false);
+        e.reject("H27f", "mine with another account as memo-mint's mint authority: memo-mint rejects it through the CPI",
+            vec![e.text_memo("m8e", 80), cu(400_000), ix], &sender, &[&app], Expect::RaisedBy(2, ANCHOR_CONSTRAINT_SEEDS, e.mint_prog),
+            &[vault_ta, s_ta], &[]);
     }
     e.reject("H28", "two mines in one transaction (memo-mint OneMintPerTransaction)",
         vec![e.text_memo("m9", 80), cu(800_000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000), h.mine(&sp, &ap, &col, &room, &s_ta, 3000)],
@@ -1104,10 +1189,23 @@ fn main() {
     e.must("D adds an owner-managed FreezeDelegate (authority Owner, not frozen)", &[core_add_delegate(&room, &col, &dp, 1, None)], &d, &[]);
     wd_ok("H38", "an owner-managed, unfrozen FreezeDelegate does not block withdrawals", &d, &d_ta, 1_000);
     e.must("D freezes the Asset", &[core_set_frozen(&room, &col, &dp, &dp, true)], &d, &[]);
-    e.reject("H38b", "withdraw while frozen (Listed)", vec![h.withdraw(&dp, &col, &room, &d_ta, 1)], &d, &[],
-        Expect::Custom(0, LISTED), &[vault_ta, d_ta], &[]);
+    wd_ok("H38b", "withdraw while frozen by the owner's own FreezeDelegate (0.2.0: only a third party's delegate lists the Asset)",
+        &d, &d_ta, 1_000);
     e.must("D unfreezes the Asset", &[core_set_frozen(&room, &col, &dp, &dp, false)], &d, &[]);
-    wd_ok("H38c", "withdraw works again after unfreezing", &d, &d_ta, 1_000);
+    wd_ok("H38c", "withdraw works after unfreezing", &d, &d_ta, 1_000);
+    {
+        // A FreezeDelegate added frozen with authority None can never be unfrozen: the Asset can
+        // never move again, but its Vault must not be locked with it (invariant 4)
+        let (ix, r7) = h.create_asset(&wp, &ap, &col, "frozen-room", &dp, "Frozen Room");
+        e.must("create Frozen Room for D and fund its Vault with 0.01 XNT", &[ix, sys_ix::transfer(&wp, &h.vault(&r7), 10_000_000)], w, &[&app]);
+        e.must("D freezes Frozen Room for good: FreezeDelegate { frozen: true }, authority None",
+            &[core_ix(vec![2, 1, 1, 1, 0], &r7, Some(&col), &dp, None, vec![])], &d, &[]);
+        e.reject_untouched("H38d", "  ... Core rejects transferring it", vec![core_transfer(&r7, Some(&col), &dp, &dp, &bp)], &d, &[],
+            Expect::Custom(0, CORE_INVALID_AUTHORITY), &[], &[]);
+        let out = e.exec(&[h.withdraw_lamports(&dp, &col, &r7, &dp, 10_000_000)], &d, &[]);
+        e.record("H38e", "  ... but D can still empty its Vault (not listed: nobody else holds the delegate)",
+            out.ok() && sol(&h.vault(&r7)) == 0 && h.nonce(&r7) == Some(1), &out.brief());
+    }
 
     // Any token: Token-2022 and legacy SPL Token
     {
@@ -1125,6 +1223,16 @@ fn main() {
         let after = e.snap(&[v2, d2], &[]);
         e.record("H39", "withdraw another Token-2022 token from the Vault",
             out.ok() && before.bal(&v2) - after.bal(&v2) == 400 && after.bal(&d2) - before.bal(&d2) == 400, &out.brief());
+
+        let second = Keypair::new();
+        let rent165 = e.c.get_minimum_balance_for_rent_exemption(165).unwrap();
+        e.must("create a second (non-ATA) token account of the same mint owned by the Vault", &[
+            sys_ix::create_account(&wp, &second.pubkey(), rent165, 165, &t22()),
+            spl_token_2022::instruction::initialize_account3(&t22(), &second.pubkey(), &m2.pubkey(), &vault).unwrap(),
+        ], w, &[&second]);
+        e.reject("H39c", "withdraw to another token account of the Vault (nothing would leave it)",
+            vec![h.withdraw_with(&dp, &h.config(&col), &room, &v2, &second.pubkey(), &m2.pubkey(), &t22(), 1)], &d, &[],
+            Expect::Custom(0, INVALID_DESTINATION), &[v2, second.pubkey()], &[]);
 
         let m3 = Keypair::new();
         let rent = e.c.get_minimum_balance_for_rent_exemption(82).unwrap();
@@ -1159,6 +1267,31 @@ fn main() {
             Expect::Custom(0, LISTED), &[vault_ta, d_ta], &[]);
         e.record("H40e", "  ... the Asset still exists, owned by D", core_owner(&e, &room) == Some(dp), "");
         e.must("D revokes the BurnDelegate", &[core_ix(vec![10, 2], &room, Some(&col), &dp, None, vec![])], &d, &[]);
+
+        // Core rejections that the Burn Guard, Collection membership and listing detection rely on:
+        // a permanent delegate would force-approve past the Oracle, external adapters are ignored by
+        // is_listed, and a foreign Asset must not join a memo-home Collection
+        let data0 = e.data(&room);
+        for (id, ty, name, code) in [("H40f", 8u8, "PermanentBurnDelegate", CORE_INVALID_AUTHORITY),
+            ("H40g", 7, "PermanentTransferDelegate", CORE_INVALID_AUTHORITY), ("H40h", 5, "PermanentFreezeDelegate", CORE_INVALID_AUTHORITY),
+            ("H40i", 4, "UpdateDelegate", CORE_NO_APPROVALS), ("H40j", 6, "Attributes", CORE_NO_APPROVALS), ("H40k", 11, "AddBlocker", CORE_NO_APPROVALS)] {
+            e.reject(id, &format!("Core AddPluginV1 ({name}) on a memo-home Asset by its owner is rejected by Core"),
+                vec![core_add_plugin(&room, &col, &dp, ty)], &d, &[], Expect::Custom(0, code), &[], &[]);
+        }
+        for (id, who, kp) in [("H40l", "its owner", &d), ("H40m", "a stranger", &x)] {
+            e.reject(id, &format!("Core AddExternalPluginAdapterV1 (Oracle) on a memo-home Asset by {who} is rejected by Core"),
+                vec![core_add_external_oracle(&room, &col, &kp.pubkey())], kp, &[], Expect::Custom(0, CORE_NO_APPROVALS), &[], &[]);
+        }
+        e.reject("H40n", "Core AddExternalPluginAdapterV1 (AppData) on a memo-home Asset by its owner is rejected by Core",
+            vec![core_add_external_app_data(&room, &col, &dp)], &d, &[], Expect::Custom(0, CORE_NO_APPROVALS), &[], &[]);
+        e.record("H40o", "  ... the Asset's data is unchanged (no plugin or adapter was added)", data0.is_some() && e.data(&room) == data0, "");
+        let foreign = Keypair::new();
+        e.must("X creates a plain Core Asset of its own", &[core_create_plain(&foreign.pubkey(), &xp, &xp)], &x, &[&foreign]);
+        let minted0 = collection_minted(&e, &col);
+        e.reject("H40p", "Core UpdateV2 by a stranger moving their own Asset into a memo-home Collection is rejected by Core",
+            vec![core_update_v2_join(&foreign.pubkey(), &col, &xp)], &x, &[], Expect::Custom(0, CORE_INVALID_AUTHORITY), &[], &[]);
+        e.record("H40q", "  ... the foreign Asset is still outside the Collection and the Collection count is unchanged",
+            core_ua(&e, &foreign.pubkey()) == Some((1, Some(xp))) && collection_minted(&e, &col) == minted0, "");
     }
 
     // ---------------- Vault burn ----------------
@@ -1174,10 +1307,10 @@ fn main() {
             cu(400_000), h.burn(&dp, &wp, &col, &room, amount)], &d, &[w]);
         let after = e.snap(&[vault_ta], &[vault]);
         let paid = w0 - sol(&wp);
-        e.record("H50", "first Vault burn: Vault stats created (payer tops up exactly stats rent + empty-account rent), balance, supply and stats move by the amount, nonce +1",
+        e.record("H50", "first Vault burn from an empty Vault: Vault stats created (payer tops up exactly the stats rent, 0.2.0; the Vault ends empty), balance, supply and stats move by the amount, nonce +1",
             out.ok() && e.burn_deltas_ok(&before, &after, &out, &vault, &vault_ta, amount, 1)
-                && v0 == 0 && paid == stats_rent + min_rent && sol(&vault) == min_rent && h.nonce(&room) == Some(n0 + 1),
-            &format!("{} payer paid {} (expected {}) vault {} -> {}; {}", out.brief(), paid, stats_rent + min_rent, v0, sol(&vault), before.diff(&after)));
+                && v0 == 0 && paid == stats_rent && sol(&vault) == 0 && h.nonce(&room) == Some(n0 + 1),
+            &format!("{} payer paid {} (expected {}) vault {} -> {}; {}", out.brief(), paid, stats_rent, v0, sol(&vault), before.diff(&after)));
         println!("     CU burn (first, with stats init): memo-home {}", consumed(&out, &prog));
         let before = e.snap(&[vault_ta], &[vault]);
         let out = e.exec(&[app_burn_memo(amount, b"memo-home regression: second vault burn"), cu(400_000), h.burn(&dp, &dp, &col, &room, amount)], &d, &[]);
@@ -1195,6 +1328,27 @@ fn main() {
         e.reject("H54", "Vault burn with another program as memo-burn",
             vec![app_burn_memo(1, b"wrong burn program payload of a reasonable length.........."), ix], &d, &[],
             Expect::Custom(1, ANCHOR_INVALID_PROGRAM_ID), &[vault_ta], &[vault]);
+        // memo-home passes the stats accounts to memo-burn unchecked; memo-burn pins both
+        let mut ix = h.burn(&dp, &dp, &col, &room, 1);
+        ix.accounts[7] = AccountMeta::new(e.stats_pda(&wp), false);
+        e.reject("H54b", "Vault burn with another user's burn stats: memo-burn rejects it through the CPI",
+            vec![app_burn_memo(1, b"other user's stats payload of a reasonable length........."), ix], &d, &[],
+            Expect::RaisedBy(1, ANCHOR_CONSTRAINT_SEEDS, e.burn_prog), &[vault_ta], &[vault]);
+        let mut ix = h.burn(&dp, &dp, &col, &room, 1);
+        ix.accounts[7] = AccountMeta::new(Keypair::new().pubkey(), false);
+        e.reject("H54c", "Vault burn with an empty non-PDA account as the Vault burn stats (memo-home's initialization branch): memo-burn rejects the init",
+            vec![app_burn_memo(1, b"empty stats account payload of a reasonable length........"), ix], &d, &[],
+            Expect::RaisedBy(1, ANCHOR_CONSTRAINT_SEEDS, e.burn_prog), &[vault_ta], &[vault, dp]);
+        let mut ix = h.burn(&dp, &dp, &col, &room, 1);
+        ix.accounts[8] = AccountMeta::new(shadow_global_burn_stats(), false);
+        e.reject("H54d", "Vault burn with the shadow GlobalBurnStats: memo-burn rejects it through the CPI",
+            vec![app_burn_memo(1, b"shadow global stats payload of a reasonable length........"), ix], &d, &[],
+            Expect::RaisedBy(1, ANCHOR_CONSTRAINT_SEEDS, e.burn_prog), &[vault_ta], &[vault]);
+        let mut ix = h.burn(&dp, &dp, &col, &room, 1);
+        ix.accounts[5] = AccountMeta::new(h.vault_state(&other), false);
+        e.reject("H54e", "Vault burn with the Vault State of another Asset",
+            vec![app_burn_memo(1, b"other vault state payload of a reasonable length.........."), ix], &d, &[],
+            Expect::Custom(1, ANCHOR_CONSTRAINT_SEEDS), &[vault_ta], &[vault]);
 
         // First burn with a Vault that already holds enough XNT: the payer pays nothing
         let (ix, r6) = h.create_asset(&wp, &ap, &col, "room6", &dp, "Room #6");
@@ -1227,6 +1381,13 @@ fn main() {
             &format!("{} owner {:?}", out.brief(), core_owner(&e, &plain.pubkey())));
         e.reject("H62", "withdraw_asset of an Asset the Vault does not own",
             vec![h.withdraw_asset(&dp, &dp, &col, &room, &plain.pubkey(), &CORE, &dp)], &d, &[], Expect::Custom(0, NOT_IN_VAULT), &[], &[]);
+        let kept = Keypair::new();
+        e.must("create another plain Core Asset owned by the Vault", &[core_create_plain(&kept.pubkey(), &wp, &vault)], w, &[&kept]);
+        let n0 = h.nonce(&room);
+        e.reject("H62b", "withdraw_asset to the Vault itself (nothing would leave it)",
+            vec![h.withdraw_asset(&dp, &dp, &col, &room, &kept.pubkey(), &CORE, &vault)], &d, &[], Expect::Custom(0, INVALID_DESTINATION), &[], &[]);
+        e.record("H62c", "  ... the nonce is unchanged and the Asset stays in the Vault",
+            h.nonce(&room) == n0 && core_owner(&e, &kept.pubkey()) == Some(vault), "");
 
         let (ix, nested) = h.create_asset(&wp, &ap, &col, "room2", &dp, "Room #2");
         e.must("create a memo-home Asset for D", &[ix], w, &[&app]);
@@ -1570,6 +1731,28 @@ fn main() {
         e.reject("H70", "withdraw for a Core Asset outside memo-home Collections (it has no Vault State)",
             vec![h.withdraw_with(&xp, &h.config(&col), &plain.pubkey(), &h.vault_ata(&plain.pubkey()), &e.ata(&xp), &e.mint, &t22(), 1)],
             &x, &[], Expect::Custom(0, ANCHOR_ACCOUNT_NOT_INITIALIZED), &[], &[]);
+    }
+
+    // ---------------- advance_nonce (0.2.0) ----------------
+    {
+        let advance = |authority: &Pubkey, col: &Pubkey, asset: &Pubkey| h.ix("advance_nonce", vec![], vec![
+            AccountMeta::new_readonly(*authority, true),
+            AccountMeta::new_readonly(h.config(col), false),
+            AccountMeta::new_readonly(*asset, false),
+            AccountMeta::new(h.vault_state(asset), false),
+        ]);
+        let n0 = h.nonce(&room).unwrap_or(u64::MAX);
+        let out = e.exec(&[advance(&ap, &col, &room)], &app, &[]);
+        let ev = event(&out, "NonceAdvanced");
+        let ev_ok = ev.as_ref().map(|v| v[0..32] == room.to_bytes() && v[32..40] == (n0 + 1).to_le_bytes()).unwrap_or(false);
+        e.record("H140", "advance_nonce by the Collection's Authority: nonce +1, event NonceAdvanced",
+            out.ok() && h.nonce(&room) == Some(n0 + 1) && ev_ok, &format!("{} nonce {} -> {:?} event {}", out.brief(), n0, h.nonce(&room), ev_ok));
+        println!("     CU advance_nonce: memo-home {}", consumed(&out, &prog));
+        e.reject("H141", "advance_nonce signed by someone other than the Authority", vec![advance(&xp, &col, &room)], &x, &[],
+            Expect::Custom(0, UNAUTHORIZED), &[], &[]);
+        e.reject("H142", "advance_nonce for an Asset of another Collection", vec![advance(&ap, &col, &other)], &app, &[],
+            Expect::Custom(0, WRONG_COLLECTION), &[], &[]);
+        e.record("H142b", "  ... neither changed the nonce", h.nonce(&room) == Some(n0 + 1), "");
     }
 
     e.finish();

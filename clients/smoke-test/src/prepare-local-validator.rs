@@ -4,7 +4,8 @@
 /// leaderboards) and the MEMO token mint from a source cluster (testnet by default), then:
 ///   - sets the mint's supply to any value (to test the emission curve steps and burn minimums)
 ///   - creates the wallet's Token-2022 ATA with any balance (no need to mint large amounts)
-///   - plants a test-only shadow MintState for the regression suites (see SHADOW_MINT_STATE_SEED)
+///   - plants a test-only shadow MintState and shadow GlobalBurnStats for the regression suites
+///     (see SHADOW_MINT_STATE_SEED, SHADOW_GLOBAL_BURN_STATS_SEED)
 /// Every account is written as <out-dir>/<pubkey>.json, loaded with `--account-dir`.
 ///
 /// Usage:
@@ -50,6 +51,11 @@ const STATE_ACCOUNTS: &[(&str, &[u8])] = &[
 /// it (ConstraintSeeds). Same seed as clients/regression/src/harness.rs.
 const SHADOW_MINT_STATE_SEED: &[u8] = b"memo-token regression: shadow MintState";
 const MINT_STATE_SPACE: usize = 8 + 32 + 8 + 1 + 64;
+/// Test-only "shadow GlobalBurnStats" (regression-memo-burn B31d), the same for memo-burn: owned by
+/// memo-burn, GlobalBurnStats' discriminator, size and the PDA's bump, at sha256(this seed). The
+/// suite checks that process_burn rejects it (address check, ConstraintSeeds). Same seed as harness.rs.
+const SHADOW_GLOBAL_BURN_STATS_SEED: &[u8] = b"memo-token regression: shadow GlobalBurnStats";
+const GLOBAL_BURN_STATS_SPACE: usize = 8 + 16 + 8 + 8 + 1 + 64;
 
 struct Args {
     out_dir: PathBuf,
@@ -188,6 +194,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     write_account(&args.out_dir, &shadow, &shadow_account)?;
     println!("  shadow MintState   {} (test only, not the PDA)", shadow);
+
+    let memo_burn = get_program_id("memo_burn")?;
+    let bump = Pubkey::find_program_address(&[b"global_burn_stats"], &memo_burn).1;
+    let mut data = Sha256::digest(b"account:GlobalBurnStats")[..8].to_vec();
+    data.extend([0u8; 32]);
+    data.push(bump);
+    data.extend([0u8; 64]);
+    assert_eq!(data.len(), GLOBAL_BURN_STATS_SPACE);
+    let shadow = Pubkey::new_from_array(Sha256::digest(SHADOW_GLOBAL_BURN_STATS_SEED).into());
+    let shadow_account = Account {
+        lamports: Rent::default().minimum_balance(GLOBAL_BURN_STATS_SPACE),
+        data,
+        owner: memo_burn,
+        executable: false,
+        rent_epoch: 0,
+    };
+    write_account(&args.out_dir, &shadow, &shadow_account)?;
+    println!("  shadow GlobalBurnStats {} (test only, not the PDA)", shadow);
 
     Ok(())
 }

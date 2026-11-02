@@ -43,6 +43,24 @@ pub const ASSET_SEED: &[u8] = b"asset";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const VAULT_STATE_SEED: &[u8] = b"vault_state";
 
+// PDAs of this program that never change - different for testnet and mainnet. Constants, so that
+// instructions compare addresses instead of deriving them (find_program_address charges 1,500 CU
+// per bump it tries, create_program_address 1,500). test_pda_constants_per_network checks them
+// against find_program_address under both features.
+#[cfg(feature = "mainnet")]
+pub const PROGRAM_AUTHORITY_PDA: Pubkey = pubkey!("AAnhCWrBbmQufvQpYUUaa3H2XdDBGYWh4VPPLSvYWWfh");
+#[cfg(feature = "mainnet")]
+pub const PROGRAM_AUTHORITY_BUMP: u8 = 254;
+#[cfg(feature = "mainnet")]
+pub const BURN_GUARD_PDA: Pubkey = pubkey!("2xwsdHfPSWXBxKFELD1LbfxAyyz5JWNG2R2bxE2d2sLM");
+
+#[cfg(not(feature = "mainnet"))]
+pub const PROGRAM_AUTHORITY_PDA: Pubkey = pubkey!("4WB5wWajgPiCBT3sp2FDEN75KyC4akYwoWDVfMECo2aU");
+#[cfg(not(feature = "mainnet"))]
+pub const PROGRAM_AUTHORITY_BUMP: u8 = 252;
+#[cfg(not(feature = "mainnet"))]
+pub const BURN_GUARD_PDA: Pubkey = pubkey!("2YdkLa2rjficaU99n5guu5Vx6y4k72khgegAHyCKqrip");
+
 /// Basis points denominator (100%)
 pub const MAX_BPS: u16 = 10_000;
 
@@ -254,7 +272,7 @@ pub mod memo_home {
                 ctx.accounts.system_program.to_account_info(),
                 ctx.accounts.core_program.to_account_info(),
             ],
-            &[&[AUTHORITY_SEED, &[ctx.bumps.program_authority]]],
+            &[&[AUTHORITY_SEED, &[PROGRAM_AUTHORITY_BUMP]]],
         )?;
         emit!(CollectionUpdated { collection: ctx.accounts.collection.key() });
         Ok(())
@@ -265,8 +283,12 @@ pub mod memo_home {
     /// `max_assets` Assets.
     pub fn create_asset(ctx: Context<CreateAsset>, seed: [u8; 32], name: String, uri: String) -> Result<()> {
         require_name_uri(Some(&name), Some(&uri))?;
-        // Core gives the Asset to the payer when the owner account is Core's address ("none")
-        require_keys_neq!(ctx.accounts.owner.key(), CORE_PROGRAM_ID, ErrorCode::InvalidOwner);
+        // Core gives the Asset to the payer when the owner account is Core's address ("none").
+        // The new Asset itself or its own Vault would lock it for good: neither can ever sign as owner
+        let owner = ctx.accounts.owner.key();
+        require_keys_neq!(owner, CORE_PROGRAM_ID, ErrorCode::InvalidOwner);
+        require_keys_neq!(owner, ctx.accounts.asset.key(), ErrorCode::InvalidOwner);
+        require_keys_neq!(owner, vault_of(&ctx.accounts.asset.key()).0, ErrorCode::InvalidOwner);
         let collection = parse_collection(&ctx.accounts.collection.try_borrow_data()?)?;
         require_keys_eq!(
             collection.update_authority,
@@ -305,7 +327,7 @@ pub mod memo_home {
                 ctx.accounts.core_program.to_account_info(),
                 ctx.accounts.system_program.to_account_info(),
             ],
-            &[&[AUTHORITY_SEED, &[ctx.bumps.program_authority]], asset_seeds],
+            &[&[AUTHORITY_SEED, &[PROGRAM_AUTHORITY_BUMP]], asset_seeds],
         )?;
 
         let state = &mut ctx.accounts.vault_state;
@@ -357,7 +379,7 @@ pub mod memo_home {
                 ctx.accounts.system_program.to_account_info(),
                 ctx.accounts.core_program.to_account_info(),
             ],
-            &[&[AUTHORITY_SEED, &[ctx.bumps.program_authority]]],
+            &[&[AUTHORITY_SEED, &[PROGRAM_AUTHORITY_BUMP]]],
         )?;
         emit!(AssetUpdated {
             collection: ctx.accounts.collection.key(),
@@ -382,18 +404,22 @@ pub mod memo_home {
         );
 
         // The Vault's MEMO token account is created on first use (caller pays); it can never be
-        // closed, so this happens once per Asset
-        associated_token::create_idempotent(CpiContext::new(
-            ctx.accounts.associated_token_program.to_account_info(),
-            associated_token::Create {
-                payer: ctx.accounts.caller.to_account_info(),
-                associated_token: ctx.accounts.vault_token_account.to_account_info(),
-                authority: ctx.accounts.vault.to_account_info(),
-                mint: ctx.accounts.mint.to_account_info(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-                token_program: ctx.accounts.token_program.to_account_info(),
-            },
-        ))?;
+        // closed, so this happens once per Asset. The address is pinned to the Vault's ATA, which
+        // only the ATA program can create (and initializes at once): owned by Token-2022 means it
+        // exists, so the ATA program is called only when it does not
+        if *ctx.accounts.vault_token_account.owner != anchor_spl::token_2022::ID {
+            associated_token::create_idempotent(CpiContext::new(
+                ctx.accounts.associated_token_program.to_account_info(),
+                associated_token::Create {
+                    payer: ctx.accounts.caller.to_account_info(),
+                    associated_token: ctx.accounts.vault_token_account.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                    token_program: ctx.accounts.token_program.to_account_info(),
+                },
+            ))?;
+        }
 
         let before = token_amount(&ctx.accounts.vault_token_account)?;
         memo_mint::cpi::process_mint_to(
@@ -456,11 +482,9 @@ pub mod memo_home {
         let amount = if amount == u64::MAX { ctx.accounts.vault_token_account.amount } else { amount };
         require!(amount > 0, ErrorCode::InvalidAmount);
         require_owner_not_listed(&ctx.accounts.asset, &ctx.accounts.config, &ctx.accounts.owner.key())?;
-        require_keys_neq!(
-            ctx.accounts.destination.key(),
-            ctx.accounts.vault_token_account.key(),
-            ErrorCode::InvalidDestination
-        );
+        // A destination held by the Vault itself (the source or another Vault account) would move
+        // nothing out of the Vault
+        require_keys_neq!(ctx.accounts.destination.owner, ctx.accounts.vault.key(), ErrorCode::InvalidDestination);
         let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
         let asset_key = ctx.accounts.asset.key();
         let seeds: &[&[u8]] = &[VAULT_SEED, asset_key.as_ref(), &[ctx.bumps.vault]];
@@ -517,9 +541,11 @@ pub mod memo_home {
         Ok(())
     }
 
-    /// Close an empty token account of the Vault and send its rent to `destination` (current
-    /// Core owner only, Asset not listed). The Vault's MEMO token account cannot be closed: its
-    /// rent was paid by the first `mine` caller and stays with the Asset.
+    /// Close a Vault token account whose token amount is 0 and send all its lamports (the rent,
+    /// plus any lamports sent to it directly) to `destination` (current Core owner only, Asset not
+    /// listed). The Vault's MEMO token account cannot be closed: its rent was paid by the first
+    /// `mine` caller and stays with the Asset. A Token-2022 account with withheld transfer fees
+    /// cannot be closed until they are harvested (`HarvestWithheldTokensToMint`, permissionless).
     pub fn close_token_account(ctx: Context<CloseTokenAccount>) -> Result<()> {
         require_owner_not_listed(&ctx.accounts.asset, &ctx.accounts.config, &ctx.accounts.owner.key())?;
         require_keys_neq!(
@@ -531,7 +557,8 @@ pub mod memo_home {
             ),
             ErrorCode::MemoAccountNotClosable
         );
-        // Value leaves only through `withdraw` (also for wrapped XNT, which closing would unwrap)
+        // Tokens leave only through `withdraw` (also wrapped XNT, which closing would unwrap); the
+        // lamports above rent, if any, go to `destination` with the rent
         require!(ctx.accounts.token_account.amount == 0, ErrorCode::TokenAccountNotEmpty);
         let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
         let asset_key = ctx.accounts.asset.key();
@@ -557,6 +584,7 @@ pub mod memo_home {
         // Core needs the inner Asset's Collection when it has one; otherwise Core's address as "none"
         let expected_collection = inner.collection.unwrap_or(CORE_PROGRAM_ID);
         require_keys_eq!(ctx.accounts.inner_collection.key(), expected_collection, ErrorCode::WrongCollection);
+        require_keys_neq!(ctx.accounts.new_owner.key(), ctx.accounts.vault.key(), ErrorCode::InvalidDestination);
         let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
 
         let core = CORE_PROGRAM_ID;
@@ -601,14 +629,16 @@ pub mod memo_home {
         let seeds: &[&[u8]] = &[VAULT_SEED, asset_key.as_ref(), &[ctx.bumps.vault]];
 
         if ctx.accounts.vault_burn_stats.data_is_empty() {
-            // The Vault pays for its own stats account, so it must hold that rent and stay
-            // rent-exempt itself; the payer tops it up
+            // The Vault pays for its own stats account, so it must hold that rent and then either
+            // nothing or at least its own rent-exempt minimum; the payer tops up only what is missing
             let rent = Rent::get()?;
-            let need = rent
-                .minimum_balance(memo_burn::UserGlobalBurnStats::SPACE)
-                .checked_add(rent.minimum_balance(0))
-                .ok_or(ErrorCode::ArithmeticOverflow)?;
             let have = ctx.accounts.vault.lamports();
+            let stats_rent = rent.minimum_balance(memo_burn::UserGlobalBurnStats::SPACE);
+            let need = if have == 0 {
+                stats_rent
+            } else {
+                stats_rent.checked_add(rent.minimum_balance(0)).ok_or(ErrorCode::ArithmeticOverflow)?
+            };
             if need > have {
                 anchor_lang::system_program::transfer(
                     CpiContext::new(
@@ -649,6 +679,17 @@ pub mod memo_home {
             amount,
         )?;
         emit!(VaultBurned { asset: asset_key, amount, nonce });
+        Ok(())
+    }
+
+    /// Raise the Asset's Vault State nonce by one (Authority only). An app calls it by CPI from
+    /// every owner action that lowers what the Asset carries outside the Vault (app state bound to
+    /// the Asset), so one nonce covers both: a market that records it at listing and requires it
+    /// unchanged at the sale knows that neither the Vault nor that app state lost value.
+    pub fn advance_nonce(ctx: Context<AdvanceNonce>) -> Result<()> {
+        require_home_asset(&ctx.accounts.asset, &ctx.accounts.config)?;
+        let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
+        emit!(NonceAdvanced { asset: ctx.accounts.asset.key(), nonce });
         Ok(())
     }
 }
@@ -730,11 +771,11 @@ pub struct CreateCollection<'info> {
     pub collection: UncheckedAccount<'info>,
 
     /// CHECK: memo-home PDA that becomes the Collection's Core update authority
-    #[account(seeds = [AUTHORITY_SEED], bump)]
+    #[account(address = PROGRAM_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub program_authority: UncheckedAccount<'info>,
 
     /// The global Burn Guard, added to the Collection as an Oracle
-    #[account(seeds = [BURN_GUARD_SEED], bump = burn_guard.bump)]
+    #[account(address = BURN_GUARD_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub burn_guard: Account<'info, BurnGuard>,
 
     #[account(
@@ -769,7 +810,7 @@ pub struct UpdateCollection<'info> {
     pub collection: UncheckedAccount<'info>,
 
     /// CHECK: memo-home PDA, the Collection's Core update authority
-    #[account(seeds = [AUTHORITY_SEED], bump)]
+    #[account(address = PROGRAM_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub program_authority: UncheckedAccount<'info>,
 
     /// CHECK: Metaplex Core
@@ -809,11 +850,11 @@ pub struct CreateAsset<'info> {
     )]
     pub vault_state: Account<'info, VaultState>,
 
-    /// CHECK: any address except Core's may own the new Asset
+    /// CHECK: any address except Core's, the new Asset's and its Vault's may own the new Asset
     pub owner: UncheckedAccount<'info>,
 
     /// CHECK: memo-home PDA, the Collection's Core update authority
-    #[account(seeds = [AUTHORITY_SEED], bump)]
+    #[account(address = PROGRAM_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub program_authority: UncheckedAccount<'info>,
 
     /// CHECK: Metaplex Core
@@ -843,7 +884,7 @@ pub struct UpdateAsset<'info> {
     pub asset: UncheckedAccount<'info>,
 
     /// CHECK: memo-home PDA, the Collection's Core update authority
-    #[account(seeds = [AUTHORITY_SEED], bump)]
+    #[account(address = PROGRAM_AUTHORITY_PDA @ anchor_lang::error::ErrorCode::ConstraintSeeds)]
     pub program_authority: UncheckedAccount<'info>,
 
     /// CHECK: Metaplex Core
@@ -1021,7 +1062,7 @@ pub struct WithdrawAsset<'info> {
     /// CHECK: the inner Asset's Collection, or the Core program address when it has none
     pub inner_collection: UncheckedAccount<'info>,
 
-    /// CHECK: any address may receive the inner Asset
+    /// CHECK: any address except the Vault may receive the inner Asset
     pub new_owner: UncheckedAccount<'info>,
 
     /// CHECK: Metaplex Core
@@ -1081,6 +1122,22 @@ pub struct Burn<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct AdvanceNonce<'info> {
+    #[account(constraint = authority.key() == config.authority @ ErrorCode::Unauthorized)]
+    pub authority: Signer<'info>,
+
+    #[account(seeds = [COLLECTION_CONFIG_SEED, config.collection.as_ref()], bump = config.bump)]
+    pub config: Account<'info, CollectionConfig>,
+
+    /// CHECK: Core Asset, checked to be in the Collection in the handler
+    #[account(owner = CORE_PROGRAM_ID)]
+    pub asset: UncheckedAccount<'info>,
+
+    #[account(mut, seeds = [VAULT_STATE_SEED, asset.key().as_ref()], bump = vault_state.bump)]
+    pub vault_state: Account<'info, VaultState>,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Account data
 // ---------------------------------------------------------------------------------------------
@@ -1129,8 +1186,9 @@ impl CollectionConfig {
 }
 
 /// Per-Asset Vault State, created with the Asset and never closed. `nonce` grows by one on every
-/// owner outflow (withdraw, withdraw_lamports, close_token_account, withdraw_asset, burn), so a
-/// market or bidder that records it can require at the sale that nothing has left the Vault.
+/// owner outflow (withdraw, withdraw_lamports, close_token_account, withdraw_asset, burn) and on
+/// every `advance_nonce` by the Collection's Authority (app state bound to the Asset lost value),
+/// so a market or bidder that records it can require at the sale that nothing has changed.
 #[account]
 pub struct VaultState {
     pub nonce: u64,
@@ -1224,6 +1282,12 @@ pub struct VaultBurned {
     pub nonce: u64,
 }
 
+#[event]
+pub struct NonceAdvanced {
+    pub asset: Pubkey,
+    pub nonce: u64,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Read-only helpers (also used by apps through the `cpi` feature)
 // ---------------------------------------------------------------------------------------------
@@ -1248,7 +1312,7 @@ pub struct CoreCollection {
 
 fn read_bytes<'a>(d: &'a [u8], at: usize, len: usize) -> Result<&'a [u8]> {
     let end = at.checked_add(len).ok_or(ErrorCode::InvalidCoreAccount)?;
-    d.get(at..end).ok_or(error!(ErrorCode::InvalidCoreAccount))
+    d.get(at..end).ok_or_else(|| error!(ErrorCode::InvalidCoreAccount))
 }
 fn read_u8(d: &[u8], at: usize) -> Result<u8> { Ok(read_bytes(d, at, 1)?[0]) }
 fn read_u32(d: &[u8], at: usize) -> Result<u32> {
@@ -1264,7 +1328,7 @@ fn read_offset(d: &[u8], at: usize) -> Result<usize> {
     usize::try_from(read_u64(d, at)?).map_err(|_| error!(ErrorCode::InvalidCoreAccount))
 }
 fn add(a: usize, b: usize) -> Result<usize> {
-    a.checked_add(b).ok_or(error!(ErrorCode::InvalidCoreAccount))
+    a.checked_add(b).ok_or_else(|| error!(ErrorCode::InvalidCoreAccount))
 }
 /// Offset just past a Borsh string starting at `at`
 fn skip_str(d: &[u8], at: usize) -> Result<usize> {
@@ -1318,12 +1382,21 @@ pub fn parse_collection(d: &[u8]) -> Result<CoreCollection> {
     Ok(CoreCollection { update_authority, num_minted: read_u32(d, p)?, current_size: read_u32(d, add(p, 4)?)? })
 }
 
-/// True when the Asset is (or may be) listed or locked: a Freeze, Transfer or Burn Delegate is
-/// held by anyone but the owner, a Freeze Delegate is frozen, a permanent delegate exists, or a
-/// plugin type or authority unknown to this program is present (fail closed).
+/// True when the Asset is (or may be) listed: a third party (a plugin authority `Address`) holds
+/// a Freeze, Transfer or Burn Delegate, a permanent delegate exists, or a plugin type or
+/// authority unknown to this program is present (fail closed).
+/// A delegate held by the owner, by nobody (`None`) or by the update authority (memo-home, which
+/// never signs a transfer, burn or plugin update) gives nobody else a claim on the Asset, so it
+/// does not count, also when it is frozen: an owner who freezes the Asset with such a delegate
+/// makes it non-transferable for good, but can still empty its Vault.
 /// Trusted bytes only: the caller checks that the account is owned by Core (see `is_listed`).
 pub fn asset_data_is_listed(d: &[u8]) -> Result<bool> {
-    let header = match parse_asset(d)?.plugin_header {
+    plugins_listed(d, parse_asset(d)?.plugin_header)
+}
+
+/// `asset_data_is_listed` for an Asset already parsed (`plugin_header` from `parse_asset`)
+fn plugins_listed(d: &[u8], plugin_header: Option<usize>) -> Result<bool> {
+    let header = match plugin_header {
         Some(h) => h,
         None => return Ok(false),
     };
@@ -1341,17 +1414,18 @@ pub fn asset_data_is_listed(d: &[u8]) -> Result<bool> {
         };
         let offset = read_offset(d, add(add(r, 1)?, auth_len)?)?;
         r = add(r, 1 + auth_len + 8)?;
-        let delegated = auth_tag != CORE_AUTHORITY_OWNER;
+        let third_party = auth_tag == CORE_AUTHORITY_ADDRESS;
         match plugin_type {
             CORE_PLUGIN_FREEZE_DELEGATE => {
-                // Plugin::FreezeDelegate { frozen: bool }
-                let frozen = read_u8(d, add(offset, 1)?)? != 0;
-                if frozen || delegated {
+                // Plugin::FreezeDelegate { frozen: bool }: the flag must be readable (malformed
+                // data fails), but only who holds the delegate matters
+                read_u8(d, add(offset, 1)?)?;
+                if third_party {
                     return Ok(true);
                 }
             }
             CORE_PLUGIN_BURN_DELEGATE | CORE_PLUGIN_TRANSFER_DELEGATE => {
-                if delegated {
+                if third_party {
                     return Ok(true);
                 }
             }
@@ -1397,13 +1471,14 @@ pub fn require_owner_not_listed(asset: &AccountInfo, config: &Account<Collection
     let parsed = parse_asset(&data)?;
     require!(parsed.collection == Some(config.collection), ErrorCode::WrongCollection);
     require_keys_eq!(parsed.owner, *signer, ErrorCode::NotOwner);
-    require!(!asset_data_is_listed(&data)?, ErrorCode::Listed);
+    require!(!plugins_listed(&data, parsed.plugin_header)?, ErrorCode::Listed);
     Ok(())
 }
 
-/// Outflow count of an Asset's Vault, read from its Vault State account (checked to belong to
-/// the Asset). A market records it at listing and requires it unchanged at the sale; nested
-/// Assets in the Vault have their own Vault States.
+/// Outflow count of an Asset's Vault (plus the Authority's `advance_nonce` calls), read from its
+/// Vault State account (checked to belong to the Asset). A market records it at listing and
+/// requires it unchanged at the sale. Assets nested in the Vault are covered too: moving one out
+/// is an outflow of this Vault (withdraw_asset).
 pub fn vault_nonce_of(vault_state: &AccountInfo, asset: &Pubkey) -> Result<u64> {
     require_keys_eq!(*vault_state.owner, crate::ID, ErrorCode::InvalidVaultState);
     let state = VaultState::try_deserialize(&mut &vault_state.try_borrow_data()?[..])?;
@@ -1639,7 +1714,7 @@ pub enum ErrorCode {
     InvalidCoreAccount,
     #[msg("Signer is not the current owner of the Asset")]
     NotOwner,
-    #[msg("Asset is listed or locked (delegated or frozen)")]
+    #[msg("Asset is listed (a third party holds a Freeze, Transfer or Burn Delegate, or a permanent delegate exists)")]
     Listed,
     #[msg("The inner Asset is not owned by this Vault")]
     NotInVault,
@@ -1657,7 +1732,7 @@ pub enum ErrorCode {
     NameTooLong,
     #[msg("URI longer than 256 bytes")]
     UriTooLong,
-    #[msg("The Core program cannot own an Asset")]
+    #[msg("The Core program, the Asset itself or its own Vault cannot own the Asset")]
     InvalidOwner,
     #[msg("The Collection or Asset address is already in use")]
     AddressInUse,

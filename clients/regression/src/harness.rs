@@ -92,6 +92,10 @@ pub fn account_disc(name: &str) -> Vec<u8> {
 /// MintState PDA (and has no known key), to test that memo-mint binds MintState to the PDA.
 pub const SHADOW_MINT_STATE_SEED: &[u8] = b"memo-token regression: shadow MintState";
 pub fn shadow_mint_state() -> Pubkey { Pubkey::new_from_array(Sha256::digest(SHADOW_MINT_STATE_SEED).into()) }
+/// Seed of the shadow GlobalBurnStats address (planted the same way, owned by memo-burn), to test
+/// that process_burn binds GlobalBurnStats to its address constant
+pub const SHADOW_GLOBAL_BURN_STATS_SEED: &[u8] = b"memo-token regression: shadow GlobalBurnStats";
+pub fn shadow_global_burn_stats() -> Pubkey { Pubkey::new_from_array(Sha256::digest(SHADOW_GLOBAL_BURN_STATS_SEED).into()) }
 
 pub fn memo_ix(data: &[u8]) -> Instruction { Instruction::new_with_bytes(spl_memo::ID, data, vec![]) }
 /// memo-mint's success log line for a mint of `amount` units at supply `supply_before` (units).
@@ -99,6 +103,9 @@ pub fn memo_ix(data: &[u8]) -> Instruction { Instruction::new_with_bytes(spl_mem
 pub fn minted_log(amount: u64, supply_before: u64) -> String {
     format!("Program log: Minted {} units, supply before mint: {} units", amount, supply_before)
 }
+/// memo-burn's success log line for a burn of `amount` units (since memo-burn 0.3.0 it names neither
+/// the user nor the stats: the balance and stats checks do)
+pub fn burned_log(amount: u64) -> String { format!("Program log: Burned {} units", amount) }
 pub fn cu(units: u32) -> Instruction { ComputeBudgetInstruction::set_compute_unit_limit(units) }
 pub fn b64(raw: &[u8]) -> Vec<u8> { general_purpose::STANDARD.encode(raw).into_bytes() }
 
@@ -849,7 +856,8 @@ impl Env {
     /// The transaction must succeed and burn exactly `total` from `user`'s ATA in `count`
     /// process_burn instructions: balance and supply -total, user stats total +total (capped at
     /// 18T) and count +count, global stats +total / +count, and both last_burn_time fields equal
-    /// to the block time of the transaction.
+    /// to the block time of the transaction; one `Burned N units` line per burn (the exact line when
+    /// `count` is 1).
     pub fn burn_ok(&self, id: &str, desc: &str, ixs: Vec<Instruction>, payer: &Keypair, signers: &[&Keypair],
                    user: &Pubkey, total: u64, count: u64) -> Out {
         let ta = self.ata(user);
@@ -875,5 +883,7 @@ impl Env {
             && g1.count == g0.count + count
             && Some(u1.last_time) == out.block_time
             && Some(g1.last_time) == out.block_time
+            && out.logs.iter().filter(|l| l.starts_with("Program log: Burned ")).count() as u64 == count
+            && (count != 1 || out.logs.contains(&burned_log(total)))
     }
 }

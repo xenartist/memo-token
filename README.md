@@ -45,6 +45,8 @@ Circulating supply is capped at 10 trillion MEMO. Burns lower the circulating su
 
 memo-burn keeps per-user stats (`UserGlobalBurnStats`, seeds `[b"user_global_burn_stats", user]`) and one global account (`GlobalBurnStats`, seeds `[b"global_burn_stats"]`) with the total burned through memo-burn since the account was initialized (u128, in units of 10^-6 MEMO; on mainnet since October 15, 2026), the number of burn instructions, and the last burn time. Both counters stop at their maximum instead of overflowing. Every `process_burn`, direct or through an app, must pass the global account as its last account. The global account is not the historical total and not the total supply reduction; see Integration Notes.
 
+The `user` of a stats account is whoever signs `process_burn` as the burning authority, which can be a program PDA: memo-home Vault burns are recorded under the Vault PDA, so a Vault's history moves with its Asset. The `UserGlobalBurnStats` layout (65 bytes: discriminator, then `user` at offset 8, `total_burned` at 40, `burn_count` at 48, `last_burn_time` at 56, `bump` at 64) is frozen: it has no reserved space and no close instruction, so its rent (1,343,280 lamports on X1) cannot be recovered.
+
 The global account is created once by the admin with `cargo run --bin admin-init-global-burn-stats` (the deploy scripts do this right after deploying memo-burn). Burns fail until it exists, so memo-burn must be deployed and initialized before the apps.
 
 ## Integration Notes
@@ -59,7 +61,7 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 ### Memo length
 
-- On chain, memo-mint requires at least 69 **characters** (Unicode code points, not bytes) since program version 0.5.0, so `"é" × 34 + "R"` (69 bytes, 35 characters) fails with `MemoTooShort`. memo-burn checks the raw memo bytes against 69; its memos are Base64, where characters and bytes are the same. There is no maximum other than the transaction size.
+- On chain, memo-mint requires at least 69 **characters** (Unicode code points, not bytes) since program version 0.5.0, so `"é" × 34 + "R"` (69 bytes, 35 characters) fails with `MemoTooShort`. memo-burn checks the raw memo bytes against 69; its memos are Base64, where characters and bytes are the same. There is no contract maximum: on X1's 1,232-byte transactions the size limit binds first (a burn memo of at most about 772 bytes), and the Memo program's cost (about 350–376 CU per Base64 character) would cap a direct burn memo at about 3.8 KB under the 1.4M CU limit.
 - Build the memo instruction without signer accounts (`spl_memo::build_memo(memo, &[])`). Listing the user as a memo signer only adds a `Signed by` log line, about 13,500 CU, and no MEMO program reads the memo's accounts.
 - In the project's design, 69 is the minimum the official client enforces on the **user's input before Borsh/Base64 encoding** (users type at least 69 characters). The encoded memo is then always far longer than 69.
 - memo-burn and the apps expect standard, padded Base64 of Borsh data. Padded Base64 lengths are multiples of 4, so the shortest memo memo-burn can decode is 72 characters: a 69–71-character memo fails with `InvalidMemoFormat` (6001), not `MemoTooShort` (6010). This only matters if you build memos by hand.
@@ -89,11 +91,12 @@ Practical rules for wallets, clients, indexers and programs built on memo-mint a
 
 - **Thresholds can step up.** The reward, and with it every app minimum, normally falls as supply grows, but a mint or a burn (by anyone, even a tiny one) can move supply across a round number and change the minimum by one step; just below 90M, 900M, 9B, ... the step is 2x. Fetch the current supply and compute the minimum right before signing (or add a margin), and on `BurnAmountTooSmall` re-fetch and retry.
 - **CPI Guard**: memo-burn always burns through a CPI to Token-2022, so a token account with CPI Guard enabled cannot burn through memo-burn, whether called directly or through an app (Token-2022 error 43, `CpiGuardBurnBlocked`). Ask the user to disable CPI Guard in a separate top-level transaction first. Token accounts owned by a multisig cannot burn through memo-burn either.
+- **memo-home and memo-id**: memo-home's `burn` creates the Vault's stats itself on first use and burns with the Vault PDA as `user`. It does not read the memo payload, so any BurnMemo with the right amount is accepted. memo-id's `register` and `issue_subid` burn computed prices and need the payer's stats to exist first.
 - **Self-delegation**: if an owner has approved itself as delegate, its burns are limited to the delegated amount and larger burns fail with Token-2022 error 1 (`InsufficientFunds`) despite a sufficient balance. Check `delegate == owner` and ask the user to revoke.
 
 ### Indexing and statistics
 
-- **The burn amount is bound to each `process_burn` instruction, not to the transaction.** One memo can back several burns of the same amount (top-level or via CPI, even by different signers) and the transaction's one mint. Never count burns or mints by counting memos or reading memo text; use the per-instruction logs (`Burned N units from ...`, `Minted N units, supply before mint: ...`; since memo-mint Revision 5 the mint line no longer names the recipient: take it from the instruction, the `user` of `process_mint` or the `recipient` argument of `process_mint_to`), the Token-2022 inner instructions, or balance and stats deltas, and attribute app burns by the calling program and app account changes.
+- **The burn amount is bound to each `process_burn` instruction, not to the transaction.** One memo can back several burns of the same amount (top-level or via CPI, even by different signers) and the transaction's one mint. Never count burns or mints by counting memos or reading memo text. Count them from the Token-2022 `Burn` / `MintTo` inner instructions under memo-burn's or memo-mint's program id, or from balance and stats deltas, and attribute app burns by the calling program and app account changes. The success logs (`Burned N units` since memo-burn 0.3.0, `Minted N units, supply before mint: ...` since memo-mint 0.5.0) name neither the user nor the stats; take the user from the instruction (`user` of `process_burn` / `process_mint`, `recipient` of `process_mint_to`) and the totals from the stats accounts. If you use the logs at all, accept a line only inside memo-burn's or memo-mint's own `Program <id> invoke` frame (any program can print the same text), and note that logs are truncated at 10 KB.
 - **`GlobalBurnStats` is a lower bound of supply reduction**: it counts only burns through memo-burn since it was initialized. Holders can burn directly through Token-2022 without a memo, which reduces supply without updating any stats. Use `mint.supply` for circulating supply.
 
 ## Prerequisites
@@ -128,7 +131,7 @@ Each program selects its IDs with the `mainnet` cargo feature; without it the te
 ```bash
 ./scripts/run-unit-tests.sh                 # unit tests of all programs, testnet and mainnet builds (or: ./scripts/run-unit-tests.sh memo-burn)
 ./scripts/run-regression-tests.sh           # on-chain regression suite for memo-mint / memo-burn (local validator)
-./scripts/run-smoke-tests.sh --local        # smoke tests of all 7 programs against a local validator
+./scripts/run-smoke-tests.sh --local        # smoke tests of memo-mint, memo-burn, memo-home and memo-id against a local validator
 ./scripts/run-smoke-tests.sh                # smoke tests against the cluster in Anchor.toml (spends test MEMO)
 ```
 

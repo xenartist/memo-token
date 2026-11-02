@@ -2,7 +2,7 @@
 
 **HOME Of Memories Engraved**: a base-layer program that gives every application the same NFT identity and NFT-bound custody, built on the MEMO economy.
 
-Status: v1 implemented in `programs/memo-home` (deployed 2026-10-20: testnet `J1pxwy8V…`, mainnet `ArrrsGh5…`; upgradeable until locked). Core mechanics verified on testnet with a prototype (Appendix A); the implementation, revised after the second audit (MEMO-HOME-AUDIT.md), passes 41 unit tests and 160 local-validator regression cases against X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds (`clients/regression/src/regression-memo-home.rs`). Last updated 2026-10-20.
+Status: v1 implemented in `programs/memo-home` (deployed 2026-10-20: testnet `J1pxwy8V…`, mainnet `ArrrsGh5…`; upgradeable until locked). Core mechanics verified on testnet with a prototype (Appendix A); the implementation, revised after the second audit (MEMO-HOME-AUDIT.md), passes 43 unit tests and 198 local-validator regression cases against X1 mainnet's Metaplex Core, Token-2022, SPL Token and ATA builds (`clients/regression/src/regression-memo-home.rs`). 253-byte names deployed 2026-10-22; version 0.2.0 (re-audit fixes and `advance_nonce`, MEMO-HOME-AUDIT.md "Re-audit") is implemented and not yet deployed. Last updated 2026-11-02.
 
 ---
 
@@ -46,7 +46,7 @@ Names follow Metaplex Core where a matching concept exists. A part with no Metap
 | **Asset** | One NFT ("a home" in user-facing text) | Core Asset |
 | **Owner** | Current holder of the Asset, read from Core at call time | Core Asset `owner` |
 | **Vault** | A PDA bound to the Asset that holds tokens (and Core Assets) on its behalf | memo-home PDA + its token accounts |
-| **Vault State** | The Vault's outflow counter (`nonce`), so markets and bidders can tell whether anything left the Vault | memo-home PDA |
+| **Vault State** | The Vault's change counter (`nonce`): +1 on every owner outflow and on every `advance_nonce` by the Collection's Authority, so markets and bidders can tell whether anything left the Vault or the app changed the Asset's state | memo-home PDA |
 | **Burn Guard** | A Core Oracle that rejects every burn of an Asset in a memo-home Collection | memo-home PDA |
 | **Program Authority** | The memo-home PDA that is the Core update authority of every memo-home Collection | memo-home PDA |
 
@@ -75,8 +75,10 @@ Naming conventions shared by all apps built on memo-home:
 | memo-mint / memo-burn | No changes | Both stay as audited and are locked as planned. |
 | Admin key | None | Every instruction is permissionless or gated by Authority / Owner. |
 | Collection and Asset addresses | **memo-home PDAs**: Collection `[b"collection", authority, seed]`, Asset `[b"asset", collection, seed]`, with a 32-byte seed chosen by the caller | Core treats a Collection's own address as the update authority of its Assets, so whoever held a Collection keypair could rename any Asset, take it out of the Collection (orphaning its Vault and lifting the Burn Guard) or move it into a collection they control (audit F01). An Asset keypair would be a lifelong key for the NFT's address (F64). PDAs have no private key. The seeds also give apps deterministic addresses, e.g. `sha256(name)`. |
-| Vault State | One 17-byte account per Asset, created with it and never closed; `nonce` +1 on every owner outflow | The ERC-6551 `state()` idea: a market records the nonce when an Asset is listed and requires it unchanged at the sale, so a seller cannot empty the Vault first, whatever the listing style (§5.3). It can only be added before the program is locked. ≈ 0.001 XNT per Asset. |
-| Names and URIs | At most 64 and 256 bytes | Unbounded strings could push Core past its heap limit and block every transfer in a Collection (audit F04). |
+| Vault State | One 17-byte account per Asset, created with it and never closed; `nonce` +1 on every owner outflow and on every `advance_nonce` | The ERC-6551 `state()` idea: a market records the nonce when an Asset is listed and requires it unchanged at the sale, so a seller cannot empty the Vault first, whatever the listing style (§5.3). It can only be added before the program is locked. ≈ 0.001 XNT per Asset. |
+| Names and URIs | At most 253 and 256 bytes | Unbounded strings could push Core past its heap limit and block every transfer in a Collection (audit F04). 253 (raised from 64 in commit `85832fd8`) is the longest DNS name, so a MEMO ID fits in the Asset name. |
+| Listing rule | An Asset counts as listed only when a third party (plugin authority `Address`) holds a Freeze, Transfer or Burn Delegate, a permanent delegate exists, or a value unknown to memo-home is present | A delegate held by the owner, by nobody (`None`) or by the update authority gives nobody else a claim on the Asset. Counting it would let an owner freeze its own Vault for good (a frozen FreezeDelegate whose authority is None cannot be thawed), which breaks invariant 4 (audit HOME-R03, 0.2.0). |
+| App state and the nonce | `advance_nonce`, signed by the Collection's Authority, adds 1 to an Asset's Vault State `nonce` | Apps built on memo-home keep value outside the Vault (room settings, SubIds, files). A seller could change it before a sale without moving anything out of the Vault. The app calls `advance_nonce` whenever it changes such state, so one nonce check covers both. VaultState has no spare space, so this had to be added before locking (HOME-R08, 0.2.0). |
 | Collection Authority | **Fixed at creation** and must sign `create_collection` (an app PDA signs by CPI); no transfer or renounce (simplicity and safety, like memo-mint / memo-burn) | An app that changes its logic upgrades its program; the PDA authority stays the same. A stolen wallet Authority can spam and rewrite metadata in its own Collection but can never take it over, take Vault holdings or raise `max_share_bps`. A new app or a new wallet creates a new Collection. Trade-off accepted: a wallet Authority cannot move to another wallet, and a leaked key cannot be rotated. |
 | Royalties | Optional Core Royalties plugin on the Collection, fixed at creation, not enforced | The standard field marketplaces read for Core NFTs; enforcement rule sets could block ordinary wallet transfers. |
 | Memos | Not required by memo-home | Keeps cheap writes cheap (a 700-byte SPL Memo costs ≈ 0.003 XNT). Indexing uses events (§4.5). `mine` and `burn` carry memos because memo-mint and memo-burn require them. |
@@ -122,9 +124,10 @@ Both Core addresses are PDAs, so no key exists for them. Anyone can send lamport
 | Instruction | Effect |
 |---|---|
 | `update_collection(name?, uri?)` | CPI Core `UpdateCollectionV1`, signed by Program Authority. |
-| `create_asset(seed, name, uri)`, `owner` account | Rejects when `num_minted ≥ max_assets`, or when the owner is the Core program (Core would give the Asset to the payer); then CPI Core `CreateV1` at the PDA `[b"asset", collection, seed]` into the Collection (Program Authority and the Asset PDA sign) and creates the Vault State. |
+| `create_asset(seed, name, uri)`, `owner` account | Rejects when `num_minted ≥ max_assets`, when the owner is the Core program (Core would give the Asset to the payer), or when the owner is the new Asset itself or its own Vault (the Asset would lock itself for good); then CPI Core `CreateV1` at the PDA `[b"asset", collection, seed]` into the Collection (Program Authority and the Asset PDA sign) and creates the Vault State. |
 | `update_asset(name?, uri?)` | CPI Core `UpdateV1`, signed by Program Authority. |
-| `mine(share_bps)` → `{ reward, share }` | ⓪ create the Vault's MEMO token account if missing (the caller pays); ① CPI memo-mint `process_mint_to(recipient = Vault)`; ② reward `R` = Vault balance change; ③ `share = R × share_bps / 10_000` (rounded down), `share_bps ≤ config.max_share_bps`, sent to the given recipient token account (not the Vault's own), signed by the Vault PDA; ④ the rest stays in the Vault. Returns the reward and the share to the calling app (Anchor return data). |
+| `advance_nonce` | Adds 1 to the Asset's Vault State `nonce` (event `NonceAdvanced { asset, nonce }`). Apps call it whenever they change state bound to the Asset that a buyer may have priced (§5.3). It moves nothing and works while the Asset is listed. |
+| `mine(share_bps)` → `{ reward, share }` | ⓪ create the Vault's MEMO token account if missing (the caller pays; once it exists, the ATA program is not called); ① CPI memo-mint `process_mint_to(recipient = Vault)`; ② reward `R` = Vault balance change; ③ `share = R × share_bps / 10_000` (rounded down), `share_bps ≤ config.max_share_bps`, sent to the given recipient token account (not the Vault's own), signed by the Vault PDA; ④ the rest stays in the Vault. Returns the reward and the share to the calling app (Anchor return data). |
 
 ### 4.3 Owner (signer = current Core `owner`, Asset not listed)
 
@@ -132,13 +135,13 @@ Each of these is an outflow: it adds 1 to the Vault State `nonce` and reports th
 
 | Instruction | Effect |
 |---|---|
-| `withdraw(amount)` | Any token from the Vault to any token account, `transfer_checked` signed by the Vault PDA; `amount = u64::MAX` withdraws the whole balance (so withdraw-all and close fit in one transaction). SPL Token and Token-2022 are both supported; for a Token-2022 transfer hook the hook's extra accounts are passed as remaining accounts (forwarded without the Vault's signature). |
+| `withdraw(amount)` | Any token from the Vault to any token account, `transfer_checked` signed by the Vault PDA; `amount = u64::MAX` withdraws the whole balance (so withdraw-all and close fit in one transaction; a Token-2022 account with withheld transfer fees also needs the permissionless `HarvestWithheldTokensToMint` before the close). SPL Token and Token-2022 are both supported; for a Token-2022 transfer hook the hook's extra accounts are passed as remaining accounts (forwarded without the Vault's signature). |
 | `withdraw_lamports(amount)` | Native XNT sent to the Vault address, to any address. The Vault keeps 0 or at least the rent-exempt minimum. |
-| `close_token_account` | Closes an empty Vault token account (amount 0, also for wrapped XNT) and sends its rent to any address. The Vault's MEMO token account cannot be closed: its rent was paid by the first `mine` caller, and closing it would let an owner collect that rent again from every caller (audit F02). |
+| `close_token_account` | Closes a Vault token account whose token amount is 0 (also for wrapped XNT) and sends all its lamports (the rent, plus any lamports sent to it directly) to any address. Withheld transfer fees must be harvested first. The Vault's MEMO token account cannot be closed: its rent was paid by the first `mine` caller, and closing it would let an owner collect that rent again from every caller (audit F02). |
 | `withdraw_asset` | A Core Asset owned by the Vault, transferred to any address with Core `TransferV1` signed by the Vault PDA; a separate payer covers Core's fees, and accounts the inner Asset's plugins need are passed as remaining accounts. |
-| `burn(amount)` | Burns MEMO from the Vault through memo-burn `process_burn`, the Vault PDA signing as the user. On first use a payer (any signer) tops the Vault up to the `UserGlobalBurnStats` rent and memo-home initializes it, so an owner that is a program account can burn too. |
+| `burn(amount)` | Burns MEMO from the Vault through memo-burn `process_burn`, the Vault PDA signing as the user. On first use memo-home initializes the Vault's `UserGlobalBurnStats`; a payer (any signer) tops the Vault up by only what is missing (the stats rent when the Vault is empty, otherwise the stats rent plus the Vault's own rent-exempt minimum, less what it holds), so an owner that is a program account can burn too. |
 
-That is the whole program: 11 instructions.
+That is the whole program: 12 instructions.
 
 ### 4.4 Read-only helper crate
 
@@ -149,7 +152,7 @@ The `memo-home` crate (feature `cpi`) also exports functions for apps, so every 
 | `owner_of(asset)` | current Core owner (checks that the account is owned by Core) |
 | `collection_of(asset)` | Collection address, from the `Collection(…)` update authority |
 | `is_home_asset(asset, config: &Account<CollectionConfig>)` | Asset is a Core Asset in the Collection of this Collection Config. Membership is always `CollectionConfig` + `is_home_asset`, never "update authority = Program Authority": Core lets anyone create a Collection that names the memo-home PDA as update authority without its signature (such a Collection has no Config, so memo-home never signs for it) |
-| `is_listed(asset)` | a Freeze / Transfer / Burn Delegate is held by anyone but the owner, a Freeze Delegate is frozen, a permanent delegate exists, or a plugin type or authority unknown to memo-home is present (fail closed). Sound only for memo-home Assets: it ignores Collection-level and external plugins, which memo-home Collections never get beyond the Burn Guard, MasterEdition and Royalties |
+| `is_listed(asset)` | a Freeze / Transfer / Burn Delegate is held by a third party (plugin authority `Address`), a permanent delegate exists, or a plugin type or authority unknown to memo-home is present (fail closed). Sound only for memo-home Assets: it ignores Collection-level and external plugins, which memo-home Collections never get beyond the Burn Guard, MasterEdition and Royalties |
 | `require_owner_not_listed(asset, config, signer)` | the gate of every owner outflow, for apps acting for an Asset's owner: a memo-home Asset in this Collection, owned by `signer`, not listed |
 | `vault_of(asset)`, `vault_token_account(asset, mint, token_program)` | Vault PDA; its token account for a mint |
 | `vault_state_of(asset)`, `vault_nonce_of(vault_state, asset)` | Vault State PDA; its outflow nonce, checked to belong to the Asset |
@@ -165,7 +168,7 @@ Integrating:
 
 ### 4.5 Events
 
-memo-home emits Anchor events for indexers: `CollectionCreated { collection, authority, seed, … }`, `CollectionUpdated`, `AssetCreated { collection, asset, seed, owner }`, `AssetUpdated`, `Mined { collection, asset, recipient_token_account, reward, share }`, and for the outflows `Withdrawn`, `LamportsWithdrawn`, `TokenAccountClosed`, `AssetWithdrawn`, `VaultBurned`, each with the new Vault State `nonce`. Events are program logs: they are hints for indexers, which must check that a log comes from memo-home's own invocation, and they are not proof. Balances and the nonce are read from chain.
+memo-home emits Anchor events for indexers: `CollectionCreated { collection, authority, seed, … }`, `CollectionUpdated`, `AssetCreated { collection, asset, seed, owner }`, `AssetUpdated`, `Mined { collection, asset, recipient_token_account, reward, share }`, and for the outflows `Withdrawn`, `LamportsWithdrawn`, `TokenAccountClosed`, `AssetWithdrawn`, `VaultBurned`, each with the new Vault State `nonce`, and `NonceAdvanced { asset, nonce }`. Events are program logs: they are hints for indexers, which must check that a log comes from memo-home's own invocation, and they are not proof. Balances and the nonce are read from chain.
 
 ### 4.6 Memos
 
@@ -180,7 +183,7 @@ memo-home does not read or validate memos itself. `mine` and `burn` inherit memo
 1. **Apps cannot touch what a Vault holds.** The only outflow an Authority can trigger is the `mine` share, which comes from MEMO minted in the same instruction and is at most `max_share_bps` of it. Through memo-home, everything else in a Vault moves only by the Owner's `withdraw`, `withdraw_lamports`, `close_token_account`, `withdraw_asset` or `burn`. Outside memo-home, the powers that a token or Asset carries itself still apply: a mint's permanent delegate, freeze, pause, fee or hook authority, and an inner Asset's permanent delegates (§5.9).
 2. **Ownership is live.** Owner-gated instructions check that the Asset is owned by the Core program, is in the Collection of the given Collection Config, and that its `owner` equals the signer. After a transfer the new Owner controls the Vault immediately.
 3. **Listings stop ordinary withdrawals; buyers check the Vault State.** Owner outflows fail while the Asset is escrowed (the seller is not the owner) or `is_listed`, checked when the outflow runs. A seller can still end any listing and recreate it in one transaction (through the market's own delist for escrow and frozen listings, by revoking the delegate for unfrozen ones), and offers and bids are filled by a transaction the seller builds. Every such drain adds to the Vault State `nonce`, so a purchase or bid that requires the nonce recorded at listing is protected in every listing style (§5.3).
-4. **Vaults are never orphaned.** Burning is rejected for every Asset (Burn Guard), and no key can take an Asset out of its Collection: the Collection address is a memo-home PDA, and memo-home only ever renames.
+4. **Vaults are never orphaned.** Burning is rejected for every Asset (Burn Guard), and no key can take an Asset out of its Collection: the Collection address is a memo-home PDA, and memo-home only ever renames. An owner cannot lock its own Vault either: only delegates a third party holds count as listed (§2), and `create_asset` rejects the Asset itself or its own Vault as owner. A frozen Asset (FreezeDelegate held by nobody) cannot be transferred, but its owner can still empty the Vault.
 5. **Collection membership is trustworthy.** Only the Program Authority can add Assets to a memo-home Collection, and memo-home does so only when the Collection's Authority signs and `max_assets` is not reached. memo-home never adds delegates or plugins to a Collection or changes an Asset's update authority, so there is no other path; after locking, a supply limit is enforced without trust.
 6. **No privileged keys.** No admin, no global configuration, no fee switch, and no private key for any Collection or Asset address. After locking, behavior cannot change. This holds fully once memo-mint and memo-burn are locked too, since memo-home calls them (memo-burn with the Vault's signature); lock them first.
 
@@ -206,7 +209,9 @@ A compromised Authority (for example a leaked wallet key) can create spam Assets
 | Non-custodial, unfrozen (market holds only a Transfer / Burn Delegate) | seller | `is_listed` stops ordinary withdrawals. In one transaction the owner can still revoke the delegate, withdraw and approve it again (verified, H80); the Vault State nonce shows it (H80b). |
 | Offers, bids, AMM pools, loan offers | seller | the seller builds the fill transaction, so only a check inside the fill protects the maker. Collection-wide and pool bids should value Vault contents at zero. |
 
-The protection for buyers is the **Vault State nonce**: a market records `vault_nonce_of(vault_state(asset), asset)` when the Asset is listed (or a bidder when it bids on a single Asset) and requires the same value in the purchase or fill instruction. Any withdrawal, close, `withdraw_asset` or burn in between raises it, whatever the listing style. Inflows (`mine`, deposits) do not change it. Nested memo-home Assets have their own Vault States, so a check covers a nested Asset's Vault only when it checks that Asset's nonce too.
+The protection for buyers is the **Vault State nonce**: a market records `vault_nonce_of(vault_state(asset), asset)` when the Asset is listed (or a bidder when it bids on a single Asset) and requires the same value in the purchase or fill instruction. Any withdrawal, close, `withdraw_asset` or burn in between raises it, whatever the listing style, and so does `advance_nonce`, which apps call when they change state bound to the Asset (room settings, SubIds, files). Inflows (`mine`, deposits) do not change it. The outer nonce also covers nested memo-home Vaults: a nested Vault's owner is the outer Vault PDA, which memo-home never signs for as an owner, so the nested Vault can be emptied only after its Asset leaves through `withdraw_asset`, which raises the outer nonce. Token-level powers (§5.9) are not covered by any nonce.
+
+`is_listed` counts a Freeze, Transfer or Burn Delegate only when a third party holds it (plugin authority `Address`); every market style above uses such a delegate or escrow. A delegate the owner holds, or one with authority None or UpdateAuthority, does not block withdrawals.
 
 A buyer can also value only what the purchase transaction itself checks (balances of the Vault token accounts found off-chain, the Vault's XNT, the owners of inner Assets), and should value at zero holdings whose mint has a permanent delegate, a pause or freeze authority, and inner Assets with permanent delegates.
 
@@ -226,7 +231,7 @@ Verified on testnet: a Core FreezeDelegate freeze blocks transfers but not `Exec
 
 ### 5.6 CPI depth
 
-Solana allows an instruction stack height of 5. `app → memo-home → memo-mint → Token-2022` uses 4, so an app can itself be called by one more program, but not by two (verified with a test app, H133). `create_asset` reaches Core and then the System program: `app → memo-home → Core → System` is 4, `blog → memo-id → memo-home → Core → System` is 5, the limit. Apps that need deeper composition call memo-home from the transaction's top level.
+Solana allows an instruction stack height of 5. `app → memo-home → memo-mint → Token-2022` uses 4, so an app can itself be called by one more program, but not by two (verified with a test app, H133). `create_asset` reaches Core and then the System program: `app → memo-home → Core → System` is 4, `blog → memo-id → memo-home → Core → System` is 5, the limit. `withdraw` of a Token-2022 mint with a transfer hook uses `memo-home → Token-2022 → hook`, so an app acting as owner (`app → memo-home → Token-2022 → hook`) leaves the hook one level for its own CPIs, and none if the app is itself called by another program. Apps that need deeper composition, or whose Vaults may hold hook mints, call memo-home from the transaction's top level.
 
 ### 5.7 One mint per transaction
 
@@ -243,6 +248,8 @@ Front ends (the first-party home UI now, and as a request to the X1 wallet team)
 - Send XNT to `vault_of(asset)` and tokens to `vault_token_account(asset, mint, token_program)`, never to the Asset address: Core lets anyone collect the lamports above rent of a Core account to Metaplex, and the Asset address (a PDA) has no owner who can move tokens.
 - Do not derive an ATA from a token account address (a "nested" ATA of a Vault token account): memo-home has no `RecoverNested`, so tokens sent there are lost.
 - These cannot leave a Vault: non-transferable (soulbound) Token-2022 tokens; tokens whose transfer hook needs an extra signer (forwarded accounts never get a signature); withdrawals to destinations that require incoming memos (Token-2022 MemoTransfer), and `mine` shares to such recipients; Core Assets whose own rules block the transfer. UIs warn before sending these to a Vault.
+- Never send XNT to a Vault token account or to a memo-home PDA (Vault State, Collection Config, Burn Guard). Lamports above rent in the Vault's MEMO token account stay there for good (it cannot be closed, and memo-home has no `WithdrawExcessLamports`); in other Vault token accounts they leave only with `close_token_account`.
+- Transfer-fee mints: deposits leave withheld fees in the Vault token account; `HarvestWithheldTokensToMint` (permissionless) must run before `close_token_account`.
 - Token-level powers stay with their holders: a permanent delegate can move or burn Vault tokens, a freeze or pause authority can block them, a fee authority takes transfer fees, a hook can reject transfers. Value such holdings accordingly.
 
 ### 5.10 General
@@ -266,7 +273,9 @@ Collection "Chat Rooms" (Authority = memo-chat PDA, max_share_bps = 10_000)
   moderation    app PDA [b"mods", asset], editable only by owner_of(asset)
 ```
 
-Selling the room transfers the Vault, its future income and moderation rights to the buyer. Messages and statistics stay with the Asset.
+Selling the room transfers the Vault, its future income and moderation rights to the buyer. Messages and statistics stay with the Asset. The app calls `advance_nonce` when it changes room settings or moderators, so a buyer's nonce check covers them.
+
+**Message size.** A `mine` transaction is large: 15 accounts and two signers (caller and Authority). A legacy transaction with `[memo, mine, SetComputeUnitLimit]` reaches X1's 1,232-byte limit at about 450 bytes of memo, and an app instruction that wraps `mine` adds its own program and accounts. Message-style apps use a v0 transaction with a shared address lookup table that holds the fixed `mine` accounts (programs, mint, mint authority, mint state, sysvar, Collection Config); that frees about 30 bytes per account moved into the table.
 
 ### 6.2 Blog
 
@@ -551,12 +560,14 @@ None beyond the base layer. memo-file needs: `seal`; files larger than one accou
 | Asset: Core Asset rent 0.00225 XNT + Core create fee 0.0015 XNT (collectable by anyone for Metaplex; neither refundable) + Vault State rent 0.001 XNT | ≈ 0.0048 XNT |
 | Collection: Collection Config rent, plus the Core Collection's rent and Core fee | 0.0019 XNT + Core's share |
 | Vault MEMO token account (rent, first `mine` only; never closable) | ≈ 0.002 XNT, paid by that `mine` caller |
-| First Vault `burn` (Vault burn stats rent, topped up by the payer if the Vault lacks it) | ≈ 0.0016 XNT plus the Vault's 0.00089 XNT rent minimum |
+| First Vault `burn` (Vault burn stats rent, topped up by the payer if the Vault lacks it) | ≈ 0.00134 XNT (1,343,280 lamports for the 65-byte account); a Vault that already holds XNT also keeps its own 0.00089 XNT rent minimum |
 | MEMO ID (Asset + registry, estimate) | ≈ 0.0068 XNT plus the MEMO burned |
-| `create_collection` (memo-home instruction, local validator with X1 mainnet program builds) | 34.7k CU |
-| `create_asset` | 41–44k CU |
-| `mine` (memo-home instruction, including memo-mint and the share transfer) | 51–71k CU depending on memo-mint's supply tier; 64–84k the first time (creates the Vault token account). The whole transaction also pays for the SPL Memo (≈ 370 CU per byte) |
-| Vault `burn` | 55–63k CU; 77–80k the first time (Vault burn stats) |
+| `create_collection` (memo-home 0.2.0 instruction, local validator with X1 mainnet program builds) | 30.1k CU |
+| `create_asset` | 34.1k CU |
+| `mine` (memo-home instruction, including memo-mint and the share transfer) | 31–37k CU depending on memo-mint's supply tier; 51–68k the first time (creates the Vault token account). The whole transaction with an 80-byte memo is 57–61k, of which the SPL Memo is 26k |
+| `withdraw` / `withdraw_lamports` / `close_token_account` | 15.3k / 11.1k / 14.5–17.5k CU |
+| Vault `burn` | 36.1k CU; 51.0k the first time (Vault burn stats) |
+| `advance_nonce` | 6.4k CU |
 | Prototype on testnet, for comparison | mining message (115-byte memo) 108k CU total, fee ≈ 0.003 XNT |
 
 For comparison, one plain memo-mint mint costs ≈ 0.00057 XNT in fees.
@@ -568,7 +579,7 @@ Storage (X1 mainnet, measured 2026-10-20):
 | Method | Per transaction | Cost per MB | Read 1 MB | Used for |
 |---|---|---|---|---|
 | memo-file Blocks (accounts) | ≈ 1 KB written per transaction | 7.3 XNT rent (0.00713 XNT per KB) plus fees | ≈ 115 Blocks, 2 `getMultipleAccounts` calls (100 per call) | all files |
-| SPL Memo | ≈ 1,000 B UTF-8 text, ≈ 370 CU per byte, ≈ 0.0037 XNT | ≈ 4 XNT, readable only through the archive | 1–2 `getSignaturesForAddress` calls (1,000 per call, memo text included) | short app text (chat, posts) |
+| SPL Memo | ≈ 1,000 B UTF-8 text on its own (about 450 B in a legacy `mine` transaction, more with a lookup table, §6.1), ≈ 370 CU per byte, ≈ 0.0037 XNT | ≈ 4 XNT, readable only through the archive | 1–2 `getSignaturesForAddress` calls (1,000 per call, memo text included) | short app text (chat, posts) |
 
 Instruction-data inscriptions (≈ 0.05 XNT per MB) were considered and dropped: their content lives only in transaction history, so they depend on the archive and an indexer, while account content lives in chain state.
 

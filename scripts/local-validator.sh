@@ -13,7 +13,7 @@
 #   ./scripts/local-validator.sh status
 #
 # Then run the smoke tests against it:
-#   ./scripts/run-smoke-tests.sh --local memo-chat
+#   ./scripts/run-smoke-tests.sh --local memo-burn
 # or any client with:
 #   MEMO_RPC_URL=http://127.0.0.1:8899 MEMO_WALLET=target/local-validator/wallet.json cargo run --bin <bin>
 #
@@ -33,8 +33,9 @@
 # count relies on the Memo program rejecting invalid UTF-8 (MEMO-MINT-AUDIT.md, MINT-11), so the
 # validator runs X1's Memo build instead of the bundled one, and a different Memo hash stops the start.
 #
-# Test-only account: prepare-local-validator also plants a "shadow MintState" (owned by memo-mint,
-# MintState's layout, not at its PDA) for the regression suites' seeds-constraint cases.
+# Test-only accounts: prepare-local-validator also plants a "shadow MintState" (owned by memo-mint,
+# MintState's layout, not at its PDA) and a "shadow GlobalBurnStats" (the same for memo-burn) for the
+# regression suites' address-constraint cases.
 
 set -e
 
@@ -230,7 +231,7 @@ case "${1:-}" in
     stop) stop_validator ;;
     status) status ;;
     *)
-        sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '3,38p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

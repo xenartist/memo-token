@@ -380,21 +380,25 @@ mod listed_tests {
 
     #[test]
     fn freeze_delegate() {
-        assert!(!listed(&[freeze(OWNER, false)]));
-        assert!(listed(&[freeze(OWNER, true)]));
+        // only a third party (Address) holding it counts, frozen or not (0.2.0)
         assert!(listed(&[freeze(ADDR, false)]));
         assert!(listed(&[freeze(ADDR, true)]));
-        assert!(listed(&[freeze(UPDATE_AUTH, false)]));
-        assert!(listed(&[freeze(NONE_AUTH, false)]));
+        // owner, nobody or the update authority (memo-home): nobody else has a claim. A frozen one
+        // with None / UpdateAuthority can never be unfrozen; it must not lock the Vault for good
+        for auth in [OWNER, NONE_AUTH, UPDATE_AUTH] {
+            for frozen in [false, true] {
+                assert!(!listed(&[freeze(auth, frozen)]), "auth {} frozen {}", auth, frozen);
+            }
+        }
     }
 
     #[test]
     fn transfer_and_burn_delegates() {
         for ptype in [P_TRANSFER, P_BURN] {
-            assert!(!listed(&[delegate(ptype, OWNER)]));
             assert!(listed(&[delegate(ptype, ADDR)]));
-            assert!(listed(&[delegate(ptype, UPDATE_AUTH)]));
-            assert!(listed(&[delegate(ptype, NONE_AUTH)]));
+            for auth in [OWNER, NONE_AUTH, UPDATE_AUTH] {
+                assert!(!listed(&[delegate(ptype, auth)]), "type {} auth {}", ptype, auth);
+            }
         }
     }
 
@@ -415,9 +419,9 @@ mod listed_tests {
         assert!(!listed(&[royalties.clone(), attributes.clone()]));
         // a delegate after other plugins is still found
         assert!(listed(&[royalties, attributes, delegate(P_TRANSFER, ADDR)]));
-        // an Address authority before a frozen Freeze Delegate keeps the records aligned
-        assert!(listed(&[(P_ATTRIBUTES, ADDR, Some(key(6)), vec![0, 0, 0, 0]), freeze(OWNER, true)]));
-        assert!(!listed(&[(P_ATTRIBUTES, ADDR, Some(key(6)), vec![0, 0, 0, 0]), freeze(OWNER, false)]));
+        // an Address authority before a Freeze Delegate keeps the records aligned
+        assert!(listed(&[(P_ATTRIBUTES, ADDR, Some(key(6)), vec![0, 0, 0, 0]), freeze(ADDR, false)]));
+        assert!(!listed(&[(P_ATTRIBUTES, ADDR, Some(key(6)), vec![0, 0, 0, 0]), freeze(OWNER, true)]));
         // known types without listing effect, also when delegated (FreezeExecute guards only
         // Core's Execute, which memo-home never uses; Groups needs the update authority)
         for ptype in [P_UPDATE_DELEGATE, P_EDITION, P_MASTER_EDITION, P_ADD_BLOCKER, P_IMMUTABLE_METADATA,
@@ -437,6 +441,11 @@ mod listed_tests {
         let reg = u64::from_le_bytes(d[header + 1..header + 9].try_into().unwrap()) as usize;
         d[reg + 5 + 1] = 4; // authority tag of the first record
         assert!(asset_data_is_listed(&d).unwrap());
+    }
+
+    #[test]
+    fn third_party_delegate_after_unlisted_ones_is_found() {
+        assert!(listed(&[freeze(NONE_AUTH, true), delegate(P_BURN, UPDATE_AUTH), delegate(P_TRANSFER, ADDR)]));
     }
 
     #[test]
@@ -526,10 +535,14 @@ mod helper_tests {
             assert!(!is_home_asset(a, &config));
             assert!(require_owner_not_listed(a, &config, &key(1)).is_err());
         });
-        // listed
-        with_account(key(1), CORE_PROGRAM_ID, simple_asset(&[freeze(OWNER, true)]), |a| {
+        // listed: a third party holds a delegate
+        with_account(key(1), CORE_PROGRAM_ID, simple_asset(&[freeze(ADDR, true)]), |a| {
             assert!(is_home_asset(a, &config));
             assert!(require_owner_not_listed(a, &config, &key(1)).is_err());
+        });
+        // frozen by the owner's own delegate (0.2.0): not listed, the owner can still empty the Vault
+        with_account(key(1), CORE_PROGRAM_ID, simple_asset(&[freeze(NONE_AUTH, true)]), |a| {
+            assert!(require_owner_not_listed(a, &config, &key(1)).is_ok());
         });
     }
 
@@ -727,6 +740,14 @@ mod account_tests {
             assert_eq!(memo_burn::ID.to_string(), "2sb3gz5Cmr2g1ia5si2rmCZqPACxgaZXEmiS5k6Htcvh");
             assert_eq!(MEMO_MINT.to_string(), "memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick");
         }
+    }
+
+    #[test]
+    fn test_pda_constants_per_network() {
+        // The constants must be what find_program_address returns for this build's program id
+        // (run under both features: cargo test -p memo-home --lib [--features mainnet])
+        assert_eq!(Pubkey::find_program_address(&[AUTHORITY_SEED], &crate::ID), (PROGRAM_AUTHORITY_PDA, PROGRAM_AUTHORITY_BUMP));
+        assert_eq!(Pubkey::find_program_address(&[BURN_GUARD_SEED], &crate::ID).0, BURN_GUARD_PDA);
     }
 
     #[test]

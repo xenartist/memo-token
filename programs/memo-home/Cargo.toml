@@ -1,6 +1,6 @@
 [package]
 name = "memo-home"
-version = "0.1.0"
+version = "0.2.0"
 description = "MEMO Home Contract - Metaplex Core collections and assets with a protected Vault per asset"
 edition = "2021"
 

@@ -12,7 +12,7 @@
 #   Phase 2: (id) validator with a supply of 2.5T: regression-memo-id again at a reward of 8
 #            units, where memo-id prices are fractions of a MEMO (ceil rounding, supply input)
 #   Phase 3: validator without MintState / GlobalBurnStats (fresh deployment)
-#            regression-admin-init (memo-mint's admin init by simulation, no admin key needed)
+#            regression-admin-init (memo-mint's and memo-burn's admin init by simulation, no admin key needed)
 #
 # Usage:
 #   ./scripts/run-regression-tests.sh                 # build programs, run every suite

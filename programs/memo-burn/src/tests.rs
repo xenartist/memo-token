@@ -1086,6 +1086,38 @@ mod global_burn_stats_tests {
         #[cfg(feature = "mainnet")]
         assert_eq!(AUTHORIZED_ADMIN_PUBKEY.to_string(), "FVvewrVHqg2TPWXkesc3CJ7xxWnPtAkzN9nCpvr6UCtQ");
     }
+
+    #[test]
+    fn test_program_and_mint_ids_per_network() {
+        // Catches a declare_id! rewritten by anchor build (MEMO-MINT-AUDIT.md, MINT-22)
+        // (run under both features: cargo test -p memo-burn --lib [--features mainnet])
+        #[cfg(not(feature = "mainnet"))]
+        {
+            assert_eq!(crate::ID.to_string(), "FEjJ9KKJETocmaStfsFteFrktPchDLAVNTMeTvndoxaP");
+            assert_eq!(AUTHORIZED_MINT_PUBKEY.to_string(), "HLCoc7wNDavNMfWWw2Bwd7U7A24cesuhBSNkxZgvZm1");
+        }
+        #[cfg(feature = "mainnet")]
+        {
+            assert_eq!(crate::ID.to_string(), "2sb3gz5Cmr2g1ia5si2rmCZqPACxgaZXEmiS5k6Htcvh");
+            assert_eq!(AUTHORIZED_MINT_PUBKEY.to_string(), "memoX1sJsBY6od7CfQ58XooRALwnocAZen4L7mW1ick");
+        }
+    }
+
+    #[test]
+    fn test_pda_constants_per_network() {
+        // The constant must be what find_program_address returns for this build's program id
+        // (run under both features: cargo test -p memo-burn --lib [--features mainnet])
+        assert_eq!(Pubkey::find_program_address(&[b"global_burn_stats"], &crate::ID).0, GLOBAL_BURN_STATS_PDA);
+    }
+
+    #[test]
+    fn test_space_matches_serialized_layout() {
+        // SPACE must equal the discriminator plus the Borsh size of the struct, not just a hand-written sum
+        let user = UserGlobalBurnStats { user: Pubkey::default(), total_burned: 0, burn_count: 0, last_burn_time: 0, bump: 0 };
+        assert_eq!(8 + user.try_to_vec().unwrap().len(), UserGlobalBurnStats::SPACE);
+        let global = GlobalBurnStats { total_burned: 0, burn_count: 0, last_burn_time: 0, bump: 0, reserved: [0; 64] };
+        assert_eq!(8 + global.try_to_vec().unwrap().len(), GlobalBurnStats::SPACE);
+    }
 }
 
 // ============================================================================
