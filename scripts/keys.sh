@@ -25,6 +25,10 @@
 #                                           (authority/, programs/<env>/, target/deploy/)
 #
 # Run it in a terminal: the passphrase is read from the terminal, never from arguments or files.
+#
+# RAM disk: on macOS a 2 MiB HFS+ RAM disk at /Volumes/MemoTokenKeys (never swapped). On Linux a
+# directory on a tmpfs owned by the user: $XDG_RUNTIME_DIR/MemoTokenKeys (removed at logout), or
+# /dev/shm/MemoTokenKeys-<uid> without one. tmpfs pages can be swapped, so use encrypted swap or none.
 
 set -e
 shopt -s nullglob
@@ -36,8 +40,24 @@ KEYS_BASE="${HOME}/.config/solana/memo-token"
 CATEGORIES="authority programs"
 
 RAMDISK_NAME="MemoTokenKeys"
-RAMDISK_MOUNT="/Volumes/${RAMDISK_NAME}"
-RAMDISK_SECTORS=4096 # 512-byte sectors: 2 MiB
+OS_NAME="$(uname -s)"
+case "${OS_NAME}" in
+    Darwin)
+        RAMDISK_MOUNT="/Volumes/${RAMDISK_NAME}"
+        RAMDISK_SECTORS=4096 # 512-byte sectors: 2 MiB
+        ;;
+    Linux)
+        if [ -n "${XDG_RUNTIME_DIR}" ] && [ -d "${XDG_RUNTIME_DIR}" ]; then
+            RAMDISK_MOUNT="${XDG_RUNTIME_DIR}/${RAMDISK_NAME}"
+        else
+            RAMDISK_MOUNT="/dev/shm/${RAMDISK_NAME}-$(id -u)"
+        fi
+        ;;
+    *)
+        echo "Unsupported OS: ${OS_NAME}" >&2
+        exit 1
+        ;;
+esac
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -147,11 +167,39 @@ ${gpg_error}"
 # RAM disk
 # ---------------------------------------------------------------------------
 
+# Prints the RAM disk's device (macOS) or directory (Linux), nothing when there is none
 ramdisk_device() {
+    if [ "${OS_NAME}" = "Linux" ]; then
+        if [ -d "${RAMDISK_MOUNT}" ] && [ ! -L "${RAMDISK_MOUNT}" ]; then echo "${RAMDISK_MOUNT}"; fi
+        return 0
+    fi
     diskutil info "${RAMDISK_MOUNT}" 2>/dev/null | awk '/Device Node:/ {print $3}'
 }
 
+# Linux: the directory must be on a RAM file system, a real directory and owned by this user only
+check_linux_ramdisk() {
+    local parent=$(dirname "${RAMDISK_MOUNT}")
+    local fstype=$(stat -f -c %T "${parent}" 2>/dev/null)
+    case "${fstype}" in
+        tmpfs|ramfs) ;;
+        *) die "${parent} is not a tmpfs (${fstype:-unknown}); refusing to decrypt keys there" ;;
+    esac
+    if [ -e "${RAMDISK_MOUNT}" ] || [ -L "${RAMDISK_MOUNT}" ]; then
+        [ -d "${RAMDISK_MOUNT}" ] && [ ! -L "${RAMDISK_MOUNT}" ] || die "${RAMDISK_MOUNT} is not a directory"
+        [ "$(stat -c %u "${RAMDISK_MOUNT}")" = "$(id -u)" ] || die "${RAMDISK_MOUNT} is not owned by $(id -un)"
+        [ "$(stat -c %a "${RAMDISK_MOUNT}")" = "700" ] || die "${RAMDISK_MOUNT} is not mode 700"
+    fi
+}
+
 ensure_ramdisk() {
+    if [ "${OS_NAME}" = "Linux" ]; then
+        check_linux_ramdisk
+        if [ ! -d "${RAMDISK_MOUNT}" ]; then
+            (umask 077 && mkdir "${RAMDISK_MOUNT}")
+            print_info "RAM directory created at ${RAMDISK_MOUNT} (tmpfs)"
+        fi
+        return
+    fi
     if [ -n "$(ramdisk_device)" ]; then
         return
     fi
@@ -166,6 +214,11 @@ eject_ramdisk_if_unused() {
     local device=$(ramdisk_device)
     [ -n "${device}" ] || return 0
     if [ -d "${RAMDISK_MOUNT}/testnet" ] || [ -d "${RAMDISK_MOUNT}/mainnet" ]; then
+        return 0
+    fi
+    if [ "${OS_NAME}" = "Linux" ]; then
+        rm -rf "${RAMDISK_MOUNT:?}"
+        print_success "RAM directory removed (${device})"
         return 0
     fi
     hdiutil detach "${device}" >/dev/null 2>&1 || hdiutil detach -force "${device}" >/dev/null
