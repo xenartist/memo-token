@@ -167,8 +167,9 @@ impl Ctx {
             AccountMeta::new_readonly(self.w(), true),
             AccountMeta::new_readonly(self.registry(memo_id), false),
             AccountMeta::new(self.primary(&self.w()), false),
-            AccountMeta::new_readonly(self.a.program, false),
-            AccountMeta::new_readonly(self.a.program, false),
+            AccountMeta::new_readonly(self.a.program, false), // target_asset: none
+            AccountMeta::new_readonly(self.a.program, false), // holder: none
+            AccountMeta::new_readonly(self.a.program, false), // holder_config: none
             AccountMeta::new_readonly(system_program::id(), false),
         ])
     }
@@ -182,7 +183,8 @@ impl Ctx {
             AccountMeta::new_readonly(self.w(), true),
             AccountMeta::new(self.registry(parent_id), false),
             AccountMeta::new_readonly(*parent_asset, false),
-            AccountMeta::new_readonly(self.a.program, false),
+            AccountMeta::new_readonly(self.a.program, false), // holder: none
+            AccountMeta::new_readonly(self.a.program, false), // holder_config: none
             AccountMeta::new(self.registry(&memo_id), false),
             AccountMeta::new_readonly(system_program::id(), false),
         ])
@@ -196,7 +198,8 @@ impl Ctx {
             AccountMeta::new_readonly(self.w(), true),
             AccountMeta::new(parent, false),
             AccountMeta::new_readonly(*parent_asset, false),
-            AccountMeta::new_readonly(self.a.program, false),
+            AccountMeta::new_readonly(self.a.program, false), // holder: none
+            AccountMeta::new_readonly(self.a.program, false), // holder_config: none
             AccountMeta::new(self.registry(memo_id), false),
             AccountMeta::new(self.subid_index(&parent, index), false),
             AccountMeta::new_readonly(self.w(), false),

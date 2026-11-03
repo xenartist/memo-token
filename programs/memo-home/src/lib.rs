@@ -584,7 +584,15 @@ pub mod memo_home {
         // Core needs the inner Asset's Collection when it has one; otherwise Core's address as "none"
         let expected_collection = inner.collection.unwrap_or(CORE_PROGRAM_ID);
         require_keys_eq!(ctx.accounts.inner_collection.key(), expected_collection, ErrorCode::WrongCollection);
-        require_keys_neq!(ctx.accounts.new_owner.key(), ctx.accounts.vault.key(), ErrorCode::InvalidDestination);
+        // Nothing would leave the Vault; the inner Asset itself, its own Vault, the outer Asset or
+        // Core would lock it for good, since none of them can ever sign as its owner
+        let new_owner = ctx.accounts.new_owner.key();
+        let inner_key = ctx.accounts.inner_asset.key();
+        require_keys_neq!(new_owner, ctx.accounts.vault.key(), ErrorCode::InvalidDestination);
+        require_keys_neq!(new_owner, inner_key, ErrorCode::InvalidDestination);
+        require_keys_neq!(new_owner, vault_of(&inner_key).0, ErrorCode::InvalidDestination);
+        require_keys_neq!(new_owner, ctx.accounts.asset.key(), ErrorCode::InvalidDestination);
+        require_keys_neq!(new_owner, CORE_PROGRAM_ID, ErrorCode::InvalidDestination);
         let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
 
         let core = CORE_PROGRAM_ID;
@@ -679,17 +687,6 @@ pub mod memo_home {
             amount,
         )?;
         emit!(VaultBurned { asset: asset_key, amount, nonce });
-        Ok(())
-    }
-
-    /// Raise the Asset's Vault State nonce by one (Authority only). An app calls it by CPI from
-    /// every owner action that lowers what the Asset carries outside the Vault (app state bound to
-    /// the Asset), so one nonce covers both: a market that records it at listing and requires it
-    /// unchanged at the sale knows that neither the Vault nor that app state lost value.
-    pub fn advance_nonce(ctx: Context<AdvanceNonce>) -> Result<()> {
-        require_home_asset(&ctx.accounts.asset, &ctx.accounts.config)?;
-        let nonce = bump_nonce(&mut ctx.accounts.vault_state)?;
-        emit!(NonceAdvanced { asset: ctx.accounts.asset.key(), nonce });
         Ok(())
     }
 }
@@ -1122,22 +1119,6 @@ pub struct Burn<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[derive(Accounts)]
-pub struct AdvanceNonce<'info> {
-    #[account(constraint = authority.key() == config.authority @ ErrorCode::Unauthorized)]
-    pub authority: Signer<'info>,
-
-    #[account(seeds = [COLLECTION_CONFIG_SEED, config.collection.as_ref()], bump = config.bump)]
-    pub config: Account<'info, CollectionConfig>,
-
-    /// CHECK: Core Asset, checked to be in the Collection in the handler
-    #[account(owner = CORE_PROGRAM_ID)]
-    pub asset: UncheckedAccount<'info>,
-
-    #[account(mut, seeds = [VAULT_STATE_SEED, asset.key().as_ref()], bump = vault_state.bump)]
-    pub vault_state: Account<'info, VaultState>,
-}
-
 // ---------------------------------------------------------------------------------------------
 // Account data
 // ---------------------------------------------------------------------------------------------
@@ -1186,9 +1167,9 @@ impl CollectionConfig {
 }
 
 /// Per-Asset Vault State, created with the Asset and never closed. `nonce` grows by one on every
-/// owner outflow (withdraw, withdraw_lamports, close_token_account, withdraw_asset, burn) and on
-/// every `advance_nonce` by the Collection's Authority (app state bound to the Asset lost value),
-/// so a market or bidder that records it can require at the sale that nothing has changed.
+/// owner outflow (withdraw, withdraw_lamports, close_token_account, withdraw_asset, burn), so a
+/// market or bidder that records it can require at the sale that nothing has left the Vault. It
+/// covers the Vault only: state that apps keep about an Asset is theirs to expose.
 #[account]
 pub struct VaultState {
     pub nonce: u64,
@@ -1279,12 +1260,6 @@ pub struct AssetWithdrawn {
 pub struct VaultBurned {
     pub asset: Pubkey,
     pub amount: u64,
-    pub nonce: u64,
-}
-
-#[event]
-pub struct NonceAdvanced {
-    pub asset: Pubkey,
     pub nonce: u64,
 }
 
@@ -1475,9 +1450,8 @@ pub fn require_owner_not_listed(asset: &AccountInfo, config: &Account<Collection
     Ok(())
 }
 
-/// Outflow count of an Asset's Vault (plus the Authority's `advance_nonce` calls), read from its
-/// Vault State account (checked to belong to the Asset). A market records it at listing and
-/// requires it unchanged at the sale. Assets nested in the Vault are covered too: moving one out
+/// Outflow count of an Asset's Vault, read from its Vault State account (checked to belong to the
+/// Asset). A market records it at listing and requires it unchanged at the sale. Assets nested in the Vault are covered too: moving one out
 /// is an outflow of this Vault (withdraw_asset).
 pub fn vault_nonce_of(vault_state: &AccountInfo, asset: &Pubkey) -> Result<u64> {
     require_keys_eq!(*vault_state.owner, crate::ID, ErrorCode::InvalidVaultState);

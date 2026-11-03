@@ -6,8 +6,12 @@
 //! independent curve reference, the BurnMemo and its payload, the memo-id instruction's index,
 //! URIs, pre-funded PDAs, the Registry's size), Record SubIds (hash binding, parent links), NFT
 //! SubIds with the SubId Index and counters, forward records, Primary IDs, the one-level Vault
-//! rule, lapsing on transfer, update_uri, the signature of every controller account (G) and the
-//! program accounts memo-id calls by CPI (I04, R52-R54, U10). Successes assert the exact state,
+//! rule (with the holder recorded in the records), lapsing on transfer, issue_subid refused while
+//! the parent's Asset or the holder is listed (W), holders that must be memo-home Assets passed
+//! with their Collection Config (Y), set_primary's (kind, key) arguments and the IDL seeds (P16,
+//! P17), update_uri, the signature of every controller account (G) and the program accounts
+//! memo-id calls by CPI (I04, R52-R54, U10). Every Registry read is checked against its
+//! fixed-size encoding. Successes assert the exact state,
 //! including created_at, bumps and the events; rejections assert the exact error code, the
 //! program that raised it and its Anchor error name (System and Token-2022 log none), and that
 //! no account the transaction references changed (except the fee payer's fee).
@@ -70,14 +74,17 @@ const INVALID_CATEGORY: u32 = 6021;
 const INVALID_OPERATION: u32 = 6022;
 const USER_PUBKEY_MISMATCH: u32 = 6023;
 const MEMO_ID_MISMATCH: u32 = 6024;
+const HOLDER_NOT_HOME_ASSET: u32 = 6026;
+const LISTED: u32 = 6027;
+const INVALID_TARGET_KIND: u32 = 6028;
 /// memo-id's ErrorCode names, in order from 6000 (the name tells memo-id's errors apart from
 /// memo-home's and memo-burn's, which use the same numbers)
-const ERROR_NAMES: [&str; 26] = [
+const ERROR_NAMES: [&str; 29] = [
     "InvalidLabel", "MemoIdTooLong", "HashMismatch", "InvalidUri", "UriTooLong", "WrongCollection", "InvalidMint",
     "WrongAsset", "NotController", "NotInHolderVault", "ParentNotNft", "NotNft", "NotRecord", "WrongParent",
     "WrongSubidIndex", "MemoRequired", "MemoTooShort", "InvalidMemoFormat", "UnsupportedMemoVersion",
     "BurnAmountMismatch", "UnsupportedPayloadVersion", "InvalidCategory", "InvalidOperation", "UserPubkeyMismatch",
-    "MemoIdMismatch", "ArithmeticOverflow",
+    "MemoIdMismatch", "ArithmeticOverflow", "HolderNotHomeAsset", "Listed", "InvalidTargetKind",
 ];
 // memo-home (raised in memo-home's frame, under memo-id's instruction index)
 const HOME_INVALID_OWNER: u32 = 6020;
@@ -118,6 +125,7 @@ struct Reg {
     nft_subids_issued: u32,
     record_subids: u32,
     target_set_by: Pubkey,
+    target_holder: Pubkey,
     target: Option<Target>,
     memo_id: String,
 }
@@ -125,21 +133,23 @@ struct Reg {
 fn pk(d: &[u8], at: usize) -> Pubkey { Pubkey::new_from_array(d[at..at + 32].try_into().unwrap()) }
 fn u32_at(d: &[u8], at: usize) -> u32 { u32::from_le_bytes(d[at..at + 4].try_into().unwrap()) }
 
+/// Fixed layout (F31): target_set_by 90, target_holder 122, has_target 154, target 155 (kind,
+/// key), memo_id length 188, memo_id 192; the account is exactly its encoding, and without a
+/// target bytes 90..188 are all zero. A Registry that breaks this panics, failing the suite.
 fn parse_reg(d: &[u8]) -> Reg {
-    let mut p = 122;
-    let target = match d[p] {
+    let target = match d[154] {
         0 => {
-            p += 1;
+            assert!(d[90..188].iter().all(|&b| b == 0), "Registry without a target has non-zero target bytes");
             None
         }
-        _ => {
-            let k = pk(d, p + 2);
-            let t = if d[p + 1] == 0 { Target::Address(k) } else { Target::Asset(k) };
-            p += 34;
-            Some(t)
+        1 => {
+            let k = pk(d, 156);
+            Some(match d[155] { 0 => Target::Address(k), 1 => Target::Asset(k), x => panic!("target kind {}", x) })
         }
+        x => panic!("has_target {}", x),
     };
-    let len = u32_at(d, p) as usize;
+    let len = u32_at(d, 188) as usize;
+    assert_eq!(d.len(), 192 + len, "Registry size is not its encoding");
     Reg {
         kind: d[8],
         asset: pk(d, 9),
@@ -147,8 +157,9 @@ fn parse_reg(d: &[u8]) -> Reg {
         nft_subids_issued: u32_at(d, 81),
         record_subids: u32_at(d, 85),
         target_set_by: pk(d, 90),
+        target_holder: pk(d, 122),
         target,
-        memo_id: String::from_utf8(d[p + 4..p + 4 + len].to_vec()).unwrap(),
+        memo_id: String::from_utf8(d[192..].to_vec()).unwrap(),
     }
 }
 
@@ -283,12 +294,14 @@ impl<'a> Id<'a> {
     fn err(&self, ix: u64, code: u32) -> Expect<'static> {
         let name = match code {
             SYSTEM_ACCOUNT_IN_USE => return Expect::RaisedBy(ix, code, system_program()),
-            6000..=6025 => ERROR_NAMES[(code - 6000) as usize],
+            6000..=6028 => ERROR_NAMES[(code - 6000) as usize],
             ANCHOR_CONSTRAINT_SEEDS => "ConstraintSeeds",
             ANCHOR_CONSTRAINT_ADDRESS => "ConstraintAddress",
             ANCHOR_ACCOUNT_NOT_SIGNER => "AccountNotSigner",
             ANCHOR_DISCRIMINATOR_MISMATCH => "AccountDiscriminatorMismatch",
             ANCHOR_INVALID_PROGRAM_ID => "InvalidProgramId",
+            ANCHOR_ACCOUNT_NOT_INITIALIZED => "AccountNotInitialized",
+            ANCHOR_OWNED_BY_WRONG_PROGRAM => "AccountOwnedByWrongProgram",
             _ => panic!("no expectation for code {}", code),
         };
         Expect::Raised(ix, code, self.prog, name)
@@ -303,6 +316,16 @@ impl<'a> Id<'a> {
     }
     fn opt(&self, k: Option<&Pubkey>) -> AccountMeta {
         AccountMeta::new_readonly(k.copied().unwrap_or(self.prog), false)
+    }
+    /// memo-home Collection Config of an Asset's Collection, as clients derive it (an Asset
+    /// without data or a Collection gives the Config of the default address, which does not exist)
+    fn config_of(&self, asset: &Pubkey) -> Pubkey {
+        let col = self.e.data(asset).filter(|d| d.len() > 66 && d[0] == 1).and_then(|d| parse_asset(&d).1).unwrap_or_default();
+        Pubkey::find_program_address(&[b"collection_config", col.as_ref()], &self.home).0
+    }
+    /// The optional holder_config account: the holder's Collection Config, with a holder
+    fn holder_config(&self, holder: Option<&Pubkey>) -> AccountMeta {
+        self.opt(holder.map(|h| self.config_of(h)).as_ref())
     }
     fn ix(&self, name: &str, args: Vec<u8>, accounts: Vec<AccountMeta>) -> Instruction {
         let mut d = disc(name);
@@ -409,6 +432,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.registry(parent_id), false),
             AccountMeta::new_readonly(*parent_asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new(self.registry(&memo_id), false),
             AccountMeta::new_readonly(system_program(), false),
         ])
@@ -419,6 +443,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.registry(parent_id), false),
             AccountMeta::new_readonly(*parent_asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new(self.registry(memo_id), false),
         ])
     }
@@ -434,6 +459,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(parent, false),
             AccountMeta::new_readonly(*parent_asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new(self.registry(memo_id), false),
             AccountMeta::new(self.subid_index(&parent, index), false),
             AccountMeta::new_readonly(*new_owner, false),
@@ -452,6 +478,7 @@ impl<'a> Id<'a> {
             self.opt(parent_id.map(|p| self.registry(p)).as_ref()),
             AccountMeta::new_readonly(*asset, false),
             self.opt(holder),
+            self.holder_config(holder),
         ];
         match target {
             Some(t) => {
@@ -473,6 +500,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.primary(&target), false),
             self.opt(target_asset),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new_readonly(system_program(), false),
         ])
     }
@@ -482,6 +510,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.primary(target), false),
             self.opt(target_asset),
             self.opt(holder),
+            self.holder_config(holder),
         ])
     }
     fn update_uri(&self, payer: &Pubkey, controller: &Pubkey, memo_id: &str, asset: &Pubkey, holder: Option<&Pubkey>, uri: &str) -> Instruction {
@@ -493,6 +522,7 @@ impl<'a> Id<'a> {
             AccountMeta::new_readonly(self.registry(memo_id), false),
             AccountMeta::new(*asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new_readonly(self.authority, false),
             AccountMeta::new_readonly(self.config, false),
             AccountMeta::new_readonly(self.collection, false),
@@ -502,6 +532,8 @@ impl<'a> Id<'a> {
             AccountMeta::new_readonly(system_program(), false),
         ])
     }
+    /// Primary ID's set_holder (offset 105)
+    fn primary_holder(&self, target: &Target) -> Option<Pubkey> { self.e.data(&self.primary(target)).map(|d| pk(&d, 105)) }
     /// Primary ID: (target, registry, set_by)
     fn primary_data(&self, target: &Target) -> Option<(Target, Pubkey, Pubkey)> {
         self.e.data(&self.primary(target)).map(|d| {
@@ -698,7 +730,7 @@ fn main() {
     let reg = id.reg(&a_id);
     e.record("R02", "Registry: kind Nft, the Asset, no parent, no target, counters 0, the MEMO ID",
              reg == Some(Reg { kind: 0, asset: a_asset, parent: Pubkey::default(), nft_subids_issued: 0, record_subids: 0,
-                               target_set_by: Pubkey::default(), target: None, memo_id: a_id.clone() }),
+                               target_set_by: Pubkey::default(), target_holder: Pubkey::default(), target: None, memo_id: a_id.clone() }),
              &format!("{:?}", reg));
     let ad = id.asset_data(&a_asset);
     e.record("R03", "Asset: owner = payer, in the MEMO ID Collection, name = MEMO ID, URI as given",
@@ -708,8 +740,8 @@ fn main() {
     e.record("R35", "Registry created_at = block time, canonical bump; Registered event (ID, Registry, Asset, owner, burned)",
              id.stamped(&a_id, &out) && ev == Some((a_id.clone(), id.registry(&a_id), a_asset, ap, price5)), &format!("{:?}", ev));
     let raw = e.raw(&[id.registry(&a_id)]);
-    let reg_len = 160 + a_id.len();
-    e.record("R50", "the Registry is sized for its own ID (160 + ID bytes) and holds exactly its rent",
+    let reg_len = 192 + a_id.len();
+    e.record("R50", "the Registry is sized for its own ID (192 + ID bytes) and holds exactly its rent",
              raw[0].as_ref().is_some_and(|(owner, lamports, d)| {
                  *owner == id.prog && d.len() == reg_len && *lamports == e.c.get_minimum_balance_for_rent_exemption(reg_len).unwrap()
              }),
@@ -852,7 +884,7 @@ fn main() {
     let r = id.reg(&id1);
     e.record("R47", "and creates the Registry and the Asset",
              r == Some(Reg { kind: 0, asset: id.asset(&id1), parent: Pubkey::default(), nft_subids_issued: 0, record_subids: 0,
-                             target_set_by: Pubkey::default(), target: None, memo_id: id1.clone() })
+                             target_set_by: Pubkey::default(), target_holder: Pubkey::default(), target: None, memo_id: id1.clone() })
                  && id.stamped(&id1, &out) && id.asset_data(&id.asset(&id1)) == Some((ap, Some(id.collection), id1.clone(), URI.into())),
              &format!("{:?}", r));
 
@@ -883,8 +915,8 @@ fn main() {
     let r = id.reg(&blog);
     e.record("S01", "create a Record SubId with a target (no burn)",
              out.ok() && r == Some(Reg { kind: 1, asset: Pubkey::default(), parent: id.registry(&a_id), nft_subids_issued: 0,
-                                         record_subids: 0, target_set_by: ap, target: Some(Target::Address(bp)), memo_id: blog.clone() })
-                 && e.data(&id.registry(&blog)).map(|d| d.len()) == Some(160 + blog.len()),
+                                         record_subids: 0, target_set_by: ap, target_holder: Pubkey::default(), target: Some(Target::Address(bp)), memo_id: blog.clone() })
+                 && e.data(&id.registry(&blog)).map(|d| d.len()) == Some(192 + blog.len()),
              &format!("{} {:?}", out.brief(), r));
     e.record("S02", "parent record_subids = 1", id.reg(&a_id).map(|r| r.record_subids) == Some(1), "");
     let created = |out: &Out| event(out, "SubidCreated", |r| Some((r.string()?, r.pk()?, r.pk()?)));
@@ -911,7 +943,7 @@ fn main() {
     let with_hash = |hash_of: &str, registry_of: &str| {
         let mut ix = id.create_subid(&ap, &ap, &a_id, &a_asset, None, "x", None);
         ix.data[8..40].copy_from_slice(&sha(hash_of.as_bytes()));
-        ix.accounts[5].pubkey = id.registry(registry_of);
+        ix.accounts[6].pubkey = id.registry(registry_of);
         ix
     };
     let victim = format!("victim{}.memo", e.nonce());
@@ -928,7 +960,7 @@ fn main() {
     let ev_c = created(&out);
     e.record("S16", "a SubId created without a target: target_set_by stays zero, created_at = block time, SubidCreated only",
              r == Some(Reg { kind: 1, asset: Pubkey::default(), parent: id.registry(&a_id), nft_subids_issued: 0, record_subids: 0,
-                             target_set_by: Pubkey::default(), target: None, memo_id: tmp.clone() })
+                             target_set_by: Pubkey::default(), target_holder: Pubkey::default(), target: None, memo_id: tmp.clone() })
                  && id.stamped(&tmp, &out) && ev_c == Some((tmp.clone(), id.registry(&tmp), id.registry(&a_id)))
                  && event_data(&out, "TargetSet").is_empty(),
              &format!("{:?} {:?}", r, ev_c));
@@ -948,7 +980,7 @@ fn main() {
     let r = id.reg(&tmp);
     e.record("S17", "re-create it, bob paying and alice controlling: a fresh Record, target stamped by the controller, rent from the payer",
              out.ok() && r == Some(Reg { kind: 1, asset: Pubkey::default(), parent: id.registry(&a_id), nft_subids_issued: 0, record_subids: 0,
-                                         target_set_by: ap, target: Some(Target::Address(ap)), memo_id: tmp.clone() })
+                                         target_set_by: ap, target_holder: Pubkey::default(), target: Some(Target::Address(ap)), memo_id: tmp.clone() })
                  && id.stamped(&tmp, &out) && a1 == a0 && b1 + rent + 10_000 == b0 && id.reg(&a_id).map(|r| r.record_subids) == Some(2),
              &format!("{} {:?} rent {} alice {} -> {} bob {} -> {}", out.brief(), r, rent, a0, a1, b0, b1));
     let out = e.exec(&[id.delete_subid(&ap, &a_id, &a_asset, None, &tmp)], &alice, &[]);
@@ -964,7 +996,7 @@ fn main() {
     let r = id.reg(&xn);
     e.record("S22", "a label with xn-- after its first character is valid (a-xn--b)",
              out.ok() && r == Some(Reg { kind: 1, asset: Pubkey::default(), parent: id.registry(&id1), nft_subids_issued: 0, record_subids: 0,
-                                         target_set_by: Pubkey::default(), target: None, memo_id: xn.clone() })
+                                         target_set_by: Pubkey::default(), target_holder: Pubkey::default(), target: None, memo_id: xn.clone() })
                  && id.stamped(&xn, &out) && id.reg(&id1).map(|r| r.record_subids) == Some(1),
              &format!("{} {:?}", out.brief(), r));
 
@@ -1069,7 +1101,7 @@ fn main() {
           id.err(IX, SYSTEM_ACCOUNT_IN_USE));
     rej_n("N25", "issue with index 3, above the counter (2)", id.tx(price5, &pl_fwd, issue(3, &ap, &fwd, &bp)), &[], id.err(IX, WRONG_SUBID_INDEX));
     let mut fake_sysvar = issue(2, &ap, &fwd, &bp);
-    fake_sysvar.accounts[22].pubkey = wp;
+    fake_sysvar.accounts[23].pubkey = wp;
     rej_n("N30", "issue with a wallet in place of the instructions sysvar", id.tx(price5, &pl_fwd, fake_sysvar), &[],
           id.err(IX, ANCHOR_CONSTRAINT_ADDRESS));
     rej0("S21", "delete a Record SubId through a holder whose Vault does not hold the parent's Asset",
@@ -1080,7 +1112,7 @@ fn main() {
     let r = id.reg(&fwd);
     let ev = issued(&out);
     e.record("N27", "an issued Record keeps its target, target_set_by (alice, no longer the controller: not valid for bob) and created_at",
-             r == Some(Reg { kind: 0, asset: id.asset(&fwd), parent: parent_reg, nft_subids_issued: 0, record_subids: 0, target_set_by: ap,
+             r == Some(Reg { kind: 0, asset: id.asset(&fwd), parent: parent_reg, nft_subids_issued: 0, record_subids: 0, target_set_by: ap, target_holder: Pubkey::default(),
                              target: Some(Target::Address(bp)), memo_id: fwd.clone() })
                  && r.as_ref().is_some_and(|r| forward(r, &bp).is_none()) && id.stamped(&fwd, &fwd_out)
                  && id.asset_data(&id.asset(&fwd)).is_some_and(|a| a.0 == bp)
@@ -1170,7 +1202,7 @@ fn main() {
     let max_asset = id.asset(&max_id);
     e.record("L03", "v0: issue a 253-byte SubId to bob (bob pays, alice co-signs, ar:// URI)",
              out.ok() && max_id.len() == 253 && id.asset_data(&max_asset).is_some_and(|a| a.0 == bp && a.2 == max_id)
-                 && e.data(&id.registry(&max_id)).map(|d| d.len()) == Some(160 + 253),
+                 && e.data(&id.registry(&max_id)).map(|d| d.len()) == Some(192 + 253),
              &out.brief());
     let out = e.exec(&[core_transfer(&max_asset, &id.collection, &bp, &ap)], &bob, &[]);
     e.record("L04", "an Asset with a 253-byte name transfers", out.ok() && id.asset_data(&max_asset).is_some_and(|a| a.0 == ap), &out.brief());
@@ -1211,8 +1243,8 @@ fn main() {
              r.target == Some(Target::Address(ap)) && r.target_set_by == ap && pd.is_some_and(|p| p.1 == id.registry(&a_id) && p.2 == ap), "");
     let bump = Pubkey::find_program_address(&[b"primary_id", &[0], ap.as_ref()], &id.prog).1;
     let ev = event(&out, "PrimarySet", |r| Some((r.target()?, r.pk()?, r.pk()?)));
-    e.record("P13", "Primary ID: 106 bytes, canonical bump; PrimarySet event (target, Registry, set_by)",
-             e.data(&id.primary(&Target::Address(ap))).is_some_and(|d| d.len() == 106 && d[105] == bump)
+    e.record("P13", "Primary ID: 138 bytes, no holder, canonical bump; PrimarySet event (target, Registry, set_by)",
+             e.data(&id.primary(&Target::Address(ap))).is_some_and(|d| d.len() == 138 && pk(&d, 105) == Pubkey::default() && d[137] == bump)
                  && ev == Some((Target::Address(ap), id.registry(&a_id), ap)),
              &format!("{:?}", ev));
     rej0("P03", "set another wallet's Primary ID", id.set_primary(&bp, &bp, &a_id, Target::Address(ap), None, None), &bob, &[], NOT_CONTROLLER);
@@ -1315,11 +1347,14 @@ fn main() {
     rej0("V04", "a holder whose Vault does not hold the Asset",
          id.set_target(&ap, &shop, None, &shop_asset, Some(&wiki_asset), Some(Target::Address(ap))), &alice, &[], NOT_IN_HOLDER_VAULT);
     let out = e.exec(&[id.set_target(&ap, &shop, None, &shop_asset, Some(&a_asset), Some(Target::Address(ap)))], &alice, &[]);
-    e.record("V05", "the holder's owner controls the held MEMO ID", out.ok() && id.reg(&shop).is_some_and(|r| r.target_set_by == ap), &out.brief());
+    e.record("V05", "the holder's owner controls the held MEMO ID; the record names the holder (target_holder)",
+             out.ok() && id.reg(&shop).is_some_and(|r| r.target_set_by == ap && r.target_holder == a_asset), &out.brief());
     let out = e.exec(&[id.create_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "gift", None)], &alice, &[]);
     e.record("V06", "and creates SubIds under it", out.ok() && id.reg(&format!("gift.{}", shop)).is_some(), &out.brief());
     let out = e.exec(&[id.set_primary(&ap, &ap, &a_id, Target::Asset(shop_asset), Some(&shop_asset), Some(&a_asset))], &alice, &[]);
-    e.record("V07", "and sets the held Asset's Primary ID", out.ok() && id.primary_data(&Target::Asset(shop_asset)).is_some_and(|p| p.2 == ap), &out.brief());
+    e.record("V07", "and sets the held Asset's Primary ID, naming the holder (set_holder)",
+             out.ok() && id.primary_data(&Target::Asset(shop_asset)).is_some_and(|p| p.2 == ap)
+                 && id.primary_holder(&Target::Asset(shop_asset)) == Some(a_asset), &out.brief());
     let gift = format!("gift.{}", shop);
     let before = e.c.get_balance(&ap).unwrap();
     let rent = e.c.get_balance(&id.registry(&gift)).unwrap();
@@ -1341,13 +1376,24 @@ fn main() {
              out.ok() && id.primary_data(&Target::Asset(shop_asset)).is_none() && e.c.get_balance(&ap).unwrap() + 5000 == before + rent,
              &out.brief());
     let out = e.exec(&[id.set_target(&ap, &shop, None, &shop_asset, Some(&a_asset), None)], &alice, &[]);
-    e.record("V15", "through the holder: clear_target", out.ok() && id.reg(&shop).is_some_and(|r| r.target.is_none() && r.target_set_by == Pubkey::default()),
+    e.record("V15", "through the holder: clear_target (target_set_by and target_holder zero)",
+             out.ok() && id.reg(&shop).is_some_and(|r| r.target.is_none() && r.target_set_by == Pubkey::default() && r.target_holder == Pubkey::default()),
              &out.brief());
     let rec = format!("rec.{}", shop);
     e.must("create a Record SubId through the holder", &[id.create_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "rec", None)], &alice, &[]);
     let out = e.exec(&[id.set_target(&ap, &rec, Some(&shop), &shop_asset, Some(&a_asset), Some(Target::Asset(a_asset)))], &alice, &[]);
     e.record("V16", "through the holder: set a Record SubId's target, stamped by the holder's owner",
-             out.ok() && id.reg(&rec).is_some_and(|r| r.target == Some(Target::Asset(a_asset)) && r.target_set_by == ap), &out.brief());
+             out.ok() && id.reg(&rec).is_some_and(|r| r.target == Some(Target::Asset(a_asset)) && r.target_set_by == ap && r.target_holder == a_asset),
+             &out.brief());
+    let fwd_sub = format!("fwd.{}", shop);
+    let out = e.exec(&[id.create_subid(&ap, &ap, &shop, &shop_asset, Some(&a_asset), "fwd", Some(Target::Address(ap)))], &alice, &[]);
+    e.record("V17", "through the holder: create a Record SubId with a target, naming the holder (target_holder)",
+             out.ok() && id.reg(&fwd_sub).is_some_and(|r| r.target == Some(Target::Address(ap)) && r.target_set_by == ap && r.target_holder == a_asset),
+             &out.brief());
+    let out = e.exec(&[id.set_primary(&ap, &ap, &shop, Target::Address(ap), None, Some(&a_asset))], &alice, &[]);
+    e.record("V18", "an Address Primary ID given a holder: the holder is not recorded (set_holder zero)",
+             out.ok() && id.primary_data(&Target::Address(ap)).is_some_and(|p| p.1 == id.registry(&shop) && p.2 == ap)
+                 && id.primary_holder(&Target::Address(ap)) == Some(Pubkey::default()), &out.brief());
 
     // a sale of alice's ID: everything alice set lapses for bob
     e.must("transfer alice's ID to bob", &[core_transfer(&a_asset, &id.collection, &ap, &bp)], &alice, &[]);
@@ -1359,6 +1405,165 @@ fn main() {
     let out = e.exec(&[id.set_target(&bp, &blog, Some(&a_id), &a_asset, None, Some(Target::Address(bp)))], &bob, &[]);
     e.record("V13", "the buyer controls the Record SubIds", out.ok() && id.reg(&blog).is_some_and(|r| r.target_set_by == bp), &out.brief());
     rej0("V14", "the seller no longer does", id.set_target(&ap, &blog, Some(&a_id), &a_asset, None, None), &alice, &[], NOT_CONTROLLER);
+
+    // ------------------------------------------------------------------ listings (F19)
+    // issue_subid is refused while the parent's Asset, or the holder, carries a delegate held by
+    // someone else (memo_home::is_listed): an issued SubId is permanent, so a renter or a
+    // borrower whose collateral is frozen must not issue one. Other controller actions can be
+    // undone by the next controller and stay open.
+    let carol = e.new_user("carol", 1_000 * UNIT, true);
+    let lender = e.new_user("lender", 0, false);
+    let (cp, lp) = (carol.pubkey(), lender.pubkey());
+    let c_label = free_label(&id, 9, e.nonce());
+    let c_id = format!("{}.memo", c_label);
+    let c_asset = id.asset(&c_id);
+    e.must("register carol's ID", &id.tx(price5, &Id::payload("register", &cp, &c_id), id.register(&cp, &c_label, URI)), &carol, &[]);
+    e.must("create lent under it", &[id.create_subid(&cp, &cp, &c_id, &c_asset, None, "lent", None)], &carol, &[]);
+    let lent = format!("lent.{}", c_id);
+    let lent_asset = id.asset(&lent);
+    let pl_lent = Id::payload("issue_subid", &cp, &lent);
+    let issue_lent = |holder: Option<&Pubkey>| id.tx(price5, &pl_lent, id.issue_subid(&cp, &cp, &c_id, &c_asset, holder, &lent, 0, &cp, URI));
+    let rej_c = |case: &str, desc: &str, ixs: Vec<Instruction>, code: u32| {
+        e.reject_untouched(case, desc, ixs, &carol, &[], id.err(IX, code), &[e.ata(&cp)], &[cp]);
+    };
+    e.must("carol adds a FreezeDelegate held by the lender (unfrozen)", &[core_add_delegate(&c_asset, &id.collection, &cp, 1, &lp)], &carol, &[]);
+    rej_c("W01", "issue while a third party holds the FreezeDelegate (unfrozen)", issue_lent(None), LISTED);
+    e.must("the lender freezes carol's ID", &[core_set_frozen(&c_asset, &id.collection, &lp, true)], &lender, &[]);
+    rej_c("W02", "issue while frozen for the lender", issue_lent(None), LISTED);
+    let out = e.exec(&[id.set_target(&cp, &c_id, None, &c_asset, None, Some(Target::Address(cp))),
+                       id.create_subid(&cp, &cp, &c_id, &c_asset, None, "note", None)], &carol, &[]);
+    e.record("W03", "while frozen, the controller still sets the target and creates Record SubIds (they can be undone)",
+             out.ok() && id.reg(&c_id).is_some_and(|r| r.target_set_by == cp) && id.reg(&format!("note.{}", c_id)).is_some(), &out.brief());
+    e.must("the lender unfreezes carol's ID",
+           &[core_set_frozen(&c_asset, &id.collection, &lp, false)], &lender, &[]);
+    e.must("carol revokes the FreezeDelegate", &[core_revoke(&c_asset, &id.collection, &cp, 1)], &carol, &[]);
+    e.must("carol adds a TransferDelegate held by the lender", &[core_add_delegate(&c_asset, &id.collection, &cp, 3, &lp)], &carol, &[]);
+    rej_c("W04", "issue while a third party holds the TransferDelegate", issue_lent(None), LISTED);
+    e.must("carol revokes the TransferDelegate", &[core_revoke(&c_asset, &id.collection, &cp, 3)], &carol, &[]);
+    e.burn_ok("W05", "with both delegates revoked (owner-held plugins), issue succeeds", issue_lent(None), &carol, &[], &cp, price5, 1);
+
+    // holder variant: carol's ID sits in the Vault of her second ID H; H is pledged
+    let h_label = free_label(&id, 9, e.nonce());
+    let h_id = format!("{}.memo", h_label);
+    let h_asset = id.asset(&h_id);
+    e.must("register carol's holder ID", &id.tx(price5, &Id::payload("register", &cp, &h_id), id.register(&cp, &h_label, URI)), &carol, &[]);
+    e.must("move carol's ID into H's Vault", &[core_transfer(&c_asset, &id.collection, &cp, &id.vault(&h_asset))], &carol, &[]);
+    e.must("create rent under the held ID", &[id.create_subid(&cp, &cp, &c_id, &c_asset, Some(&h_asset), "rent", None)], &carol, &[]);
+    let rent_id = format!("rent.{}", c_id);
+    let pl_rent = Id::payload("issue_subid", &cp, &rent_id);
+    let issue_rent = || id.tx(price5, &pl_rent, id.issue_subid(&cp, &cp, &c_id, &c_asset, Some(&h_asset), &rent_id, 1, &cp, URI));
+    e.must("the lender takes H's FreezeDelegate", &[core_add_delegate(&h_asset, &id.collection, &cp, 1, &lp)], &carol, &[]);
+    rej_c("W06", "issue through a holder whose FreezeDelegate a third party holds", issue_rent(), LISTED);
+    e.must("carol revokes H's FreezeDelegate", &[core_revoke(&h_asset, &id.collection, &cp, 1)], &carol, &[]);
+    e.burn_ok("W07", "through the unlisted holder, issue succeeds", issue_rent(), &carol, &[], &cp, price5, 1);
+
+    // ------------------------------------------------------------------ holders (F20)
+    // the holder must be a memo-home Asset, passed with its Collection Config
+    let set_c = |holder: Option<&Pubkey>| id.set_target(&cp, &c_id, None, &c_asset, holder, Some(Target::Address(cp)));
+    let rej_y = |case: &str, desc: &str, ix: Instruction, code: u32| {
+        e.reject_untouched(case, desc, vec![ix], &carol, &[], id.err(0, code), &[], &[]);
+    };
+    let mut no_config = set_c(Some(&h_asset));
+    no_config.accounts[5].pubkey = id.prog;
+    rej_y("Y01", "a holder without its Collection Config", no_config, HOLDER_NOT_HOME_ASSET);
+    let mut no_holder = set_c(Some(&h_asset));
+    no_holder.accounts[4].pubkey = id.prog;
+    rej_y("Y02", "a Collection Config without a holder", no_holder, HOLDER_NOT_HOME_ASSET);
+    let mut not_config = set_c(Some(&h_asset));
+    not_config.accounts[5].pubkey = id.registry(&c_id);
+    rej_y("Y03", "a memo-id Registry in place of the Collection Config", not_config, ANCHOR_OWNED_BY_WRONG_PROGRAM);
+    let out = e.exec(&[set_c(Some(&h_asset))], &carol, &[]);
+    e.record("Y04", "with H and the MEMO ID Collection Config, H's owner controls the held ID; target_holder = H",
+             out.ok() && id.reg(&c_id).is_some_and(|r| r.target_set_by == cp && r.target_holder == h_asset), &out.brief());
+    // a plain Core Asset P (no Collection, so no memo-home Config): an ID moved into its Vault
+    // can no longer be controlled through it (clients must refuse such transfers)
+    let p_kp = Keypair::new();
+    let pp = p_kp.pubkey();
+    e.must("carol creates a plain Core Asset P", &[core_create_plain(&pp, &cp, &cp)], &carol, &[&p_kp]);
+    e.must("move lent into P's Vault", &[core_transfer(&lent_asset, &id.collection, &cp, &id.vault(&pp))], &carol, &[]);
+    let set_lent = |holder: Option<&Pubkey>| id.set_target(&cp, &lent, None, &lent_asset, holder, Some(Target::Address(cp)));
+    let mut memo_id_config = set_lent(Some(&pp));
+    memo_id_config.accounts[5].pubkey = id.config;
+    rej_y("Y05", "a holder P outside the Config's Collection (P is in none)", memo_id_config, HOLDER_NOT_HOME_ASSET);
+    rej_y("Y06", "a holder P with the Config address clients derive for it (none exists)", set_lent(Some(&pp)), ANCHOR_ACCOUNT_NOT_INITIALIZED);
+    rej_y("Y07", "without a holder the controller is P's Vault, which nobody can sign for", set_lent(None), NOT_CONTROLLER);
+
+    // a holder from another memo-home Collection (a room or a project): carol, as that
+    // Collection's Authority, creates the Collection and an Asset R in it
+    let room_seed = sha(format!("room-{}", e.nonce()).as_bytes());
+    let room_col = Pubkey::find_program_address(&[b"collection", cp.as_ref(), &room_seed], &id.home).0;
+    let room_cfg = Pubkey::find_program_address(&[b"collection_config", room_col.as_ref()], &id.home).0;
+    let mut a = room_seed.to_vec();
+    bstr(&mut a, "Room");
+    bstr(&mut a, URI);
+    a.extend(0u16.to_le_bytes());
+    a.extend([0u8, 0u8]); // max_assets: None, royalty: None
+    let create_room = Instruction::new_with_bytes(id.home, &[disc("create_collection"), a].concat(), vec![
+        AccountMeta::new(cp, true),
+        AccountMeta::new_readonly(cp, true),
+        AccountMeta::new(room_col, false),
+        AccountMeta::new_readonly(id.home_authority, false),
+        AccountMeta::new_readonly(id.burn_guard, false),
+        AccountMeta::new(room_cfg, false),
+        AccountMeta::new_readonly(CORE, false),
+        AccountMeta::new_readonly(system_program(), false),
+    ]);
+    e.must("carol creates the memo-home Collection Room", &[create_room], &carol, &[]);
+    let r_seed = sha(b"room asset");
+    let r = Pubkey::find_program_address(&[b"asset", room_col.as_ref(), &r_seed], &id.home).0;
+    let mut a = r_seed.to_vec();
+    bstr(&mut a, "room");
+    bstr(&mut a, URI);
+    let create_r = Instruction::new_with_bytes(id.home, &[disc("create_asset"), a].concat(), vec![
+        AccountMeta::new(cp, true),
+        AccountMeta::new_readonly(cp, true),
+        AccountMeta::new_readonly(room_cfg, false),
+        AccountMeta::new(room_col, false),
+        AccountMeta::new(r, false),
+        AccountMeta::new(id.vault_state(&r), false),
+        AccountMeta::new_readonly(cp, false),
+        AccountMeta::new_readonly(id.home_authority, false),
+        AccountMeta::new_readonly(CORE, false),
+        AccountMeta::new_readonly(system_program(), false),
+    ]);
+    e.must("carol creates the Room Asset R", &[create_r], &carol, &[]);
+    let g_label = free_label(&id, 9, e.nonce());
+    let g_id = format!("{}.memo", g_label);
+    let g_asset = id.asset(&g_id);
+    e.must("register carol's ID G", &id.tx(price5, &Id::payload("register", &cp, &g_id), id.register(&cp, &g_label, URI)), &carol, &[]);
+    e.must("move G into R's Vault", &[core_transfer(&g_asset, &id.collection, &cp, &id.vault(&r))], &carol, &[]);
+    let set_g = |holder: Option<&Pubkey>| id.set_target(&cp, &g_id, None, &g_asset, holder, Some(Target::Address(cp)));
+    let out = e.exec(&[set_g(Some(&r))], &carol, &[]);
+    e.record("Y08", "a holder in another memo-home Collection, with that Collection's Config: R's owner controls G; target_holder = R",
+             out.ok() && id.holder_config(Some(&r)).pubkey == room_cfg
+                 && id.reg(&g_id).is_some_and(|x| x.target_set_by == cp && x.target_holder == r), &out.brief());
+    let mut r_memo_cfg = set_g(Some(&r));
+    r_memo_cfg.accounts[5].pubkey = id.config;
+    rej_y("Y09", "holder R with the MEMO ID Collection's Config", r_memo_cfg, HOLDER_NOT_HOME_ASSET);
+    let mut h_room_cfg = set_c(Some(&h_asset));
+    h_room_cfg.accounts[5].pubkey = room_cfg;
+    rej_y("Y10", "a MEMO ID holder H with the Room Collection's Config", h_room_cfg, HOLDER_NOT_HOME_ASSET);
+
+    // ------------------------------------------------------------------ Primary ID arguments (F25)
+    // set_primary takes the Target as (kind, key), the Primary ID's seeds, so the IDL can derive it
+    let mut bad_kind = id.set_primary(&cp, &cp, &c_id, Target::Address(cp), None, None);
+    bad_kind.data[8] = 2;
+    bad_kind.accounts[3].pubkey = Pubkey::find_program_address(&[b"primary_id", &[2], cp.as_ref()], &id.prog).0;
+    rej_y("P16", "set_primary with target kind 2", bad_kind, INVALID_TARGET_KIND);
+    let idl_seeds = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/idl/memo_id.json")).ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| {
+            let ix = v["instructions"].as_array()?.iter().find(|i| i["name"] == "set_primary")?.clone();
+            let acc = ix["accounts"].as_array()?.iter().find(|a| a["name"] == "primary")?.clone();
+            Some(acc["pda"]["seeds"].clone())
+        });
+    let want = serde_json::json!([
+        {"kind": "const", "value": b"primary_id".to_vec()},
+        {"kind": "arg", "path": "target_kind"},
+        {"kind": "arg", "path": "target_key"},
+    ]);
+    e.record("P17", "the IDL derives the Primary ID from [\"primary_id\", arg target_kind, arg target_key]",
+             idl_seeds.as_ref() == Some(&want), &format!("{:?}", idl_seeds));
 
     // ------------------------------------------------------------------ update_uri
     let out = e.exec(&[cu(400_000), id.update_uri(&bp, &bp, &a_id, &a_asset, None, "ipfs://bafynew")], &bob, &[]);
@@ -1374,16 +1579,54 @@ fn main() {
     rej0("U07", "update to a 257-byte URI", id.update_uri(&bp, &bp, &a_id, &a_asset, None, &format!("{}a", at_max)), &bob, &[], URI_TOO_LONG);
     // memo-home would refuse another Collection too, with its own number (6004)
     let mut other_col = id.update_uri(&bp, &bp, &a_id, &a_asset, None, URI);
-    other_col.accounts[7].pubkey = wrong_col;
+    other_col.accounts[8].pubkey = wrong_col;
     rej0("U08", "update with another Collection account", other_col, &bob, &[], WRONG_COLLECTION);
     rej0("U09", "update to a URI with https:// after another scheme", id.update_uri(&bp, &bp, &a_id, &a_asset, None, "javascript:alert(1)//https://x"),
          &bob, &[], INVALID_URI);
     // memo-id's Authority signs update_asset: with another program in its place, that program would get the signature
     let mut fake_home = id.update_uri(&bp, &bp, &a_id, &a_asset, None, URI);
-    fake_home.accounts[10].pubkey = spl_memo::ID;
+    fake_home.accounts[11].pubkey = spl_memo::ID;
     rej0("U10", "update with SPL Memo in place of memo-home", fake_home, &bob, &[], ANCHOR_INVALID_PROGRAM_ID);
 
     e.finish();
+}
+
+/// Core instruction with the [asset, collection, payer, authority, system, log_wrapper] layout
+fn core_ix(data: Vec<u8>, asset: &Pubkey, col: &Pubkey, payer: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: CORE,
+        accounts: vec![
+            AccountMeta::new(*asset, false),
+            AccountMeta::new(*col, false),
+            AccountMeta::new(*payer, true),
+            AccountMeta::new_readonly(CORE, false),
+            AccountMeta::new_readonly(system_program(), false),
+            AccountMeta::new_readonly(CORE, false),
+        ],
+        data,
+    }
+}
+
+/// AddPluginV1 of an owner-managed delegate plugin (1 freeze, 3 transfer) with authority
+/// Address(delegate), signed by the owner; the FreezeDelegate starts unfrozen
+fn core_add_delegate(asset: &Pubkey, col: &Pubkey, owner: &Pubkey, plugin_type: u8, delegate: &Pubkey) -> Instruction {
+    let mut d = vec![2u8, plugin_type];
+    if plugin_type == 1 {
+        d.push(0);
+    }
+    d.extend([1, 3]);
+    d.extend(delegate.as_ref());
+    core_ix(d, asset, col, owner)
+}
+
+/// UpdatePluginV1 FreezeDelegate { frozen } signed by `authority`, who also pays
+fn core_set_frozen(asset: &Pubkey, col: &Pubkey, authority: &Pubkey, frozen: bool) -> Instruction {
+    core_ix(vec![6, 1, frozen as u8], asset, col, authority)
+}
+
+/// RevokePluginAuthorityV1 of a plugin type, signed by the owner
+fn core_revoke(asset: &Pubkey, col: &Pubkey, owner: &Pubkey, plugin_type: u8) -> Instruction {
+    core_ix(vec![10, plugin_type], asset, col, owner)
 }
 
 fn ata_of_mint(owner: &Pubkey, mint: &Pubkey) -> Pubkey {

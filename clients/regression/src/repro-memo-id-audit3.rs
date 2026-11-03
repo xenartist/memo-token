@@ -3,12 +3,13 @@
 //! Each case asserts the CURRENT behaviour on X1 mainnet's builds of Metaplex Core and
 //! Token-2022 (dumped by scripts/local-validator.sh), so the audit can cite it as reproduced.
 //! This is not a regression suite: several cases pass only while the issue exists and must be
-//! inverted once it is fixed. Case ids name the finding (S21-4 is step 4 of finding S21).
+//! inverted once it is fixed. Case ids name the finding (S21-4 is step 4 of finding S21). S21
+//! (F19) and S17 (F20) were fixed in memo-id 0.2.0 and now assert the rejections.
 //!   S26  a pre-funded MEMO ID Collection PDA: admin-init-memo-id refuses for good, init works
 //!        (fresh validator only: runs while the Collection address is unused; elsewhere it is
 //!        skipped, which fails the run unless MEMO_REGRESSION_ALLOW_SKIP=1)
-//!   S21  issue_subid while the parent's Asset, or the holder, is frozen for a lender
-//!   S17  a holder that is not a memo-home Asset, with permanent delegates: clawback, destruction
+//!   S21  issue_subid while the parent's Asset, or the holder, is frozen for a lender (fixed: Listed)
+//!   S17  a holder that is not a memo-home Asset, with permanent delegates (fixed: rejected)
 //!   S12  an ID owned by a Core Asset Signer keeps its records across the sale of the Asset
 //!   S01  update_uri and issue_subid under Core ExecuteV1 fail with reentrancy
 //!   S23  a Primary ID for Address(Asset Signer) stays verified across the sale of the Asset
@@ -48,11 +49,13 @@ const CORE: Pubkey = solana_sdk::pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4P
 const INVALID_MINT: u32 = 6006;
 const NOT_CONTROLLER: u32 = 6008;
 const NOT_IN_HOLDER_VAULT: u32 = 6009;
-const NOT_RECORD: u32 = 6012;
 const INVALID_MEMO_FORMAT: u32 = 6017;
 // memo-home: InvalidCoreAccount has the number of memo-id's NotInHolderVault (S00, S20)
 const HOME_INVALID_CORE_ACCOUNT: u32 = 6009;
 const HOME_LISTED: u32 = 6011;
+// memo-id 0.2.0
+const HOLDER_NOT_HOME_ASSET: u32 = 6026;
+const LISTED: u32 = 6027;
 // memo-burn: the numbers of memo-id's InvalidMint and NotController (S11)
 const BURN_INVALID_MEMO_FORMAT: u32 = 6001;
 const BURN_INVALID_TOKEN_ACCOUNT: u32 = 6006;
@@ -96,6 +99,7 @@ struct Reg {
     nft_subids_issued: u32,
     record_subids: u32,
     target_set_by: Pubkey,
+    target_holder: Pubkey,
     target: Option<Target>,
     memo_id: String,
 }
@@ -103,21 +107,16 @@ struct Reg {
 fn pk(d: &[u8], at: usize) -> Pubkey { Pubkey::new_from_array(d[at..at + 32].try_into().unwrap()) }
 fn u32_at(d: &[u8], at: usize) -> u32 { u32::from_le_bytes(d[at..at + 4].try_into().unwrap()) }
 
+/// Fixed layout: target_set_by 90, target_holder 122, has_target 154, target 155, memo_id 188
 fn parse_reg(d: &[u8]) -> Reg {
-    let mut p = 122;
-    let target = match d[p] {
-        0 => {
-            p += 1;
-            None
-        }
+    let target = match d[154] {
+        0 => None,
         _ => {
-            let k = pk(d, p + 2);
-            let t = if d[p + 1] == 0 { Target::Address(k) } else { Target::Asset(k) };
-            p += 34;
-            Some(t)
+            let k = pk(d, 156);
+            Some(if d[155] == 0 { Target::Address(k) } else { Target::Asset(k) })
         }
     };
-    let len = u32_at(d, p) as usize;
+    let len = u32_at(d, 188) as usize;
     Reg {
         kind: d[8],
         asset: pk(d, 9),
@@ -125,8 +124,9 @@ fn parse_reg(d: &[u8]) -> Reg {
         nft_subids_issued: u32_at(d, 81),
         record_subids: u32_at(d, 85),
         target_set_by: pk(d, 90),
+        target_holder: pk(d, 122),
         target,
-        memo_id: String::from_utf8(d[p + 4..p + 4 + len].to_vec()).unwrap(),
+        memo_id: String::from_utf8(d[192..192 + len].to_vec()).unwrap(),
     }
 }
 
@@ -207,6 +207,16 @@ impl<'a> Id<'a> {
     }
     fn opt(&self, k: Option<&Pubkey>) -> AccountMeta {
         AccountMeta::new_readonly(k.copied().unwrap_or(self.prog), false)
+    }
+    /// holder_config: the memo-home Collection Config of the holder's Collection, as clients
+    /// derive it (a holder in no Collection gives the Config of the default address, which does
+    /// not exist)
+    fn holder_config(&self, holder: Option<&Pubkey>) -> AccountMeta {
+        let cfg = holder.map(|h| {
+            let col = self.e.data(h).filter(|d| d.len() > 66 && d[0] == 1).and_then(|d| parse_asset(&d).1).unwrap_or_default();
+            Pubkey::find_program_address(&[b"collection_config", col.as_ref()], &self.home).0
+        });
+        self.opt(cfg.as_ref())
     }
     fn ix(&self, name: &str, args: Vec<u8>, accounts: Vec<AccountMeta>) -> Instruction {
         let mut d = disc(name);
@@ -312,17 +322,9 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.registry(parent_id), false),
             AccountMeta::new_readonly(*parent_asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new(self.registry(&memo_id), false),
             AccountMeta::new_readonly(system_program(), false),
-        ])
-    }
-    fn delete_subid(&self, controller: &Pubkey, parent_id: &str, parent_asset: &Pubkey, holder: Option<&Pubkey>, memo_id: &str) -> Instruction {
-        self.ix("delete_subid", vec![], vec![
-            AccountMeta::new(*controller, true),
-            AccountMeta::new(self.registry(parent_id), false),
-            AccountMeta::new_readonly(*parent_asset, false),
-            self.opt(holder),
-            AccountMeta::new(self.registry(memo_id), false),
         ])
     }
     #[allow(clippy::too_many_arguments)]
@@ -337,6 +339,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(parent, false),
             AccountMeta::new_readonly(*parent_asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new(self.registry(memo_id), false),
             AccountMeta::new(self.subid_index(&parent, index), false),
             AccountMeta::new_readonly(*new_owner, false),
@@ -355,6 +358,7 @@ impl<'a> Id<'a> {
             self.opt(parent_id.map(|p| self.registry(p)).as_ref()),
             AccountMeta::new_readonly(*asset, false),
             self.opt(holder),
+            self.holder_config(holder),
         ];
         match target {
             Some(t) => {
@@ -376,6 +380,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.primary(&target), false),
             self.opt(target_asset),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new_readonly(system_program(), false),
         ])
     }
@@ -385,6 +390,7 @@ impl<'a> Id<'a> {
             AccountMeta::new(self.primary(target), false),
             self.opt(target_asset),
             self.opt(holder),
+            self.holder_config(holder),
         ])
     }
     fn update_uri(&self, payer: &Pubkey, controller: &Pubkey, memo_id: &str, asset: &Pubkey, holder: Option<&Pubkey>, uri: &str) -> Instruction {
@@ -396,6 +402,7 @@ impl<'a> Id<'a> {
             AccountMeta::new_readonly(self.registry(memo_id), false),
             AccountMeta::new(*asset, false),
             self.opt(holder),
+            self.holder_config(holder),
             AccountMeta::new_readonly(self.authority, false),
             AccountMeta::new_readonly(self.config, false),
             AccountMeta::new_readonly(self.collection, false),
@@ -828,33 +835,23 @@ fn s21(e: &Env, id: &Id, alice: &Keypair, price5: u64) {
     reject(e, "S21-3", "the lock holds: alice cannot revoke the lender's FreezeDelegate (Core InvalidAuthority)",
            vec![core_revoke(&x, &col, &ap, 1)], alice, &[], Expect::Custom(0, CORE_INVALID_AUTHORITY), None, &[x]);
 
-    // the issue: the borrower issues www to her second wallet while X is frozen
+    // fixed in 0.2.0 (F19): issue_subid refuses a listed parent Asset
     let n = id.reg(&x_id).unwrap().nft_subids_issued;
-    let x_before = account(e, &x);
-    let out = e.burn_ok("S21-4", "frozen X: alice issues www.X to her second wallet (succeeds, burns 69 mints)",
-                        id.tx(price5, &Id::payload("issue_subid", &ap, &www), id.issue_subid(&ap, &ap, &x_id, &x, None, &www, n, &a2, URI)),
-                        alice, &[], &ap, price5, 1);
-    let www_asset = id.asset(&www);
-    let r = id.reg(&www);
-    ok_case(e, "S21-5", "www.X is an NFT owned by alice2; X's nft_subids_issued 0 -> 1; X itself untouched (still frozen)", &out,
-            n == 0 && r.as_ref().is_some_and(|r| r.kind == 0 && r.asset == www_asset) && id.owner(&www_asset) == Some(a2)
-                && id.reg(&x_id).is_some_and(|p| p.nft_subids_issued == 1) && account(e, &x) == x_before,
-            &format!("{:?}", r));
+    reject(e, "S21-4", "frozen X: alice cannot issue www.X to her second wallet (Listed, nothing burned)",
+           id.tx(price5, &Id::payload("issue_subid", &ap, &www), id.issue_subid(&ap, &ap, &x_id, &x, None, &www, n, &a2, URI)),
+           alice, &[], Expect::Custom(2, LISTED), Some((&id.prog, "Listed")), &[x, id.registry(&x_id), id.registry(&www), e.ata(&ap)]);
+    e.record("S21-5", "www.X is still a Record SubId; X's nft_subids_issued stays 0",
+             n == 0 && id.reg(&www).is_some_and(|r| r.kind == 1) && id.reg(&x_id).is_some_and(|r| r.nft_subids_issued == 0), "");
 
-    // default: the lender forecloses
+    // default: the lender forecloses and gets X with www
     let out = e.exec(&[core_set_frozen(&x, &col, &lp, false), core_transfer(&x, Some(&col), &lp, &lp)], &lender, &[]);
     ok_case(e, "S21-6", "default: the lender unfreezes X and takes it with the TransferDelegate", &out, id.owner(&x) == Some(lp), "");
-    reject(e, "S21-7", "the lender cannot delete www.X: it is an NFT SubId now (NotRecord)",
-           vec![id.delete_subid(&lp, &x_id, &x, None, &www)], &lender, &[], Expect::Custom(0, NOT_RECORD), Some((&id.prog, "NotRecord")),
-           &[id.registry(&www)]);
-    reject(e, "S21-8", "the lender cannot set www.X's target: alice2 controls it (NotController)",
-           vec![id.set_target(&lp, &www, None, &www_asset, None, Some(Target::Address(lp)))], &lender, &[],
+    let out = e.exec(&[id.set_target(&lp, &www, Some(&x_id), &x, None, Some(Target::Address(lp)))], &lender, &[]);
+    ok_case(e, "S21-7", "the lender, now X's controller, controls www.X (still a Record)", &out,
+            id.reg(&www).is_some_and(|r| r.target_set_by == lp), "");
+    reject(e, "S21-8", "alice no longer does (NotController)",
+           vec![id.set_target(&ap, &www, Some(&x_id), &x, None, Some(Target::Address(ap)))], alice, &[],
            Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&www)]);
-    let out = e.exec(&[id.set_target(&a2, &www, None, &www_asset, None, Some(Target::Address(a2)))], &alice2, &[]);
-    ok_case(e, "S21-9", "alice2 controls www.X for good", &out, id.reg(&www).is_some_and(|r| r.target_set_by == a2), "");
-    let out = e.exec(&[id.set_target(&lp, &x_id, None, &x, None, Some(Target::Address(lp)))], &lender, &[]);
-    ok_case(e, "S21-10", "the lender controls X, whose www was issued away during the loan (nft_subids_issued 1)", &out,
-            id.reg(&x_id).is_some_and(|r| r.target_set_by == lp && r.nft_subids_issued == 1), "");
 
     // holder variant: Y sits in the Vault of H, and H is the frozen collateral
     let y_id = register_free(e, id, alice, 6, price5);
@@ -866,17 +863,14 @@ fn s21(e: &Env, id: &Id, alice: &Keypair, price5: u64) {
     e.must("move Y into H's Vault", &[core_transfer(&y, Some(&col), &ap, &id.vault(&h))], alice, &[]);
     e.must("alice adds a FreezeDelegate held by the lender on H", &[core_add_delegate(&h, &col, &ap, 1, &lp)], alice, &[]);
     e.must("the lender freezes H", &[core_set_frozen(&h, &col, &lp, true)], &lender, &[]);
-    reject(e, "S21-11", "memo-home will not release Y from frozen H's Vault: withdraw_asset -> Listed (6011)",
+    reject(e, "S21-9", "memo-home will not release Y from frozen H's Vault: withdraw_asset -> Listed (6011)",
            vec![id.withdraw_asset(&ap, &h, &y, &col, &ap)], alice, &[], Expect::Custom(0, HOME_LISTED), Some((&id.home, "Listed")), &[y, h]);
     let n = id.reg(&y_id).unwrap().nft_subids_issued;
-    let h_before = account(e, &h);
-    let out = e.burn_ok("S21-12", "frozen holder H: alice issues pay.Y through holder=H to alice2 (succeeds, burns 69 mints)",
-                        id.tx(price5, &Id::payload("issue_subid", &ap, &pay), id.issue_subid(&ap, &ap, &y_id, &y, Some(&h), &pay, n, &a2, URI)),
-                        alice, &[], &ap, price5, 1);
-    ok_case(e, "S21-13", "pay.Y is an NFT owned by alice2; Y's nft_subids_issued 0 -> 1; Y still in frozen H's Vault", &out,
-            n == 0 && id.owner(&id.asset(&pay)) == Some(a2) && id.reg(&y_id).is_some_and(|r| r.nft_subids_issued == 1)
-                && id.owner(&y) == Some(id.vault(&h)) && account(e, &h) == h_before,
-            "");
+    reject(e, "S21-10", "frozen holder H: alice cannot issue pay.Y through holder=H (memo-id Listed, nothing burned)",
+           id.tx(price5, &Id::payload("issue_subid", &ap, &pay), id.issue_subid(&ap, &ap, &y_id, &y, Some(&h), &pay, n, &a2, URI)),
+           alice, &[], Expect::Custom(2, LISTED), Some((&id.prog, "Listed")), &[y, h, id.registry(&y_id), id.registry(&pay), e.ata(&ap)]);
+    e.record("S21-11", "pay.Y is still a Record SubId; Y's nft_subids_issued stays 0; Y still in H's Vault",
+             n == 0 && id.reg(&pay).is_some_and(|r| r.kind == 1) && id.owner(&y) == Some(id.vault(&h)), "");
 }
 
 /// S17: the holder rule accepts any Core Asset. A seller who keeps permanent delegates on a
@@ -900,65 +894,29 @@ fn s17(e: &Env, id: &Id, bob: &Keypair, price5: u64) {
                  && id.owner(&a) == Some(id.vault(&h)),
              "");
     let set = |signer: &Pubkey, holder: Option<&Pubkey>| id.set_target(signer, &a_id, None, &a, holder, Some(Target::Address(*signer)));
-    let out = e.exec(&[set(&mp, Some(&h))], &mallory, &[]);
-    ok_case(e, "S17-2", "the holder rule accepts H: mallory controls A through holder=H", &out,
-            id.reg(&a_id).is_some_and(|r| r.target_set_by == mp), "");
-    reject(e, "S17-3", "without the holder the controller is vault_of(H), which nobody can sign for (NotController)",
+    // fixed in 0.2.0 (F20): a holder must be a memo-home Asset, passed with its Collection Config
+    let mut with_memo_id_config = set(&mp, Some(&h));
+    with_memo_id_config.accounts[5].pubkey = id.config;
+    reject(e, "S17-2", "holder=H with a real Collection Config: H is in no memo-home Collection (HolderNotHomeAsset)",
+           vec![with_memo_id_config], &mallory, &[], Expect::Custom(0, HOLDER_NOT_HOME_ASSET), Some((&id.prog, "HolderNotHomeAsset")),
+           &[id.registry(&a_id)]);
+    check_reject(e, "S17-3", "holder=H with the Config clients derive for it: none exists (AccountNotInitialized on holder_config)",
+                 &|| e.exec(&[set(&mp, Some(&h))], &mallory, &[]), Expect::Custom(0, ANCHOR_ACCOUNT_NOT_INITIALIZED),
+                 Some((&id.prog, "AccountNotInitialized")), &["caused by account: holder_config"], &[], &[], &[], &[id.registry(&a_id)]);
+    reject(e, "S17-4", "without the holder the controller is vault_of(H), which nobody can sign for (NotController)",
            vec![set(&mp, None)], &mallory, &[], Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&a_id)]);
 
-    // the sale of H "with A inside"
+    // a sale of H "with A inside" now gives the buyer no control, so there is nothing to claw back
     e.must("mallory sells H to bob", &[core_transfer(&h, None, &mp, &bp)], &mallory, &[]);
-    let out = e.exec(&[set(&bp, Some(&h))], bob, &[]);
-    ok_case(e, "S17-4", "bob, H's new owner, controls A through holder=H", &out,
-            id.reg(&a_id).is_some_and(|r| r.target_set_by == bp && r.target == Some(Target::Address(bp))), "");
-    reject(e, "S17-5", "mallory no longer does (NotController)", vec![set(&mp, Some(&h))], &mallory, &[],
-           Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&a_id)]);
-
-    // clawback with the permanent transfer delegate: bob does not sign
-    let out = e.exec(&[core_transfer(&h, None, &mp, &mp)], &mallory, &[]);
-    ok_case(e, "S17-6", "clawback: mallory takes H back with her PermanentTransferDelegate, without bob's signature", &out,
-            id.owner(&h) == Some(mp), "");
-    let r = id.reg(&a_id).unwrap();
-    e.record("S17-7", "bob's forward record has lapsed: target_set_by = bob, but the controller (owner of H) is mallory",
-             r.target_set_by == bp && r.target == Some(Target::Address(bp)) && id.owner(&h) == Some(mp), &format!("{:?}", r));
-    reject(e, "S17-8", "bob can no longer act on A (NotController)", vec![set(&bp, Some(&h))], bob, &[],
-           Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&a_id)]);
-    let pay = format!("pay.{}", a_id);
-    e.must("mallory creates pay under A through holder=H", &[id.create_subid(&mp, &mp, &a_id, &a, Some(&h), "pay", None)], &mallory, &[]);
-    let n = id.reg(&a_id).unwrap().nft_subids_issued;
-    e.burn_ok("S17-9", "mallory issues pay.A through holder=H to herself (burns 69 mints)",
-              id.tx(price5, &Id::payload("issue_subid", &mp, &pay), id.issue_subid(&mp, &mp, &a_id, &a, Some(&h), &pay, n, &mp, URI)),
-              &mallory, &[], &mp, price5, 1);
-    // A can never leave vault_of(H) through memo-home: H has no Vault State
-    check_reject(e, "S17-10", "memo-home withdraw_asset(H, inner A) fails on H's missing Vault State (AccountNotInitialized 3012)",
-                 &|| e.exec(&[id.withdraw_asset(&mp, &h, &a, &col, &mp)], &mallory, &[]), Expect::Custom(0, ANCHOR_ACCOUNT_NOT_INITIALIZED),
+    let mut bob_cfg = set(&bp, Some(&h));
+    bob_cfg.accounts[5].pubkey = id.config;
+    reject(e, "S17-5", "bob, H's new owner, cannot control A through H either (HolderNotHomeAsset)", vec![bob_cfg], bob, &[],
+           Expect::Custom(0, HOLDER_NOT_HOME_ASSET), Some((&id.prog, "HolderNotHomeAsset")), &[id.registry(&a_id)]);
+    // A can never leave vault_of(H) through memo-home either: clients must refuse such transfers
+    check_reject(e, "S17-6", "memo-home withdraw_asset(H, inner A) fails on H's missing Vault State (AccountNotInitialized 3012)",
+                 &|| e.exec(&[id.withdraw_asset(&bp, &h, &a, &col, &bp)], bob, &[]), Expect::Custom(0, ANCHOR_ACCOUNT_NOT_INITIALIZED),
                  Some((&id.home, "AccountNotInitialized")), &["caused by account: vault_state"], &[], &[], &[], &[a]);
-
-    // burn variant: H2 sold to bob, then burned by mallory's permanent burn delegate
-    let h2k = Keypair::new();
-    let h2 = h2k.pubkey();
-    e.must("mallory creates H2 with the same permanent delegates", &[core_create_with_permanent(&h2, &mp, &mp, &mp)], &mallory, &[&h2k]);
-    let b_id = register_free(e, id, &mallory, 6, price5);
-    let b = id.asset(&b_id);
-    e.must("mallory moves B into vault_of(H2)", &[core_transfer(&b, Some(&col), &mp, &id.vault(&h2))], &mallory, &[]);
-    e.must("mallory sells H2 to bob", &[core_transfer(&h2, None, &mp, &bp)], &mallory, &[]);
-    let set2 = |signer: &Pubkey, holder: Option<&Pubkey>| id.set_target(signer, &b_id, None, &b, holder, Some(Target::Address(*signer)));
-    let out = e.exec(&[set2(&bp, Some(&h2))], bob, &[]);
-    ok_case(e, "S17-11", "bob controls B through holder=H2", &out, id.reg(&b_id).is_some_and(|r| r.target_set_by == bp), "");
-    let out = e.exec(&[core_burn(&h2, &mp)], &mallory, &[]);
-    let tomb = account(e, &h2);
-    ok_case(e, "S17-12", "mallory burns bob's H2 with her PermanentBurnDelegate: a 1-byte Core tombstone remains", &out,
-            tomb.as_ref().is_some_and(|t| t.0 == CORE && t.2 == vec![0]), &format!("{:?}", tomb.as_ref().map(|t| (t.0, t.1, t.2.clone()))));
-    check_reject(e, "S17-13", "bob through holder=H2: 6009, memo-home InvalidCoreAccount raised in memo-id's frame",
-                 &|| e.exec(&[set2(&bp, Some(&h2))], bob, &[]), Expect::Custom(0, HOME_INVALID_CORE_ACCOUNT),
-                 Some((&id.prog, "InvalidCoreAccount")), &["programs/memo-home/src/lib.rs"], &["NotInHolderVault"], &[], &[], &[id.registry(&b_id)]);
-    reject(e, "S17-14", "bob without a holder: NotController (the controller is vault_of(H2))", vec![set2(&bp, None)], bob, &[],
-           Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&b_id)]);
-    reject(e, "S17-15", "mallory without a holder: NotController", vec![set2(&mp, None)], &mallory, &[],
-           Expect::Custom(0, NOT_CONTROLLER), Some((&id.prog, "NotController")), &[id.registry(&b_id)]);
-    check_reject(e, "S17-16", "H2's address cannot hold a Core Asset again (System: account in use): B is uncontrollable for good",
-                 &|| e.exec(&[core_create_plain(&h2, &mp, &mp)], &mallory, &[&h2k]), Expect::Custom(0, SYSTEM_ACCOUNT_IN_USE), None,
-                 &["Program 11111111111111111111111111111111 failed: custom program error: 0x0"], &[], &[], &[], &[h2]);
+    let _ = price5;
 }
 
 /// S12 and S01: an ID owned by the Asset Signer S of a Core Asset Z. Records stamped with S stay
@@ -1083,8 +1041,8 @@ fn s00_s11_s20(e: &Env, id: &Id, alice: &Keypair, bob: &Keypair, price5: u64) {
                  &|| e.exec(&[id.set_primary(&bp, &bp, &a_id, Target::Asset(bp), Some(&bp), None)], bob, &[]),
                  Expect::Custom(0, NOT_IN_HOLDER_VAULT), Some((&id.prog, "InvalidCoreAccount")),
                  &["AnchorError thrown in programs/memo-home/src/lib.rs"], &["NotInHolderVault"], &[], &[], &[id.primary(&Target::Asset(bp))]);
-    check_reject(e, "S20-2", "control: a genuine NotInHolderVault (holder whose Vault does not hold the Asset) is also Custom(6009)",
-                 &|| e.exec(&[id.set_target(&ap, &a_id, None, &a_asset, Some(&bp), Some(Target::Address(ap)))], alice, &[]),
+    check_reject(e, "S20-2", "control: a genuine NotInHolderVault (a memo-home holder whose Vault does not hold the Asset) is also Custom(6009)",
+                 &|| e.exec(&[id.set_target(&ap, &a_id, None, &a_asset, Some(&a_asset), Some(Target::Address(ap)))], alice, &[]),
                  Expect::Custom(0, NOT_IN_HOLDER_VAULT), Some((&id.prog, "NotInHolderVault")),
                  &["AnchorError thrown in programs/memo-id/src/lib.rs"], &["InvalidCoreAccount"], &[], &[], &[id.registry(&a_id)]);
 

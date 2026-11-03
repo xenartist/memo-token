@@ -1,6 +1,6 @@
 [package]
 name = "memo-id"
-version = "0.1.0"
+version = "0.2.0"
 description = "MEMO ID Contract - unique IDs such as xen-artist.memo, owned as memo-home NFTs"
 edition = "2021"
 

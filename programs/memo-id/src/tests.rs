@@ -6,7 +6,8 @@
 //! - the BurnMemo and its payload: decoding, amount, version, every payload field
 //! - URIs
 //! - account layouts: sizes, fixed offsets for memcmp filters, the maximum Registry
-//! - controller_of (owner, one-level Vault rule), forward records, Primary IDs, is_verified
+//! - controller_of (owner, one-level Vault rule, memo-home holders only), forward records,
+//!   Primary IDs, is_verified, Target kinds
 //! - PDAs
 //! The CPI paths (memo-home, Core, memo-burn, Token-2022) are covered by the local-validator
 //! regression suite (clients/regression/src/regression-memo-id.rs).
@@ -31,6 +32,23 @@ fn core_asset(owner: Pubkey, collection: Pubkey, name: &str) -> Vec<u8> {
         d.extend_from_slice(s.as_bytes());
     }
     d.push(0); // seq: None
+    d
+}
+
+/// A memo-home Collection Config for `collection`, as stored on chain
+fn config_data(collection: Pubkey) -> Vec<u8> {
+    let config = CollectionConfig {
+        collection,
+        authority: key(90),
+        seed: [0; 32],
+        max_share_bps: 0,
+        max_assets: None,
+        creator: key(91),
+        created_at: 0,
+        bump: 255,
+    };
+    let mut d = vec![];
+    config.try_serialize(&mut d).unwrap();
     d
 }
 
@@ -67,7 +85,9 @@ fn registry(kind: MemoIdKind, asset: Pubkey, parent: Pubkey, memo_id: &str) -> R
         record_subids: 0,
         bump: 255,
         target_set_by: Pubkey::default(),
-        target: None,
+        target_holder: Pubkey::default(),
+        has_target: false,
+        target: Target::Address(Pubkey::default()),
         memo_id: memo_id.into(),
     }
 }
@@ -279,23 +299,35 @@ mod accounts {
 
     #[test]
     fn registry_is_sized_for_its_id() {
-        // with a target, the serialized Registry fills exactly space_for(len)
+        // with or without a target, the serialized Registry fills exactly space_for(len), so
+        // strict decoders read every Registry (F31)
         for id in ["a.memo", "blog.xen-artist.memo", &format!("{}.memo", "a".repeat(63))] {
             let mut r = registry(MemoIdKind::Record, key(1), key(2), id);
-            r.target = Some(Target::Asset(key(3)));
-            r.target_set_by = key(4);
+            let mut data = vec![];
+            r.try_serialize(&mut data).unwrap();
+            assert_eq!(data.len(), Registry::space_for(id.len()), "{}", id);
+            r.set_forward(Target::Asset(key(3)), key(4), key(5));
             let mut data = vec![];
             r.try_serialize(&mut data).unwrap();
             assert_eq!(data.len(), Registry::space_for(id.len()), "{}", id);
         }
-        assert_eq!(Registry::BASE_SPACE, 160);
-        assert_eq!(Registry::space_for(6), 166); // a.memo
-        assert_eq!(Registry::space_for(MAX_MEMO_ID_LEN), 413);
-        // without a target it is 33 bytes shorter, so set_target never needs more space
-        let r = registry(MemoIdKind::Nft, key(1), Pubkey::default(), "a.memo");
-        let mut data = vec![];
-        r.try_serialize(&mut data).unwrap();
-        assert_eq!(data.len() + 33, Registry::space_for(6));
+        assert_eq!(Registry::BASE_SPACE, 192);
+        assert_eq!(Registry::space_for(6), 198); // a.memo
+        assert_eq!(Registry::space_for(MAX_MEMO_ID_LEN), 445);
+    }
+
+    #[test]
+    fn cleared_forward_is_all_zero() {
+        // clear_target leaves the same bytes as a Registry that never had a target
+        let fresh = registry(MemoIdKind::Nft, key(1), Pubkey::default(), "a.memo");
+        let mut r = fresh.clone();
+        r.set_forward(Target::Asset(key(3)), key(4), key(5));
+        r.clear_forward();
+        let (mut a, mut b) = (vec![], vec![]);
+        fresh.try_serialize(&mut a).unwrap();
+        r.try_serialize(&mut b).unwrap();
+        assert_eq!(a, b);
+        assert!(b[90..188].iter().all(|&x| x == 0)); // after bump, up to memo_id
     }
 
     #[test]
@@ -311,6 +343,17 @@ mod accounts {
         assert_eq!(&data[41..73], key(2).as_ref()); // parent
         assert_eq!(&data[81..85], &3u32.to_le_bytes()); // nft_subids_issued
         assert_eq!(&data[85..89], &4u32.to_le_bytes()); // record_subids
+        assert_eq!(&data[188..192], &11u32.to_le_bytes()); // memo_id length, at a fixed offset
+        assert_eq!(&data[192..], b"blog.a.memo");
+        r.set_forward(Target::Asset(key(3)), key(4), key(5));
+        let mut data = vec![];
+        r.try_serialize(&mut data).unwrap();
+        assert_eq!(&data[90..122], key(4).as_ref()); // target_set_by
+        assert_eq!(&data[122..154], key(5).as_ref()); // target_holder
+        assert_eq!(data[154], 1); // has_target
+        assert_eq!(data[155], TARGET_KIND_ASSET); // target kind
+        assert_eq!(&data[156..188], key(3).as_ref()); // target key
+        assert_eq!(&data[192..], b"blog.a.memo");
         let back = Registry::try_deserialize(&mut &data[..]).unwrap();
         assert_eq!(back.memo_id, "blog.a.memo");
     }
@@ -321,10 +364,12 @@ mod accounts {
         SubidIndex { registry: key(1), bump: 1 }.try_serialize(&mut data).unwrap();
         assert_eq!(data.len(), SubidIndex::SPACE);
         let mut data = vec![];
-        PrimaryId { target: Target::Address(key(1)), memo_id_registry: key(2), set_by: key(3), bump: 1 }
+        PrimaryId { target: Target::Address(key(1)), memo_id_registry: key(2), set_by: key(3), set_holder: key(4), bump: 1 }
             .try_serialize(&mut data)
             .unwrap();
         assert_eq!(data.len(), PrimaryId::SPACE);
+        assert_eq!(PrimaryId::SPACE, 138);
+        assert_eq!(&data[105..137], key(4).as_ref()); // set_holder
     }
 
     #[test]
@@ -364,6 +409,21 @@ mod accounts {
         );
         assert_ne!(primary_id_address(&Target::Address(key(9))), primary_id_address(&Target::Asset(key(9))));
     }
+
+    #[test]
+    fn target_kinds() {
+        // the kind is the Borsh variant index, so set_primary's (kind, key) arguments name the
+        // same Target, and the same Primary ID seeds, as the serialized Target
+        for t in [Target::Address(key(9)), Target::Asset(key(9))] {
+            assert_eq!(Target::from_parts(t.kind(), *t.key()).unwrap(), t);
+            assert_eq!(t.try_to_vec().unwrap()[0], t.kind());
+        }
+        assert_eq!(Target::Address(key(9)).kind(), 0);
+        assert_eq!(Target::Asset(key(9)).kind(), 1);
+        for k in [2u8, 255] {
+            assert_eq!(Target::from_parts(k, key(9)).unwrap_err(), error!(ErrorCode::InvalidTargetKind));
+        }
+    }
 }
 
 // ============================================================================
@@ -387,21 +447,45 @@ mod control {
     fn one_level_vault_rule() {
         let holder = key(20);
         let vault = memo_home::vault_of(&holder).0;
-        let mut lamports = (1u64, 1u64);
+        let mut lamports = (1u64, 1u64, 1u64, 1u64);
         let (mut id_data, mut holder_data) = (core_asset(vault, key(50), "a.memo"), core_asset(key(2), key(51), "room"));
         let id_key = key(10);
         let id = AccountInfo::new(&id_key, false, false, &mut lamports.0, &mut id_data, &CORE, false, 0);
         let h = AccountInfo::new(&holder, false, false, &mut lamports.1, &mut holder_data, &CORE, false, 0);
+        // the holder's Collection Config (memo-home's) and another Collection's
+        let (config_key, other_config_key) = (key(70), key(71));
+        let (mut config_data, mut other_data) = (config_data(key(51)), config_data(key(52)));
+        let config_info =
+            AccountInfo::new(&config_key, false, false, &mut lamports.2, &mut config_data, &memo_home::ID, false, 0);
+        let other_info =
+            AccountInfo::new(&other_config_key, false, false, &mut lamports.3, &mut other_data, &memo_home::ID, false, 0);
+        let config = Account::<CollectionConfig>::try_from(&config_info).unwrap();
+        let other_config = Account::<CollectionConfig>::try_from(&other_info).unwrap();
+
         // the Vault owns the ID; the holder's owner controls it
         assert_eq!(controller_of(&id, None).unwrap(), vault);
-        assert_eq!(controller_of(&id, Some(&h)).unwrap(), key(2));
+        assert_eq!(controller_of(&id, Some((&h, &config))).unwrap(), key(2));
+        assert_eq!(holder_key(Some((&h, &config))), holder);
+        assert_eq!(holder_key(None), Pubkey::default());
+
+        // a holder that is not in the Config's Collection is rejected (F20)
+        assert_eq!(
+            controller_of(&id, Some((&h, &other_config))).unwrap_err(),
+            error!(ErrorCode::HolderNotHomeAsset)
+        );
 
         // a holder whose Vault does not own the ID is rejected
         let other = key(21);
         let mut l = 1u64;
         let mut d = core_asset(key(2), key(51), "room");
         let wrong = AccountInfo::new(&other, false, false, &mut l, &mut d, &CORE, false, 0);
-        assert!(controller_of(&id, Some(&wrong)).is_err());
+        assert_eq!(controller_of(&id, Some((&wrong, &config))).unwrap_err(), error!(ErrorCode::NotInHolderVault));
+
+        // holder and Config come together
+        assert!(holder_of(None, None).unwrap().is_none());
+        assert!(holder_of(Some(&h), Some(&config)).unwrap().is_some());
+        assert_eq!(holder_of(Some(&h), None).err(), Some(error!(ErrorCode::HolderNotHomeAsset)));
+        assert_eq!(holder_of(None, Some(&config)).err(), Some(error!(ErrorCode::HolderNotHomeAsset)));
     }
 
     #[test]
@@ -427,26 +511,33 @@ mod control {
     fn forward_lapses_with_the_controller() {
         let mut r = registry(MemoIdKind::Nft, key(10), Pubkey::default(), "a.memo");
         assert_eq!(r.forward(&key(1)), None);
-        r.target = Some(Target::Address(key(5)));
-        r.target_set_by = key(1);
+        assert_eq!(r.forward(&Pubkey::default()), None); // no record, whatever the stamp
+        r.set_forward(Target::Address(key(5)), key(1), Pubkey::default());
         assert_eq!(r.forward(&key(1)), Some(Target::Address(key(5))));
         assert_eq!(r.forward(&key(2)), None); // sold
+        r.clear_forward();
+        assert_eq!(r.forward(&key(1)), None);
     }
 
     #[test]
     fn verification() {
         let registry_key = key(40);
         let mut r = registry(MemoIdKind::Nft, key(10), Pubkey::default(), "a.memo");
-        r.target = Some(Target::Asset(key(60)));
-        r.target_set_by = key(1);
-        let p = PrimaryId { target: Target::Asset(key(60)), memo_id_registry: registry_key, set_by: key(2), bump: 1 };
+        r.set_forward(Target::Asset(key(60)), key(1), Pubkey::default());
+        let p = PrimaryId {
+            target: Target::Asset(key(60)),
+            memo_id_registry: registry_key,
+            set_by: key(2),
+            set_holder: Pubkey::default(),
+            bump: 1,
+        };
         assert!(is_verified(&registry_key, &r, &key(1), &p, &key(2)));
         assert!(!is_verified(&registry_key, &r, &key(3), &p, &key(2))); // the ID changed hands
         assert!(!is_verified(&registry_key, &r, &key(1), &p, &key(3))); // the Target changed hands
         assert!(!is_verified(&key(41), &r, &key(1), &p, &key(2))); // the Primary names another ID
         let wrong_kind = PrimaryId { target: Target::Address(key(60)), ..p.clone() };
         assert!(!is_verified(&registry_key, &r, &key(1), &wrong_kind, &key(2)));
-        r.target = None;
+        r.clear_forward();
         assert!(!is_verified(&registry_key, &r, &key(1), &p, &key(2)));
     }
 

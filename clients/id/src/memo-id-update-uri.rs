@@ -66,6 +66,7 @@ fn run() -> Result<(), String> {
         AccountMeta::new_readonly(registry, false),
         AccountMeta::new(asset, false),
         AccountMeta::new_readonly(a.program, false), // holder: none
+        AccountMeta::new_readonly(a.program, false), // holder_config: none
         AccountMeta::new_readonly(a.authority, false),
         AccountMeta::new_readonly(a.config, false),
         AccountMeta::new_readonly(a.collection, false),

@@ -17,6 +17,7 @@ use anchor_lang::solana_program::sysvar::instructions::{
 use anchor_spl::token_2022::Token2022;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use base64::{engine::general_purpose, Engine as _};
+use memo_home::CollectionConfig;
 use solana_sha256_hasher::hash;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
@@ -25,7 +26,7 @@ use spl_memo::ID as MEMO_PROGRAM_ID;
 declare_id!("Gji1DjBFybT3NWvuToyrvQkRHhzvRmkqWeHDsqxWRenp");
 
 #[cfg(not(feature = "mainnet"))]
-declare_id!("3U7nmWArstoRfkuGDsirEwiY6nngqjcooZxJ4Eh87MBt");
+declare_id!("CDbmi4gSZ47P5EMRH7GU7ztrPDrk9gn1uMgeZR7AXeLA");
 
 /// The MEMO mint (the one memo-burn accepts)
 pub const MEMO_MINT: Pubkey = memo_burn::AUTHORIZED_MINT_PUBKEY;
@@ -160,8 +161,7 @@ pub mod memo_id {
         registry.nft_subids_issued = 0;
         registry.record_subids = 0;
         registry.bump = ctx.bumps.registry;
-        registry.target_set_by = Pubkey::default();
-        registry.target = None;
+        registry.clear_forward();
         registry.memo_id = memo_id;
 
         emit!(Registered {
@@ -185,12 +185,8 @@ pub mod memo_id {
         require!(valid_label(&label), ErrorCode::InvalidLabel);
         let parent = &mut ctx.accounts.parent;
         require!(parent.kind == MemoIdKind::Nft, ErrorCode::ParentNotNft);
-        let controller = require_nft_controller(
-            parent,
-            &ctx.accounts.parent_asset,
-            ctx.accounts.holder.as_deref(),
-            &ctx.accounts.controller.key(),
-        )?;
+        let holder = holder_of(ctx.accounts.holder.as_deref(), ctx.accounts.holder_config.as_ref())?;
+        let controller = require_nft_controller(parent, &ctx.accounts.parent_asset, holder, &ctx.accounts.controller.key())?;
         let memo_id = format!("{}.{}", label, parent.memo_id);
         require!(memo_id.len() <= MAX_MEMO_ID_LEN, ErrorCode::MemoIdTooLong);
         require!(hash(memo_id.as_bytes()).to_bytes() == memo_id_hash, ErrorCode::HashMismatch);
@@ -204,8 +200,10 @@ pub mod memo_id {
         registry.nft_subids_issued = 0;
         registry.record_subids = 0;
         registry.bump = ctx.bumps.registry;
-        registry.target_set_by = if target.is_some() { controller } else { Pubkey::default() };
-        registry.target = target;
+        match target {
+            Some(t) => registry.set_forward(t, controller, holder_key(holder)),
+            None => registry.clear_forward(),
+        }
         registry.memo_id = memo_id;
 
         emit!(SubidCreated { memo_id: registry.memo_id.clone(), registry: registry.key(), parent: parent.key() });
@@ -218,12 +216,8 @@ pub mod memo_id {
     /// Delete a Record SubId (parent's controller only); its rent goes to the controller
     pub fn delete_subid(ctx: Context<DeleteSubid>) -> Result<()> {
         let parent = &mut ctx.accounts.parent;
-        require_nft_controller(
-            parent,
-            &ctx.accounts.parent_asset,
-            ctx.accounts.holder.as_deref(),
-            &ctx.accounts.controller.key(),
-        )?;
+        let holder = holder_of(ctx.accounts.holder.as_deref(), ctx.accounts.holder_config.as_ref())?;
+        require_nft_controller(parent, &ctx.accounts.parent_asset, holder, &ctx.accounts.controller.key())?;
         parent.record_subids = parent.record_subids.saturating_sub(1);
         emit!(SubidDeleted { memo_id: ctx.accounts.registry.memo_id.clone(), registry: ctx.accounts.registry.key() });
         Ok(())
@@ -231,17 +225,20 @@ pub mod memo_id {
 
     /// Turn a Record SubId into an NFT owned by `new_owner` (parent's controller only; one way):
     /// burns 69 mints (BurnMemo at index 0, paid by the payer), creates the Asset and the SubId
-    /// Index entry `index`, which must be the parent's `nft_subids_issued`.
+    /// Index entry `index`, which must be the parent's `nft_subids_issued`. Refused while the
+    /// parent's Asset, or the holder whose Vault holds it, is listed or locked
+    /// (`memo_home::is_listed`): an issued SubId is permanent, so a temporary controller (a
+    /// renter, a borrower whose collateral is frozen) must not issue one.
     pub fn issue_subid(ctx: Context<IssueSubid>, index: u32, uri: String) -> Result<()> {
         require_uri(&uri)?;
         let parent = &mut ctx.accounts.parent;
         require!(index == parent.nft_subids_issued, ErrorCode::WrongSubidIndex);
-        require_nft_controller(
-            parent,
-            &ctx.accounts.parent_asset,
-            ctx.accounts.holder.as_deref(),
-            &ctx.accounts.controller.key(),
-        )?;
+        let holder = holder_of(ctx.accounts.holder.as_deref(), ctx.accounts.holder_config.as_ref())?;
+        require_nft_controller(parent, &ctx.accounts.parent_asset, holder, &ctx.accounts.controller.key())?;
+        require!(!memo_home::is_listed(&ctx.accounts.parent_asset)?, ErrorCode::Listed);
+        if let Some((h, _)) = holder {
+            require!(!memo_home::is_listed(h)?, ErrorCode::Listed);
+        }
         parent.nft_subids_issued = parent.nft_subids_issued.checked_add(1).ok_or(ErrorCode::ArithmeticOverflow)?;
         parent.record_subids = parent.record_subids.saturating_sub(1);
         let parent_key = parent.key();
@@ -278,9 +275,9 @@ pub mod memo_id {
     /// while the signer stays the controller.
     pub fn set_target(mut ctx: Context<SetTarget>, target: Target) -> Result<()> {
         let a = &mut ctx.accounts;
-        let controller = require_controller(&a.registry, a.parent.as_ref(), &a.asset, a.holder.as_deref(), &a.controller.key())?;
-        a.registry.target = Some(target);
-        a.registry.target_set_by = controller;
+        let holder = holder_of(a.holder.as_deref(), a.holder_config.as_ref())?;
+        let controller = require_controller(&a.registry, a.parent.as_ref(), &a.asset, holder, &a.controller.key())?;
+        a.registry.set_forward(target, controller, holder_key(holder));
         emit!(TargetSet { registry: a.registry.key(), target, set_by: controller });
         Ok(())
     }
@@ -288,23 +285,31 @@ pub mod memo_id {
     /// Remove the forward record (controller only)
     pub fn clear_target(mut ctx: Context<SetTarget>) -> Result<()> {
         let a = &mut ctx.accounts;
-        require_controller(&a.registry, a.parent.as_ref(), &a.asset, a.holder.as_deref(), &a.controller.key())?;
-        a.registry.target = None;
-        a.registry.target_set_by = Pubkey::default();
+        let holder = holder_of(a.holder.as_deref(), a.holder_config.as_ref())?;
+        require_controller(&a.registry, a.parent.as_ref(), &a.asset, holder, &a.controller.key())?;
+        a.registry.clear_forward();
         emit!(TargetCleared { registry: a.registry.key() });
         Ok(())
     }
 
     /// Choose the MEMO ID shown for `target` (the Target's controller only: the address itself,
-    /// or the controller of the Asset). Creates or replaces the Primary ID.
-    pub fn set_primary(mut ctx: Context<SetPrimary>, target: Target) -> Result<()> {
+    /// or the controller of the Asset). Creates or replaces the Primary ID. The Target is given
+    /// as its kind (`Target::kind`: 0 Address, 1 Asset) and key, the Primary ID's seeds.
+    pub fn set_primary(mut ctx: Context<SetPrimary>, target_kind: u8, target_key: Pubkey) -> Result<()> {
+        let target = Target::from_parts(target_kind, target_key)?;
         let a = &mut ctx.accounts;
         let signer = a.signer.key();
-        require_target_controller(&target, a.target_asset.as_deref(), a.holder.as_deref(), &signer)?;
+        let holder = holder_of(a.holder.as_deref(), a.holder_config.as_ref())?;
+        require_target_controller(&target, a.target_asset.as_deref(), holder, &signer)?;
         let primary = &mut a.primary;
         primary.target = target;
         primary.memo_id_registry = a.registry.key();
         primary.set_by = signer;
+        // a holder only decides the controller of an Asset target
+        primary.set_holder = match target {
+            Target::Asset(_) => holder_key(holder),
+            Target::Address(_) => Pubkey::default(),
+        };
         primary.bump = ctx.bumps.primary;
         emit!(PrimarySet { target, registry: primary.memo_id_registry, set_by: signer });
         Ok(())
@@ -314,7 +319,8 @@ pub mod memo_id {
     pub fn clear_primary(ctx: Context<ClearPrimary>) -> Result<()> {
         let a = &ctx.accounts;
         let target = a.primary.target;
-        require_target_controller(&target, a.target_asset.as_deref(), a.holder.as_deref(), &a.signer.key())?;
+        let holder = holder_of(a.holder.as_deref(), a.holder_config.as_ref())?;
+        require_target_controller(&target, a.target_asset.as_deref(), holder, &a.signer.key())?;
         emit!(PrimaryCleared { target });
         Ok(())
     }
@@ -324,7 +330,8 @@ pub mod memo_id {
         require_uri(&uri)?;
         let a = &ctx.accounts;
         require!(a.registry.kind == MemoIdKind::Nft, ErrorCode::NotNft);
-        require_nft_controller(&a.registry, &a.asset, a.holder.as_deref(), &a.controller.key())?;
+        let holder = holder_of(a.holder.as_deref(), a.holder_config.as_ref())?;
+        require_nft_controller(&a.registry, &a.asset, holder, &a.controller.key())?;
         memo_home::cpi::update_asset(
             CpiContext::new_with_signer(
                 a.memo_home_program.to_account_info(),
@@ -368,16 +375,27 @@ impl Target {
         }
     }
 
-    /// The kind as a seed (its Borsh variant index). A keypair-addressed Core Asset X can be
-    /// owned by one party while another still holds key X, so `Address(X)` and `Asset(X)` need
-    /// separate Primary IDs.
-    pub fn kind_seed(&self) -> &'static [u8] {
+    /// The kind (its Borsh variant index), a seed of the Primary ID. A keypair-addressed Core
+    /// Asset X can be owned by one party while another still holds key X, so `Address(X)` and
+    /// `Asset(X)` need separate Primary IDs.
+    pub fn kind(&self) -> u8 {
         match self {
-            Target::Address(_) => &[0],
-            Target::Asset(_) => &[1],
+            Target::Address(_) => TARGET_KIND_ADDRESS,
+            Target::Asset(_) => TARGET_KIND_ASSET,
+        }
+    }
+
+    pub fn from_parts(kind: u8, key: Pubkey) -> Result<Self> {
+        match kind {
+            TARGET_KIND_ADDRESS => Ok(Target::Address(key)),
+            TARGET_KIND_ASSET => Ok(Target::Asset(key)),
+            _ => err!(ErrorCode::InvalidTargetKind),
         }
     }
 }
+
+pub const TARGET_KIND_ADDRESS: u8 = 0;
+pub const TARGET_KIND_ASSET: u8 = 1;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoIdKind {
@@ -551,6 +569,10 @@ pub struct CreateSubid<'info> {
     /// CHECK: the memo-home Asset whose Vault holds the parent's Asset, if it is held (checked in the handler)
     pub holder: Option<UncheckedAccount<'info>>,
 
+    /// The holder's memo-home Collection Config, required with `holder` (the holder must be a
+    /// memo-home Asset)
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
+
     #[account(
         init,
         payer = payer,
@@ -577,6 +599,9 @@ pub struct DeleteSubid<'info> {
 
     /// CHECK: see CreateSubid
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// See CreateSubid
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 
     #[account(
         mut,
@@ -605,6 +630,9 @@ pub struct IssueSubid<'info> {
 
     /// CHECK: see CreateSubid
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// See CreateSubid
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 
     #[account(
         mut,
@@ -652,10 +680,13 @@ pub struct SetTarget<'info> {
 
     /// CHECK: see CreateSubid
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// See CreateSubid
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 }
 
 #[derive(Accounts)]
-#[instruction(target: Target)]
+#[instruction(target_kind: u8, target_key: Pubkey)]
 pub struct SetPrimary<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -670,7 +701,7 @@ pub struct SetPrimary<'info> {
         init_if_needed,
         payer = payer,
         space = PrimaryId::SPACE,
-        seeds = [PRIMARY_ID_SEED, target.kind_seed(), target.key().as_ref()],
+        seeds = [PRIMARY_ID_SEED, &target_kind.to_le_bytes(), target_key.as_ref()],
         bump
     )]
     pub primary: Account<'info, PrimaryId>,
@@ -680,6 +711,10 @@ pub struct SetPrimary<'info> {
 
     /// CHECK: the memo-home Asset whose Vault holds the Target Asset, if it is held
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// The holder's memo-home Collection Config, required with `holder` (the holder must be a
+    /// memo-home Asset)
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 
     pub system_program: Program<'info, System>,
 }
@@ -698,6 +733,9 @@ pub struct ClearPrimary<'info> {
 
     /// CHECK: see SetPrimary
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// See CreateSubid
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 }
 
 #[derive(Accounts)]
@@ -716,6 +754,9 @@ pub struct UpdateUri<'info> {
 
     /// CHECK: see CreateSubid
     pub holder: Option<UncheckedAccount<'info>>,
+
+    /// See CreateSubid
+    pub holder_config: Option<Account<'info, CollectionConfig>>,
 
     /// CHECK: memo-id PDA, Authority of the MEMO ID Collection
     #[account(seeds = [AUTHORITY_SEED], bump)]
@@ -743,8 +784,9 @@ pub struct UpdateUri<'info> {
 // ---------------------------------------------------------------------------------------------
 
 /// One per full MEMO ID, at [MEMO_ID_SEED, sha256(memo_id)], sized for its own `memo_id`.
-/// Fixed-size fields come first, so readers can filter by `kind` (offset 8), `asset` (9) and
-/// `parent` (41) with memcmp. An all-zero `asset` or `parent` means none.
+/// Every field before `memo_id` has a fixed size, so readers can filter by `kind` (offset 8),
+/// `asset` (9) and `parent` (41) with memcmp, and the account is exactly its Borsh encoding
+/// (`memo_id` at offset 188). An all-zero `asset`, `parent` or `target_holder` means none.
 #[account]
 pub struct Registry {
     pub kind: MemoIdKind,
@@ -761,7 +803,13 @@ pub struct Registry {
     pub bump: u8,
     /// The controller that set `target`; the record is valid only while it is still the controller
     pub target_set_by: Pubkey,
-    pub target: Option<Target>,
+    /// The holder whose Vault held the controlling Asset when `target` was set (all-zero if
+    /// none), so readers can re-derive that controller from accounts readable by address
+    pub target_holder: Pubkey,
+    /// Whether there is a forward record; without one, `target_set_by`, `target_holder` and
+    /// `target` are all zero
+    pub has_target: bool,
+    pub target: Target,
     /// The full MEMO ID, e.g. `blog.xen-artist.memo`
     pub memo_id: String,
 }
@@ -777,17 +825,33 @@ impl Registry {
         4 +  // record_subids
         1 +  // bump
         32 + // target_set_by
-        1 + 33 + // target (Option<Target>)
+        32 + // target_holder
+        1 +  // has_target
+        33 + // target
         4; // memo_id length prefix
 
-    /// Space for a Registry whose `memo_id` is `memo_id_len` bytes (the target may be set later)
+    /// Space for a Registry whose `memo_id` is `memo_id_len` bytes
     pub const fn space_for(memo_id_len: usize) -> usize {
         Self::BASE_SPACE + memo_id_len
     }
 
     /// The forward record, if it is valid for the current controller
     pub fn forward(&self, controller: &Pubkey) -> Option<Target> {
-        self.target.filter(|_| self.target_set_by == *controller)
+        (self.has_target && self.target_set_by == *controller).then_some(self.target)
+    }
+
+    fn set_forward(&mut self, target: Target, controller: Pubkey, holder: Pubkey) {
+        self.target_set_by = controller;
+        self.target_holder = holder;
+        self.has_target = true;
+        self.target = target;
+    }
+
+    fn clear_forward(&mut self) {
+        self.target_set_by = Pubkey::default();
+        self.target_holder = Pubkey::default();
+        self.has_target = false;
+        self.target = Target::Address(Pubkey::default());
     }
 }
 
@@ -812,11 +876,14 @@ pub struct PrimaryId {
     pub memo_id_registry: Pubkey,
     /// The Target's controller when it was set; valid only while it still is
     pub set_by: Pubkey,
+    /// The holder whose Vault held the Target Asset when it was set (all-zero if none, and for an
+    /// `Address` target)
+    pub set_holder: Pubkey,
     pub bump: u8,
 }
 
 impl PrimaryId {
-    pub const SPACE: usize = 8 + 33 + 32 + 32 + 1;
+    pub const SPACE: usize = 8 + 33 + 32 + 32 + 32 + 1;
 
     pub fn is_valid(&self, target_controller: &Pubkey) -> bool {
         self.set_by == *target_controller
@@ -974,20 +1041,43 @@ pub fn subid_index_address(parent_registry: &Pubkey, index: u32) -> Pubkey {
 
 /// Primary ID PDA of a Target
 pub fn primary_id_address(target: &Target) -> Pubkey {
-    Pubkey::find_program_address(&[PRIMARY_ID_SEED, target.kind_seed(), target.key().as_ref()], &crate::ID).0
+    Pubkey::find_program_address(&[PRIMARY_ID_SEED, &[target.kind()], target.key().as_ref()], &crate::ID).0
 }
 
+/// A holder: the memo-home Asset whose Vault holds an Asset, with its Collection Config
+pub type Holder<'a, 'info> = Option<(&'a AccountInfo<'info>, &'a Account<'info, CollectionConfig>)>;
+
 /// Controller of an Asset: its Core owner, or, when `holder` is given, the owner of `holder`
-/// whose memo-home Vault holds the Asset (one level only)
-pub fn controller_of(asset: &AccountInfo, holder: Option<&AccountInfo>) -> Result<Pubkey> {
+/// whose memo-home Vault holds the Asset (one level only). The holder must be a memo-home Asset
+/// (in the Collection of its Config): a third-party Asset could be moved or burned by a
+/// permanent delegate, and memo-home could not move the Asset out of its Vault.
+pub fn controller_of(asset: &AccountInfo, holder: Holder) -> Result<Pubkey> {
     let owner = memo_home::owner_of(asset)?;
     match holder {
         None => Ok(owner),
-        Some(h) => {
+        Some((h, config)) => {
+            require!(memo_home::is_home_asset(h, config), ErrorCode::HolderNotHomeAsset);
             require_keys_eq!(owner, memo_home::vault_of(h.key).0, ErrorCode::NotInHolderVault);
             memo_home::owner_of(h)
         }
     }
+}
+
+/// The optional `holder` and `holder_config` accounts: both or neither
+fn holder_of<'a, 'info>(
+    holder: Option<&'a AccountInfo<'info>>,
+    config: Option<&'a Account<'info, CollectionConfig>>,
+) -> Result<Holder<'a, 'info>> {
+    match (holder, config) {
+        (None, None) => Ok(None),
+        (Some(h), Some(c)) => Ok(Some((h, c))),
+        _ => err!(ErrorCode::HolderNotHomeAsset),
+    }
+}
+
+/// The holder's address, or all-zero without one
+fn holder_key(holder: Holder) -> Pubkey {
+    holder.map_or(Pubkey::default(), |(h, _)| h.key())
 }
 
 /// True when `registry` (at `registry_key`, valid for `controller`) and `primary` (valid for
@@ -1005,7 +1095,7 @@ pub fn is_verified(
 }
 
 /// The signer must control the NFT ID `registry` through `asset` (its own Asset)
-fn require_nft_controller(registry: &Registry, asset: &AccountInfo, holder: Option<&AccountInfo>, signer: &Pubkey) -> Result<Pubkey> {
+fn require_nft_controller(registry: &Registry, asset: &AccountInfo, holder: Holder, signer: &Pubkey) -> Result<Pubkey> {
     require!(registry.kind == MemoIdKind::Nft, ErrorCode::NotNft);
     require_keys_eq!(asset.key(), registry.asset, ErrorCode::WrongAsset);
     let controller = controller_of(asset, holder)?;
@@ -1018,7 +1108,7 @@ fn require_controller(
     registry: &Account<Registry>,
     parent: Option<&Account<Registry>>,
     asset: &AccountInfo,
-    holder: Option<&AccountInfo>,
+    holder: Holder,
     signer: &Pubkey,
 ) -> Result<Pubkey> {
     match registry.kind {
@@ -1032,7 +1122,7 @@ fn require_controller(
 }
 
 /// The signer must control `target`: the address itself, or the controller of the Asset
-fn require_target_controller(target: &Target, target_asset: Option<&AccountInfo>, holder: Option<&AccountInfo>, signer: &Pubkey) -> Result<()> {
+fn require_target_controller(target: &Target, target_asset: Option<&AccountInfo>, holder: Holder, signer: &Pubkey) -> Result<()> {
     match target {
         Target::Address(a) => {
             require_keys_eq!(*a, *signer, ErrorCode::NotController);
@@ -1177,6 +1267,12 @@ pub enum ErrorCode {
     MemoIdMismatch,
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
+    #[msg("The holder must be a memo-home Asset, passed with its Collection Config")]
+    HolderNotHomeAsset,
+    #[msg("The Asset or its holder is listed or locked")]
+    Listed,
+    #[msg("Target kind must be 0 (Address) or 1 (Asset)")]
+    InvalidTargetKind,
 }
 
 #[cfg(test)]

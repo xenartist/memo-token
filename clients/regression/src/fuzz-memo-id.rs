@@ -6,16 +6,17 @@
 //! wallets and into and out of the Vaults of MEMO ID Assets and of a plain Core Asset X (whose
 //! key xk also signs; a Core-owned account cannot pay fees, so an actor always pays). Every
 //! operation has valid and deliberately invalid variants: wrong or stale signer, missing or wrong
-//! holder, wrong parent, Asset or index, an unsigned controller, a bad label, URI or BurnMemo, a
-//! payer short of MEMO. Lamports are also sent to the PDAs of accounts before they exist
-//! (Registry, SubId Index entry, Primary ID, Asset, Vault State), and Assets are given to
-//! themselves or to their own Vault.
+//! holder or holder Collection Config, wrong parent, Asset or index, an unsigned controller, a bad
+//! label, URI or BurnMemo, a payer short of MEMO. Lamports are also sent to the PDAs of accounts
+//! before they exist (Registry, SubId Index entry, Primary ID, Asset, Vault State), Assets are
+//! given to themselves or to their own Vault, and owners give a TransferDelegate to someone else
+//! and revoke it (a listed Asset: issue_subid through it, and withdrawals from its Vault, fail).
 //!
 //! A model of the expected state predicts each step: success, or the exact error (instruction
 //! index, code, the program of the innermost failing frame and the Anchor name), in the order the
 //! checks run (account deserialization, init, constraints, handler, CPIs). After every step the
-//! model is compared with every account the run has named: each Registry byte for byte
-//! (including the stale bytes Anchor leaves after a shorter serialization), Primary ID, SubId
+//! model is compared with every account the run has named: each Registry byte for byte (its
+//! fixed-size encoding, holder included), Primary ID, SubId
 //! Index entry and Vault State, the Core owner, Collection, name and URI of each Asset, the
 //! lamports of every memo-id account (its rent, or more when pre-funded), the MEMO balances,
 //! supply and burn statistics, the lamports paid back by closes, and the events. Every accepted
@@ -24,7 +25,9 @@
 //! computed from the chain alone (counters, SubId Index completeness, the name / Registry / Asset
 //! binding both ways), and the verified pairs computed from the chain (forward record valid for
 //! the current controller, Primary ID valid for the Target's current controller) are compared
-//! with those implied by the model's history of who signed what. A mismatch prints the earlier
+//! with those implied by the model's history of who signed what; a pair verified from accounts
+//! read by address only (the controller re-derived through the recorded holder) must be among
+//! them. A mismatch prints the earlier
 //! steps that touched the accounts involved; the model then adopts the chain's state and the run
 //! continues.
 //!
@@ -32,8 +35,9 @@
 //!   MEMO_RPC_URL=http://127.0.0.1:8899 MEMO_WALLET=target/local-validator/wallet.json \
 //!     cargo run --bin fuzz-memo-id -- --seed 1 --steps 500 [--tag b] [--edge] [--stop-on-mismatch]
 //! --edge biases the choices towards the 253-byte limit (63-byte labels on the deepest IDs) and
-//! towards SubIds issued to their own Asset or Vault, and one step in ten is a valid step down
-//! that path (create a 63-byte label under the deepest ID an actor controls, or issue it).
+//! towards SubIds issued to their own Asset or Vault (refused by memo-home), and one step in ten
+//! is a step down that path (create a 63-byte label under the deepest ID an actor controls, or
+//! issue it).
 //! Exits with status 1 if any step mismatched.
 
 #[path = "harness.rs"]
@@ -86,19 +90,23 @@ const MEMO_REQUIRED: u32 = 6015;
 const BURN_AMOUNT_MISMATCH: u32 = 6019;
 const USER_PUBKEY_MISMATCH: u32 = 6023;
 const MEMO_ID_MISMATCH: u32 = 6024;
-const ERROR_NAMES: [&str; 26] = [
+const HOLDER_NOT_HOME_ASSET: u32 = 6026;
+const LISTED: u32 = 6027;
+const ERROR_NAMES: [&str; 29] = [
     "InvalidLabel", "MemoIdTooLong", "HashMismatch", "InvalidUri", "UriTooLong", "WrongCollection", "InvalidMint",
     "WrongAsset", "NotController", "NotInHolderVault", "ParentNotNft", "NotNft", "NotRecord", "WrongParent",
     "WrongSubidIndex", "MemoRequired", "MemoTooShort", "InvalidMemoFormat", "UnsupportedMemoVersion",
     "BurnAmountMismatch", "UnsupportedPayloadVersion", "InvalidCategory", "InvalidOperation", "UserPubkeyMismatch",
-    "MemoIdMismatch", "ArithmeticOverflow",
+    "MemoIdMismatch", "ArithmeticOverflow", "HolderNotHomeAsset", "Listed", "InvalidTargetKind",
 ];
 // memo-home error codes (raised in memo-home's frame, or by its helpers inside memo-id's)
 const HOME_WRONG_COLLECTION: u32 = 6004;
 const HOME_INVALID_CORE_ACCOUNT: u32 = 6009;
 const HOME_NOT_OWNER: u32 = 6010;
+const HOME_LISTED: u32 = 6011;
 const HOME_NOT_IN_VAULT: u32 = 6012;
 const HOME_INVALID_OWNER: u32 = 6020;
+const HOME_INVALID_DESTINATION: u32 = 6024;
 // Anchor account errors
 const A_CONSTRAINT_SEEDS: u32 = 2006;
 const A_DISCRIMINATOR_MISMATCH: u32 = 3002;
@@ -107,6 +115,9 @@ const A_NOT_SIGNER: u32 = 3010;
 const A_NOT_INITIALIZED: u32 = 3012;
 // Metaplex Core: no plugin or owner approved the transfer
 const CORE_NO_APPROVALS: u32 = 26;
+/// Registry size without the memo_id bytes, and the Primary ID size
+const REG_BASE: usize = 192;
+const PRIM_LEN: usize = 138;
 
 /// memo-id's events and memo-home's AssetWithdrawn, by name (for the "Program data:" logs)
 const ID_EVENTS: [&str; 10] = [
@@ -210,13 +221,15 @@ struct MReg {
     rec: u32,
     bump: u8,
     set_by: Pubkey,
+    /// target_holder
+    holder: Pubkey,
     target: Option<Target>,
     memo_id: String,
 }
 
 impl MReg {
-    /// Anchor's serialization (discriminator and Borsh fields); the account is 160 + ID bytes, so
-    /// a Registry without a target leaves 33 bytes after it, which keep what was last written
+    /// Anchor's serialization (discriminator and Borsh fields), which fills the account exactly:
+    /// without a target, set_by, holder and the target are all zero
     fn bytes(&self) -> Vec<u8> {
         let mut v = disc8("account", "Registry").to_vec();
         v.push(self.kind);
@@ -227,8 +240,9 @@ impl MReg {
         v.extend(self.rec.to_le_bytes());
         v.push(self.bump);
         v.extend(self.set_by.as_ref());
+        v.extend(self.holder.as_ref());
         match self.target {
-            None => v.push(0),
+            None => v.extend([0u8; 34]),
             Some(t) => {
                 v.push(1);
                 t.encode(&mut v);
@@ -236,6 +250,11 @@ impl MReg {
         }
         bstr(&mut v, &self.memo_id);
         v
+    }
+    fn set_forward(&mut self, target: Option<Target>, ctrl: Pubkey, holder: Option<Pubkey>) {
+        self.target = target;
+        self.set_by = if target.is_some() { ctrl } else { Pubkey::default() };
+        self.holder = if target.is_some() { holder.unwrap_or_default() } else { Pubkey::default() };
     }
     fn parse(d: &[u8]) -> Option<MReg> {
         if d.get(..8)? != disc8("account", "Registry") {
@@ -251,9 +270,10 @@ impl MReg {
             rec: r.u32()?,
             bump: r.u8()?,
             set_by: r.pk()?,
-            target: match r.u8()? {
-                0 => None,
-                1 => Some(r.target()?),
+            holder: r.pk()?,
+            target: match (r.u8()?, r.target()?) {
+                (0, _) => None,
+                (1, t) => Some(t),
                 _ => return None,
             },
             memo_id: r.string()?,
@@ -293,6 +313,7 @@ struct MPrim {
     target: Target,
     registry: Pubkey,
     set_by: Pubkey,
+    set_holder: Pubkey,
     bump: u8,
 }
 impl MPrim {
@@ -301,6 +322,7 @@ impl MPrim {
         self.target.encode(&mut v);
         v.extend(self.registry.as_ref());
         v.extend(self.set_by.as_ref());
+        v.extend(self.set_holder.as_ref());
         v.push(self.bump);
         v
     }
@@ -309,7 +331,7 @@ impl MPrim {
             return None;
         }
         let mut r = Rd { d, p: 8 };
-        Some(MPrim { target: r.target()?, registry: r.pk()?, set_by: r.pk()?, bump: r.u8()? })
+        Some(MPrim { target: r.target()?, registry: r.pk()?, set_by: r.pk()?, set_holder: r.pk()?, bump: r.u8()? })
     }
 }
 
@@ -355,6 +377,8 @@ struct Model {
     fwd_hist: BTreeMap<Pubkey, (Target, Pubkey)>,
     /// history: who signed the Primary ID now stored (Target -> (registry, signer))
     prim_hist: BTreeMap<Target, (Pubkey, Pubkey)>,
+    /// TransferDelegate plugins: Some(d) held by d (the Asset is listed), None held by the owner
+    del: BTreeMap<Pubkey, Option<Pubkey>>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -377,21 +401,36 @@ enum RegRef {
     Acct(Pubkey),
 }
 
+/// A TransferDelegate change by an Asset's owner: add it held by someone else, give it to
+/// someone else (approve), or take it back (revoke)
+#[derive(Clone, Copy, Debug)]
+enum DelOp {
+    Add(Pubkey),
+    Approve(Pubkey),
+    Revoke,
+}
+
+/// Every action that takes a holder also takes `hcfg`, the holder_config account (the holder's
+/// Collection Config when right; missing, or another account, when not)
 #[derive(Clone, Debug)]
 enum Act {
     Register { payer: Pubkey, label: String, uri: String, memo: MemoV, cu_last: bool },
-    CreateSubid { payer: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, label: String,
-                  target: Option<Target> },
-    DeleteSubid { fee: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, name: String },
-    IssueSubid { payer: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, name: String,
-                 index: u32, new_owner: Pubkey, uri: String, memo: MemoV, cu_last: bool },
+    CreateSubid { payer: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, hcfg: Option<Pubkey>,
+                  label: String, target: Option<Target> },
+    DeleteSubid { fee: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, hcfg: Option<Pubkey>,
+                  name: String },
+    IssueSubid { payer: Pubkey, ctrl: Pubkey, signs: bool, parent: String, parent_asset: Pubkey, holder: Option<Pubkey>, hcfg: Option<Pubkey>,
+                 name: String, index: u32, new_owner: Pubkey, uri: String, memo: MemoV, cu_last: bool },
     /// set_target, or clear_target when `target` is None
     SetTarget { fee: Pubkey, ctrl: Pubkey, signs: bool, name: String, parent: Option<String>, asset: Pubkey, holder: Option<Pubkey>,
-                target: Option<Target> },
+                hcfg: Option<Pubkey>, target: Option<Target> },
     SetPrimary { payer: Pubkey, signer: Pubkey, signs: bool, reg: RegRef, target: Target, account: Pubkey, target_asset: Option<Pubkey>,
-                 holder: Option<Pubkey> },
-    ClearPrimary { fee: Pubkey, signer: Pubkey, signs: bool, target: Target, target_asset: Option<Pubkey>, holder: Option<Pubkey> },
-    UpdateUri { payer: Pubkey, ctrl: Pubkey, signs: bool, name: String, asset: Pubkey, holder: Option<Pubkey>, uri: String },
+                 holder: Option<Pubkey>, hcfg: Option<Pubkey> },
+    ClearPrimary { fee: Pubkey, signer: Pubkey, signs: bool, target: Target, target_asset: Option<Pubkey>, holder: Option<Pubkey>,
+                   hcfg: Option<Pubkey> },
+    UpdateUri { payer: Pubkey, ctrl: Pubkey, signs: bool, name: String, asset: Pubkey, holder: Option<Pubkey>, hcfg: Option<Pubkey>, uri: String },
+    /// Core AddPluginV1 / ApprovePluginAuthorityV1 / RevokePluginAuthorityV1 of a TransferDelegate, by the owner
+    Delegate { owner: Pubkey, asset: Pubkey, op: DelOp },
     /// Core TransferV1 authorized by `signer` (the owner, or someone who is not); `payer` pays
     Transfer { payer: Pubkey, signer: Pubkey, asset: Pubkey, new_owner: Pubkey },
     /// memo-home withdraw_asset of `inner` from the Vault of `holder`, signed by `owner`
@@ -415,6 +454,9 @@ impl Act {
             Act::Transfer { .. } => "core_transfer",
             Act::Withdraw { .. } => "withdraw_asset",
             Act::Prefund { .. } => "prefund",
+            Act::Delegate { op: DelOp::Add(_), .. } => "add_delegate",
+            Act::Delegate { op: DelOp::Approve(_), .. } => "approve_delegate",
+            Act::Delegate { op: DelOp::Revoke, .. } => "revoke_delegate",
         }
     }
     /// Fee payer and the other signers
@@ -432,6 +474,7 @@ impl Act {
             Act::Transfer { payer, signer, .. } => (*payer, vec![*signer]),
             Act::Withdraw { payer, owner, .. } => (*payer, vec![*owner]),
             Act::Prefund { payer, .. } => (*payer, vec![]),
+            Act::Delegate { owner, .. } => (*owner, vec![]),
         }
     }
 }
@@ -484,6 +527,8 @@ struct Fz<'a> {
     mismatches: usize,
     skipped: usize,
     verified_seen: usize,
+    /// pairs verified from accounts read by address only (through the recorded holders)
+    addr_seen: usize,
     verified_max: usize,
 }
 
@@ -522,6 +567,7 @@ impl<'a> Fz<'a> {
             mismatches: 0,
             skipped: 0,
             verified_seen: 0,
+            addr_seen: 0,
             verified_max: 0,
         }
     }
@@ -578,6 +624,8 @@ impl<'a> Fz<'a> {
             HOME_NOT_OWNER => "NotOwner",
             HOME_NOT_IN_VAULT => "NotInVault",
             HOME_INVALID_OWNER => "InvalidOwner",
+            HOME_LISTED => "Listed",
+            HOME_INVALID_DESTINATION => "InvalidDestination",
             _ => "?",
         };
         Fail { code, prog, name: Some(name) }
@@ -613,12 +661,42 @@ impl<'a> Fz<'a> {
     fn core_owner(&self, k: &Pubkey) -> Result<Pubkey, Fail> {
         self.m.assets.get(k).map(|a| a.owner).ok_or(self.homef(self.id, HOME_INVALID_CORE_ACCOUNT))
     }
-    /// memo-id's controller_of: the owner, or with a holder, the holder's owner when its Vault owns the Asset
+    /// The Collection Config clients derive for a holder: of its Collection (none: of the
+    /// default address, which does not exist)
+    fn cfg_for(&self, h: &Pubkey) -> Pubkey {
+        let col = self.m.assets.get(h).and_then(|a| a.col).unwrap_or_default();
+        if col == self.collection { self.config } else { self.pda(&self.home, &[b"collection_config", col.as_ref()]).0 }
+    }
+    /// Anchor `Option<Account<CollectionConfig>>` of holder_config (the MEMO ID Collection's is the only one)
+    fn cfg_deser(&self, hcfg: &Option<Pubkey>) -> Result<(), Fail> {
+        match hcfg {
+            None => Ok(()),
+            Some(k) if *k == self.config => Ok(()),
+            Some(k) if self.m.regs.contains_key(k) || self.m.prims.contains_key(k) || self.m.idx.contains_key(k) => {
+                Err(self.anchor(self.id, A_OWNED_BY_WRONG_PROGRAM))
+            }
+            Some(k) => Err(self.missing(self.id, k)),
+        }
+    }
+    /// holder_of: holder and holder_config come together
+    fn pair(&self, holder: &Option<Pubkey>, hcfg: &Option<Pubkey>) -> Result<(), Fail> {
+        if holder.is_some() != hcfg.is_some() {
+            return Err(self.idf(HOLDER_NOT_HOME_ASSET));
+        }
+        Ok(())
+    }
+    /// memo_home::is_listed: a TransferDelegate held by someone else
+    fn listed(&self, a: &Pubkey) -> bool { matches!(self.m.del.get(a), Some(Some(_))) }
+    /// memo-id's controller_of: the owner, or with a holder (a memo-home Asset, checked once the
+    /// Config has deserialized), the holder's owner when its Vault owns the Asset
     fn ctrl_of(&self, asset: &Pubkey, holder: Option<&Pubkey>) -> Result<Pubkey, Fail> {
         let owner = self.core_owner(asset)?;
         match holder {
             None => Ok(owner),
             Some(h) => {
+                if self.m.assets.get(h).and_then(|a| a.col) != Some(self.collection) {
+                    return Err(self.idf(HOLDER_NOT_HOME_ASSET));
+                }
                 if owner != self.vault(h) {
                     return Err(self.idf(NOT_IN_HOLDER_VAULT));
                 }
@@ -736,31 +814,40 @@ impl<'a> Fz<'a> {
         let so = |k: &Option<Pubkey>| self.short_o(k);
         let st = |t: &Option<Target>| t.map(|t| self.short_t(&t)).unwrap_or_else(|| "-".into());
         let sign = |b: &bool| if *b { "" } else { " UNSIGNED" };
+        // the holder, and its Config when it is not the one clients derive
+        let so = |h: &Option<Pubkey>, c: &Option<Pubkey>| -> String {
+            let derived = h.map(|h| self.cfg_for(&h));
+            if *c == derived { so(h) } else { format!("{} cfg={}", so(h), so(c)) }
+        };
         match act {
             Act::Register { payer, label, uri, memo, cu_last } => format!("register {:?} payer={} uri={:.40} memo={:?}{}", label, s(payer), uri,
                                                                           memo, if *cu_last { " cu-last" } else { "" }),
-            Act::CreateSubid { payer, ctrl, signs, parent, parent_asset, holder, label, target } =>
+            Act::CreateSubid { payer, ctrl, signs, parent, parent_asset, holder, hcfg, label, target } =>
                 format!("create_subid {:?} under {} payer={} ctrl={}{} asset={} holder={} target={}", label, parent, s(payer), s(ctrl), sign(signs),
-                        s(parent_asset), so(holder), st(target)),
-            Act::DeleteSubid { fee, ctrl, signs, parent, parent_asset, holder, name } =>
+                        s(parent_asset), so(holder, hcfg), st(target)),
+            Act::DeleteSubid { fee, ctrl, signs, parent, parent_asset, holder, hcfg, name } =>
                 format!("delete_subid {} parent={} fee={} ctrl={}{} asset={} holder={}", name, parent, s(fee), s(ctrl), sign(signs), s(parent_asset),
-                        so(holder)),
-            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, name, index, new_owner, uri, memo, .. } =>
+                        so(holder, hcfg)),
+            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, hcfg, name, index, new_owner, uri, memo, .. } =>
                 format!("issue_subid {} parent={} index={} payer={} ctrl={}{} asset={} holder={} to={} uri={:.30} memo={:?}", name, parent, index,
-                        s(payer), s(ctrl), sign(signs), s(parent_asset), so(holder), s(new_owner), uri, memo),
-            Act::SetTarget { fee, ctrl, signs, name, parent, asset, holder, target } =>
+                        s(payer), s(ctrl), sign(signs), s(parent_asset), so(holder, hcfg), s(new_owner), uri, memo),
+            Act::SetTarget { fee, ctrl, signs, name, parent, asset, holder, hcfg, target } =>
                 format!("{} {} parent={} fee={} ctrl={}{} asset={} holder={} target={}", act.op(), name, parent.as_deref().unwrap_or("-"), s(fee),
-                        s(ctrl), sign(signs), s(asset), so(holder), st(target)),
-            Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder } =>
+                        s(ctrl), sign(signs), s(asset), so(holder, hcfg), st(target)),
+            Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder, hcfg } =>
                 format!("set_primary {} reg={} payer={} signer={}{} account={} target_asset={} holder={}", self.short_t(target),
                         match reg { RegRef::Name(n) => n.clone(), RegRef::Acct(k) => s(k) }, s(payer), s(signer), sign(signs), s(account),
-                        so(target_asset), so(holder)),
-            Act::ClearPrimary { fee, signer, signs, target, target_asset, holder } =>
+                        self.short_o(target_asset), so(holder, hcfg)),
+            Act::ClearPrimary { fee, signer, signs, target, target_asset, holder, hcfg } =>
                 format!("clear_primary {} fee={} signer={}{} target_asset={} holder={}", self.short_t(target), s(fee), s(signer), sign(signs),
-                        so(target_asset), so(holder)),
-            Act::UpdateUri { payer, ctrl, signs, name, asset, holder, uri } =>
+                        self.short_o(target_asset), so(holder, hcfg)),
+            Act::UpdateUri { payer, ctrl, signs, name, asset, holder, hcfg, uri } =>
                 format!("update_uri {} payer={} ctrl={}{} asset={} holder={} uri={:.40}({})", name, s(payer), s(ctrl), sign(signs), s(asset),
-                        so(holder), uri, uri.len()),
+                        so(holder, hcfg), uri, uri.len()),
+            Act::Delegate { owner, asset, op } => format!("{} {} owner={}{}", act.op(), s(asset), s(owner), match op {
+                DelOp::Add(d) | DelOp::Approve(d) => format!(" to={}", s(d)),
+                DelOp::Revoke => String::new(),
+            }),
             Act::Transfer { payer, signer, asset, new_owner } => format!("core_transfer {} payer={} signer={} to={}", s(asset), s(payer), s(signer),
                                                                         s(new_owner)),
             Act::Withdraw { payer, owner, holder, inner, inner_col, new_owner } =>
@@ -843,7 +930,7 @@ impl<'a> Fz<'a> {
                 let (ixs, i) = Self::with_memo(m, ix, memo, *cu_last, units);
                 (ixs, i, true)
             }
-            Act::CreateSubid { payer, ctrl, signs, parent, parent_asset, holder, label, target } => {
+            Act::CreateSubid { payer, ctrl, signs, parent, parent_asset, holder, hcfg, label, target } => {
                 let name = format!("{}.{}", label, parent);
                 let mut a = sha(name.as_bytes()).to_vec();
                 bstr(&mut a, label);
@@ -860,18 +947,20 @@ impl<'a> Fz<'a> {
                     AccountMeta::new(self.reg_addr(parent), false),
                     AccountMeta::new_readonly(*parent_asset, false),
                     self.opt(holder.as_ref()),
+                    self.opt(hcfg.as_ref()),
                     AccountMeta::new(self.reg_addr(&name), false),
                     AccountMeta::new_readonly(system_program(), false),
                 ]))
             }
-            Act::DeleteSubid { ctrl, signs, parent, parent_asset, holder, name, .. } => plain(self.ix("delete_subid", vec![], vec![
+            Act::DeleteSubid { ctrl, signs, parent, parent_asset, holder, hcfg, name, .. } => plain(self.ix("delete_subid", vec![], vec![
                 AccountMeta { pubkey: *ctrl, is_signer: *signs, is_writable: true },
                 AccountMeta::new(self.reg_addr(parent), false),
                 AccountMeta::new_readonly(*parent_asset, false),
                 self.opt(holder.as_ref()),
+                self.opt(hcfg.as_ref()),
                 AccountMeta::new(self.reg_addr(name), false),
             ])),
-            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, name, index, new_owner, uri, memo, cu_last } => {
+            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, hcfg, name, index, new_owner, uri, memo, cu_last } => {
                 let p = self.reg_addr(parent);
                 let mut a = index.to_le_bytes().to_vec();
                 bstr(&mut a, uri);
@@ -881,6 +970,7 @@ impl<'a> Fz<'a> {
                     AccountMeta::new(p, false),
                     AccountMeta::new_readonly(*parent_asset, false),
                     self.opt(holder.as_ref()),
+                    self.opt(hcfg.as_ref()),
                     AccountMeta::new(self.reg_addr(name), false),
                     AccountMeta::new(self.idx_addr(&p, *index).0, false),
                     AccountMeta::new_readonly(*new_owner, false),
@@ -894,13 +984,14 @@ impl<'a> Fz<'a> {
                 let (ixs, i) = Self::with_memo(m, ix, memo, *cu_last, units);
                 (ixs, i, true)
             }
-            Act::SetTarget { ctrl, signs, name, parent, asset, holder, target, .. } => {
+            Act::SetTarget { ctrl, signs, name, parent, asset, holder, hcfg, target, .. } => {
                 let accounts = vec![
                     AccountMeta::new_readonly(*ctrl, *signs),
                     AccountMeta::new(self.reg_addr(name), false),
                     self.opt(parent.as_ref().map(|p| self.reg_addr(p)).as_ref()),
                     AccountMeta::new_readonly(*asset, false),
                     self.opt(holder.as_ref()),
+                    self.opt(hcfg.as_ref()),
                 ];
                 plain(match target {
                     Some(t) => {
@@ -911,7 +1002,8 @@ impl<'a> Fz<'a> {
                     None => self.ix("clear_target", vec![], accounts),
                 })
             }
-            Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder } => {
+            Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder, hcfg } => {
+                // (target_kind, target_key): the same bytes as the Borsh Target
                 let mut a = vec![];
                 target.encode(&mut a);
                 let reg_key = match reg { RegRef::Name(n) => self.reg_addr(n), RegRef::Acct(k) => *k };
@@ -922,16 +1014,18 @@ impl<'a> Fz<'a> {
                     AccountMeta::new(*account, false),
                     self.opt(target_asset.as_ref()),
                     self.opt(holder.as_ref()),
+                    self.opt(hcfg.as_ref()),
                     AccountMeta::new_readonly(system_program(), false),
                 ]))
             }
-            Act::ClearPrimary { signer, signs, target, target_asset, holder, .. } => plain(self.ix("clear_primary", vec![], vec![
+            Act::ClearPrimary { signer, signs, target, target_asset, holder, hcfg, .. } => plain(self.ix("clear_primary", vec![], vec![
                 AccountMeta { pubkey: *signer, is_signer: *signs, is_writable: true },
                 AccountMeta::new(self.prim_addr(target).0, false),
                 self.opt(target_asset.as_ref()),
                 self.opt(holder.as_ref()),
+                self.opt(hcfg.as_ref()),
             ])),
-            Act::UpdateUri { payer, ctrl, signs, name, asset, holder, uri } => {
+            Act::UpdateUri { payer, ctrl, signs, name, asset, holder, hcfg, uri } => {
                 let mut a = vec![];
                 bstr(&mut a, uri);
                 plain(self.ix("update_uri", a, vec![
@@ -940,6 +1034,7 @@ impl<'a> Fz<'a> {
                     AccountMeta::new_readonly(self.reg_addr(name), false),
                     AccountMeta::new(*asset, false),
                     self.opt(holder.as_ref()),
+                    self.opt(hcfg.as_ref()),
                     AccountMeta::new_readonly(self.authority, false),
                     AccountMeta::new_readonly(self.config, false),
                     AccountMeta::new_readonly(self.collection, false),
@@ -980,6 +1075,27 @@ impl<'a> Fz<'a> {
                 AccountMeta::new_readonly(system_program(), false),
             ])),
             Act::Prefund { payer, addr, lamports } => plain(solana_system_interface::instruction::transfer(payer, addr, *lamports)),
+            Act::Delegate { owner, asset, op } => {
+                // TransferDelegate = plugin type 3; Authority::Address = 3
+                let data = match op {
+                    DelOp::Add(d) => [vec![2u8, 3, 1, 3], d.as_ref().to_vec()].concat(),
+                    DelOp::Approve(d) => [vec![8u8, 3, 3], d.as_ref().to_vec()].concat(),
+                    DelOp::Revoke => vec![10u8, 3],
+                };
+                let col = self.m.assets.get(asset).and_then(|a| a.col).unwrap_or(CORE);
+                plain(Instruction {
+                    program_id: CORE,
+                    accounts: vec![
+                        AccountMeta::new(*asset, false),
+                        if col == CORE { AccountMeta::new_readonly(CORE, false) } else { AccountMeta::new(col, false) },
+                        AccountMeta::new(*owner, true),
+                        AccountMeta::new_readonly(CORE, false),
+                        AccountMeta::new_readonly(system_program(), false),
+                        AccountMeta::new_readonly(CORE, false),
+                    ],
+                    data,
+                })
+            }
         }
     }
 
@@ -1030,11 +1146,12 @@ impl<'a> Fz<'a> {
                 self.burn_check(memo, price, payer)?;
                 Ok(Pred { price, ctrl: *payer })
             }
-            Act::CreateSubid { ctrl, signs, parent, parent_asset, holder, label, .. } => {
+            Act::CreateSubid { ctrl, signs, parent, parent_asset, holder, hcfg, label, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
                 let p = self.deser_reg(&self.reg_addr(parent))?;
+                self.cfg_deser(hcfg)?;
                 let name = format!("{}.{}", label, parent);
                 if self.m.regs.contains_key(&self.reg_addr(&name)) {
                     return Err(self.sys_in_use());
@@ -1045,18 +1162,20 @@ impl<'a> Fz<'a> {
                 if p.kind != NFT {
                     return Err(self.idf(PARENT_NOT_NFT));
                 }
+                self.pair(holder, hcfg)?;
                 let c = self.nft_ctrl(&p, parent_asset, holder.as_ref(), ctrl)?;
                 if name.len() > 253 {
                     return Err(self.idf(MEMO_ID_TOO_LONG));
                 }
                 Ok(Pred { price: 0, ctrl: c })
             }
-            Act::DeleteSubid { ctrl, signs, parent, parent_asset, holder, name, .. } => {
+            Act::DeleteSubid { ctrl, signs, parent, parent_asset, holder, hcfg, name, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
                 let pk = self.reg_addr(parent);
                 let p = self.deser_reg(&pk)?;
+                self.cfg_deser(hcfg)?;
                 let r = self.deser_reg(&self.reg_addr(name))?;
                 if r.kind != RECORD {
                     return Err(self.idf(NOT_RECORD));
@@ -1064,15 +1183,17 @@ impl<'a> Fz<'a> {
                 if r.parent != pk {
                     return Err(self.idf(WRONG_PARENT));
                 }
+                self.pair(holder, hcfg)?;
                 let c = self.nft_ctrl(&p, parent_asset, holder.as_ref(), ctrl)?;
                 Ok(Pred { price: 0, ctrl: c })
             }
-            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, name, index, new_owner, uri, memo, .. } => {
+            Act::IssueSubid { payer, ctrl, signs, parent, parent_asset, holder, hcfg, name, index, new_owner, uri, memo, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
                 let pk = self.reg_addr(parent);
                 let p = self.deser_reg(&pk)?;
+                self.cfg_deser(hcfg)?;
                 let r = self.deser_reg(&self.reg_addr(name))?;
                 if self.m.idx.contains_key(&self.idx_addr(&pk, *index).0) {
                     return Err(self.sys_in_use());
@@ -1087,15 +1208,21 @@ impl<'a> Fz<'a> {
                 if *index != p.nft {
                     return Err(self.idf(WRONG_SUBID_INDEX));
                 }
+                self.pair(holder, hcfg)?;
                 let c = self.nft_ctrl(&p, parent_asset, holder.as_ref(), ctrl)?;
+                if self.listed(parent_asset) || holder.is_some_and(|h| self.listed(&h)) {
+                    return Err(self.idf(LISTED));
+                }
                 let price = self.price_now(6_900);
                 self.burn_check(memo, price, payer)?;
-                if *new_owner == CORE {
+                // memo-home create_asset: not Core, the new Asset itself or its own Vault (locked for good)
+                let new_asset = self.asset_addr(name);
+                if [CORE, new_asset, self.vault(&new_asset)].contains(new_owner) {
                     return Err(self.homef(self.home, HOME_INVALID_OWNER));
                 }
                 Ok(Pred { price, ctrl: c })
             }
-            Act::SetTarget { ctrl, signs, name, parent, asset, holder, .. } => {
+            Act::SetTarget { ctrl, signs, name, parent, asset, holder, hcfg, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
@@ -1104,6 +1231,8 @@ impl<'a> Fz<'a> {
                     Some(n) => Some((self.reg_addr(n), self.deser_reg(&self.reg_addr(n))?)),
                     None => None,
                 };
+                self.cfg_deser(hcfg)?;
+                self.pair(holder, hcfg)?;
                 let c = match r.kind {
                     NFT => self.nft_ctrl(&r, asset, holder.as_ref(), ctrl)?,
                     _ => {
@@ -1116,18 +1245,21 @@ impl<'a> Fz<'a> {
                 };
                 Ok(Pred { price: 0, ctrl: c })
             }
-            Act::SetPrimary { signer, signs, reg, target, account, target_asset, holder, .. } => {
+            Act::SetPrimary { signer, signs, reg, target, account, target_asset, holder, hcfg, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
                 self.deser_reg(&match reg { RegRef::Name(n) => self.reg_addr(n), RegRef::Acct(k) => *k })?;
+                // every account deserializes before the init_if_needed seeds are checked
+                self.cfg_deser(hcfg)?;
                 if *account != self.prim_addr(target).0 {
                     return Err(self.anchor(self.id, A_CONSTRAINT_SEEDS));
                 }
+                self.pair(holder, hcfg)?;
                 self.target_ctrl(target, target_asset.as_ref(), holder.as_ref(), signer)?;
                 Ok(Pred { price: 0, ctrl: *signer })
             }
-            Act::ClearPrimary { signer, signs, target, target_asset, holder, .. } => {
+            Act::ClearPrimary { signer, signs, target, target_asset, holder, hcfg, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
@@ -1135,28 +1267,33 @@ impl<'a> Fz<'a> {
                 if !self.m.prims.contains_key(&pa) {
                     return Err(self.missing(self.id, &pa));
                 }
+                self.cfg_deser(hcfg)?;
+                self.pair(holder, hcfg)?;
                 self.target_ctrl(target, target_asset.as_ref(), holder.as_ref(), signer)?;
                 Ok(Pred { price: 0, ctrl: *signer })
             }
-            Act::UpdateUri { ctrl, signs, name, asset, holder, uri, .. } => {
+            Act::UpdateUri { ctrl, signs, name, asset, holder, hcfg, uri, .. } => {
                 if !signs {
                     return Err(self.anchor(self.id, A_NOT_SIGNER));
                 }
                 let r = self.deser_reg(&self.reg_addr(name))?;
+                self.cfg_deser(hcfg)?;
                 self.uri_check(uri)?;
                 if r.kind != NFT {
                     return Err(self.idf(NOT_NFT));
                 }
+                self.pair(holder, hcfg)?;
                 let c = self.nft_ctrl(&r, asset, holder.as_ref(), ctrl)?;
                 Ok(Pred { price: 0, ctrl: c })
             }
             Act::Transfer { signer, asset, .. } => {
-                if self.m.assets[asset].owner != *signer {
+                // the owner, or the holder of the TransferDelegate
+                if self.m.assets[asset].owner != *signer && self.m.del.get(asset) != Some(&Some(*signer)) {
                     return Err(Fail { code: CORE_NO_APPROVALS, prog: CORE, name: None });
                 }
                 Ok(Pred::default())
             }
-            Act::Withdraw { owner, holder, inner, inner_col, .. } => {
+            Act::Withdraw { owner, holder, inner, inner_col, new_owner, .. } => {
                 // the holder's Vault State (Account<VaultState>) exists only for memo-home Assets
                 if !self.m.vstate.contains_key(holder) {
                     return Err(self.missing(self.home, &self.vstate_addr(holder).0));
@@ -1168,6 +1305,9 @@ impl<'a> Fz<'a> {
                 if h.owner != *owner {
                     return Err(self.homef(self.home, HOME_NOT_OWNER));
                 }
+                if self.listed(holder) {
+                    return Err(self.homef(self.home, HOME_LISTED));
+                }
                 let i = &self.m.assets[inner];
                 if i.owner != self.vault(holder) {
                     return Err(self.homef(self.home, HOME_NOT_IN_VAULT));
@@ -1175,9 +1315,12 @@ impl<'a> Fz<'a> {
                 if *inner_col != i.col.unwrap_or(CORE) {
                     return Err(self.homef(self.home, HOME_WRONG_COLLECTION));
                 }
+                if [self.vault(holder), *inner, self.vault(inner), *holder, CORE].contains(new_owner) {
+                    return Err(self.homef(self.home, HOME_INVALID_DESTINATION));
+                }
                 Ok(Pred::default())
             }
-            Act::Prefund { .. } => Ok(Pred::default()),
+            Act::Prefund { .. } | Act::Delegate { .. } => Ok(Pred::default()),
         }
     }
 
@@ -1197,7 +1340,7 @@ impl<'a> Fz<'a> {
     }
     fn new_reg(&mut self, r: MReg) -> Pubkey {
         let k = self.reg_addr(&r.memo_id);
-        let raw = vec![0u8; 160 + r.memo_id.len()];
+        let raw = vec![0u8; REG_BASE + r.memo_id.len()];
         self.created(&k, raw.len());
         self.m.names.insert(k, r.memo_id.clone());
         self.m.regs.insert(k, (r, raw));
@@ -1227,7 +1370,12 @@ impl<'a> Fz<'a> {
         self.m.global.count += 1;
         self.m.global.last_time = time;
     }
+    /// A transfer (Core's, or memo-home's withdrawal) also gives an owner-managed TransferDelegate
+    /// back to the (new) owner
     fn set_owner(&mut self, asset: &Pubkey, new_owner: Pubkey) {
+        if let Some(d) = self.m.del.get_mut(asset) {
+            *d = None;
+        }
         let a = self.m.assets.get_mut(asset).unwrap();
         self.m.prev_owner.insert(*asset, a.owner);
         a.owner = new_owner;
@@ -1249,7 +1397,8 @@ impl<'a> Fz<'a> {
                 let name = format!("{}.memo", label);
                 let asset = self.asset_addr(&name);
                 let k = self.new_reg(MReg { kind: NFT, asset, parent: Pubkey::default(), created_at: time, nft: 0, rec: 0,
-                                            bump: self.reg_bump(&name), set_by: Pubkey::default(), target: None, memo_id: name.clone() });
+                                            bump: self.reg_bump(&name), set_by: Pubkey::default(), holder: Pubkey::default(), target: None,
+                                            memo_id: name.clone() });
                 self.add_asset(asset, MAsset { owner: payer, col: Some(self.collection), name: name.clone(), uri }, true);
                 self.burn(&payer, pred.price, time);
                 bstr(&mut w, &name);
@@ -1259,12 +1408,14 @@ impl<'a> Fz<'a> {
                 w.extend(pred.price.to_le_bytes());
                 event!("Registered");
             }
-            Act::CreateSubid { parent, label, target, .. } => {
+            Act::CreateSubid { parent, label, target, holder, .. } => {
                 let pk = self.reg_addr(&parent);
                 let name = format!("{}.{}", label, parent);
-                let k = self.new_reg(MReg { kind: RECORD, asset: Pubkey::default(), parent: pk, created_at: time, nft: 0, rec: 0,
-                                            bump: self.reg_bump(&name), set_by: if target.is_some() { pred.ctrl } else { Pubkey::default() },
-                                            target, memo_id: name.clone() });
+                let mut r = MReg { kind: RECORD, asset: Pubkey::default(), parent: pk, created_at: time, nft: 0, rec: 0,
+                                   bump: self.reg_bump(&name), set_by: Pubkey::default(), holder: Pubkey::default(), target: None,
+                                   memo_id: name.clone() };
+                r.set_forward(target, pred.ctrl, holder);
+                let k = self.new_reg(r);
                 self.m.regs.get_mut(&pk).unwrap().0.rec += 1;
                 self.write_reg(&pk);
                 bstr(&mut w, &name);
@@ -1316,11 +1467,9 @@ impl<'a> Fz<'a> {
                 w.extend(pred.price.to_le_bytes());
                 event!("SubidIssued");
             }
-            Act::SetTarget { name, target, .. } => {
+            Act::SetTarget { name, target, holder, .. } => {
                 let k = self.reg_addr(&name);
-                let r = &mut self.m.regs.get_mut(&k).unwrap().0;
-                r.target = target;
-                r.set_by = if target.is_some() { pred.ctrl } else { Pubkey::default() };
+                self.m.regs.get_mut(&k).unwrap().0.set_forward(target, pred.ctrl, holder);
                 self.write_reg(&k);
                 w.extend(k.as_ref());
                 match target {
@@ -1336,13 +1485,15 @@ impl<'a> Fz<'a> {
                     }
                 }
             }
-            Act::SetPrimary { signer, reg, target, account, .. } => {
+            Act::SetPrimary { signer, reg, target, account, holder, .. } => {
                 let RegRef::Name(n) = reg else { unreachable!() };
                 let rk = self.reg_addr(&n);
                 if !self.m.prims.contains_key(&account) {
-                    self.created(&account, 106);
+                    self.created(&account, PRIM_LEN);
                 }
-                self.m.prims.insert(account, MPrim { target, registry: rk, set_by: signer, bump: self.prim_addr(&target).1 });
+                // a holder decides only an Asset target's controller
+                let set_holder = match target { Target::Asset(_) => holder.unwrap_or_default(), Target::Address(_) => Pubkey::default() };
+                self.m.prims.insert(account, MPrim { target, registry: rk, set_by: signer, set_holder, bump: self.prim_addr(&target).1 });
                 self.m.prim_hist.insert(target, (rk, signer));
                 target.encode(&mut w);
                 w.extend(rk.as_ref());
@@ -1353,7 +1504,7 @@ impl<'a> Fz<'a> {
                 let pa = self.prim_addr(&target).0;
                 self.m.prims.remove(&pa);
                 self.m.prim_hist.remove(&target);
-                credit = Some((signer, self.lamports_of(&pa, 106)));
+                credit = Some((signer, self.lamports_of(&pa, PRIM_LEN)));
                 self.m.funded.remove(&pa);
                 target.encode(&mut w);
                 event!("PrimaryCleared");
@@ -1365,6 +1516,9 @@ impl<'a> Fz<'a> {
                 event!("UriUpdated");
             }
             Act::Transfer { asset, new_owner, .. } => self.set_owner(&asset, new_owner),
+            Act::Delegate { asset, op, .. } => {
+                self.m.del.insert(asset, match op { DelOp::Add(d) | DelOp::Approve(d) => Some(d), DelOp::Revoke => None });
+            }
             Act::Withdraw { holder, inner, new_owner, .. } => {
                 self.set_owner(&inner, new_owner);
                 let n = &mut self.m.vstate.get_mut(&holder).unwrap().0;
@@ -1380,7 +1534,7 @@ impl<'a> Fz<'a> {
                 // an existing memo-id account holds its rent; an address without an account, nothing
                 let len = self.m.regs.get(&addr).map(|e| e.1.len())
                     .or(self.m.idx.contains_key(&addr).then_some(41))
-                    .or(self.m.prims.contains_key(&addr).then_some(106));
+                    .or(self.m.prims.contains_key(&addr).then_some(PRIM_LEN));
                 let now = match len {
                     Some(l) => self.lamports_of(&addr, l),
                     None => self.m.funded.get(&addr).copied().unwrap_or(0),
@@ -1517,14 +1671,30 @@ impl<'a> Fz<'a> {
         }
         self.other_signable(&ctrl)
     }
-    /// (Asset passed, holder, signer) for an action controlled through `deciding` (the Asset of
-    /// the ID, or of the parent for a Record SubId)
-    fn gen_control(&mut self, deciding: Pubkey) -> (Pubkey, Option<Pubkey>, Pubkey) {
+    /// holder_config: the Config clients derive for the holder (usually), none, the MEMO ID
+    /// Collection's Config whatever the holder, or a memo-id account
+    fn gen_hcfg(&mut self, holder: Option<Pubkey>) -> Option<Pubkey> {
+        let r = self.rng.gen::<f64>();
+        match holder {
+            Some(h) if r < 0.9 => Some(self.cfg_for(&h)),
+            Some(_) if r < 0.95 => None,
+            None if r < 0.97 => None,
+            _ if r < 0.99 || self.m.regs.is_empty() => Some(self.config),
+            _ => {
+                let v: Vec<Pubkey> = self.m.regs.keys().copied().collect();
+                Some(self.pick(&v))
+            }
+        }
+    }
+    /// (Asset passed, holder, holder_config, signer) for an action controlled through `deciding`
+    /// (the Asset of the ID, or of the parent for a Record SubId)
+    fn gen_control(&mut self, deciding: Pubkey) -> (Pubkey, Option<Pubkey>, Option<Pubkey>, Pubkey) {
         let (h, c) = self.discover(&deciding);
         let asset = if self.chance(0.92) { deciding } else { self.other_asset(&deciding) };
         let holder = self.gen_holder(h);
+        let hcfg = self.gen_hcfg(holder);
         let signer = self.gen_signer(c, &deciding);
-        (asset, holder, signer)
+        (asset, holder, hcfg, signer)
     }
     fn deciding_asset(&mut self, name: &str) -> Pubkey {
         match self.reg(name).cloned() {
@@ -1583,11 +1753,11 @@ impl<'a> Fz<'a> {
             self.gen_name(RECORD, 0.6)?
         };
         let deciding = self.deciding_asset(&parent);
-        let (asset, holder, ctrl) = self.gen_control(deciding);
+        let (asset, holder, hcfg, ctrl) = self.gen_control(deciding);
         let target = if self.chance(0.4) { None } else { Some(self.rand_target()) };
         let payer = self.gen_payer(&ctrl, 0.7);
         let signs = payer == ctrl || !self.chance(0.05);
-        Some(Act::CreateSubid { payer, ctrl, signs, parent, parent_asset: asset, holder, label, target })
+        Some(Act::CreateSubid { payer, ctrl, signs, parent, parent_asset: asset, holder, hcfg, label, target })
     }
     fn gen_delete(&mut self) -> Option<Act> {
         let r = self.rng.gen::<f64>();
@@ -1599,10 +1769,10 @@ impl<'a> Fz<'a> {
             _ => return None,
         };
         let deciding = self.deciding_asset(&parent);
-        let (asset, holder, ctrl) = self.gen_control(deciding);
+        let (asset, holder, hcfg, ctrl) = self.gen_control(deciding);
         let fee = self.gen_payer(&ctrl, 0.85);
         let signs = fee == ctrl || !self.chance(0.05);
-        Some(Act::DeleteSubid { fee, ctrl, signs, parent, parent_asset: asset, holder, name })
+        Some(Act::DeleteSubid { fee, ctrl, signs, parent, parent_asset: asset, holder, hcfg, name })
     }
     fn gen_issue(&mut self) -> Option<Act> {
         let r = self.rng.gen::<f64>();
@@ -1625,7 +1795,7 @@ impl<'a> Fz<'a> {
         let r = self.rng.gen::<f64>();
         let index = if r < 0.85 { n } else if r < 0.93 || n == 0 { n + 1 } else { n - 1 };
         let deciding = self.deciding_asset(&parent);
-        let (asset, holder, ctrl) = self.gen_control(deciding);
+        let (asset, holder, hcfg, ctrl) = self.gen_control(deciding);
         let r = self.rng.gen::<f64>();
         let (vault_hi, x_hi, own_hi) = if self.edge { (0.7, 0.74, 0.94) } else { (0.88, 0.92, 0.94) };
         let new_owner = if r < 0.35 {
@@ -1638,7 +1808,7 @@ impl<'a> Fz<'a> {
         } else if r < x_hi {
             self.x()
         } else if r < own_hi {
-            // the new Asset itself, or its own Vault: locked for good
+            // the new Asset itself, or its own Vault (memo-home refuses both: InvalidOwner)
             let a = self.asset_addr(&name);
             if self.chance(0.5) { a } else { self.vault(&a) }
         } else {
@@ -1648,7 +1818,8 @@ impl<'a> Fz<'a> {
         let payer = self.gen_payer(&ctrl, 0.7);
         let signs = payer == ctrl || !self.chance(0.05);
         let memo = self.gen_memo(&payer, &name);
-        Some(Act::IssueSubid { payer, ctrl, signs, parent, parent_asset: asset, holder, name, index, new_owner, uri, memo, cu_last: self.chance(0.5) })
+        Some(Act::IssueSubid { payer, ctrl, signs, parent, parent_asset: asset, holder, hcfg, name, index, new_owner, uri, memo,
+                               cu_last: self.chance(0.5) })
     }
     fn gen_set_target(&mut self, clear: bool) -> Option<Act> {
         let r = self.rng.gen::<f64>();
@@ -1663,7 +1834,7 @@ impl<'a> Fz<'a> {
             _ => if r < 0.9 { None } else { Some(self.pick(&any)) },
         };
         let deciding = self.deciding_asset(&name);
-        let (asset, holder, ctrl) = self.gen_control(deciding);
+        let (asset, holder, hcfg, ctrl) = self.gen_control(deciding);
         // often the Target whose Primary ID already names this ID, so that verified pairs form
         let rk = self.reg_addr(&name);
         let named_by: Vec<Target> = self.m.prims.values().filter(|p| p.registry == rk).map(|p| p.target).collect();
@@ -1676,24 +1847,26 @@ impl<'a> Fz<'a> {
         };
         let fee = self.gen_payer(&ctrl, 0.8);
         let signs = fee == ctrl || !self.chance(0.05);
-        Some(Act::SetTarget { fee, ctrl, signs, name, parent, asset, holder, target })
+        Some(Act::SetTarget { fee, ctrl, signs, name, parent, asset, holder, hcfg, target })
     }
-    /// (target_asset, holder, signer) for a Target
-    fn gen_target_control(&mut self, target: &Target) -> (Option<Pubkey>, Option<Pubkey>, Pubkey) {
+    /// (target_asset, holder, holder_config, signer) for a Target
+    fn gen_target_control(&mut self, target: &Target) -> (Option<Pubkey>, Option<Pubkey>, Option<Pubkey>, Pubkey) {
         match *target {
             Target::Address(a) => {
                 let ta = if self.chance(0.85) { None } else { Some(self.rand_asset()) };
                 let holder = if self.chance(0.9) { None } else { Some(self.rand_asset()) };
+                let hcfg = self.gen_hcfg(holder);
                 let signer = if self.chance(0.85) && self.signable(&a) { a } else { self.other_signable(&a) };
-                (ta, holder, signer)
+                (ta, holder, hcfg, signer)
             }
             Target::Asset(a) => {
                 let (h, c) = self.discover(&a);
                 let r = self.rng.gen::<f64>();
                 let ta = if r < 0.9 { Some(a) } else if r < 0.95 { None } else { Some(self.other_asset(&a)) };
                 let holder = self.gen_holder(h);
+                let hcfg = self.gen_hcfg(holder);
                 let signer = self.gen_signer(c, &a);
-                (ta, holder, signer)
+                (ta, holder, hcfg, signer)
             }
         }
     }
@@ -1717,30 +1890,30 @@ impl<'a> Fz<'a> {
         } else {
             RegRef::Acct(self.rand_actor())
         };
-        let (target_asset, holder, signer) = self.gen_target_control(&target);
+        let (target_asset, holder, hcfg, signer) = self.gen_target_control(&target);
         let account = if self.chance(0.03) { self.prim_addr(&target.flip()).0 } else { self.prim_addr(&target).0 };
         let payer = self.gen_payer(&signer, 0.7);
         let signs = payer == signer || !self.chance(0.05);
-        Some(Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder })
+        Some(Act::SetPrimary { payer, signer, signs, reg, target, account, target_asset, holder, hcfg })
     }
     fn gen_clear_primary(&mut self) -> Option<Act> {
         let set: Vec<Target> = self.m.prims.values().map(|p| p.target).collect();
         let target = if !set.is_empty() && self.chance(0.85) { self.pick(&set) } else { self.rand_target() };
-        let (target_asset, holder, signer) = self.gen_target_control(&target);
+        let (target_asset, holder, hcfg, signer) = self.gen_target_control(&target);
         let fee = self.gen_payer(&signer, 0.8);
         let signs = fee == signer || !self.chance(0.05);
-        Some(Act::ClearPrimary { fee, signer, signs, target, target_asset, holder })
+        Some(Act::ClearPrimary { fee, signer, signs, target, target_asset, holder, hcfg })
     }
     fn gen_update_uri(&mut self) -> Option<Act> {
         let r = self.rng.gen::<f64>();
         let name = if r < 0.88 { self.gen_name(NFT, 0.96)? } else { self.gen_name(RECORD, 0.8)? };
         let deciding = self.deciding_asset(&name);
-        let (asset, holder, ctrl) = self.gen_control(deciding);
+        let (asset, holder, hcfg, ctrl) = self.gen_control(deciding);
         let r = self.rng.gen::<f64>();
         let uri = if r < 0.9 { self.gen_uri(0.0, true) } else if r < 0.96 { self.gen_uri(1.0, false) } else { format!("https://{}", "a".repeat(249)) };
         let payer = self.gen_payer(&ctrl, 0.7);
         let signs = payer == ctrl || !self.chance(0.05);
-        Some(Act::UpdateUri { payer, ctrl, signs, name, asset, holder, uri })
+        Some(Act::UpdateUri { payer, ctrl, signs, name, asset, holder, hcfg, uri })
     }
     fn gen_transfer(&mut self) -> Option<Act> {
         let asset = self.rand_asset();
@@ -1821,9 +1994,26 @@ impl<'a> Fz<'a> {
         let lamports = self.pick(&v);
         Some(Act::Prefund { payer, addr, lamports })
     }
+    /// A TransferDelegate change by an Asset's owner (an actor, who pays): add one held by another
+    /// actor, take it back, or give it again
+    fn gen_delegate(&mut self) -> Option<Act> {
+        let owned: Vec<Pubkey> = self.m.assets.iter().filter(|(_, a)| self.is_actor(&a.owner)).map(|(k, _)| *k).collect();
+        if owned.is_empty() {
+            return None;
+        }
+        let asset = self.pick(&owned);
+        let owner = self.m.assets[&asset].owner;
+        let d = self.other_actor(&owner);
+        let op = match self.m.del.get(&asset) {
+            None => DelOp::Add(d),
+            Some(Some(_)) => DelOp::Revoke,
+            Some(None) => DelOp::Approve(d),
+        };
+        Some(Act::Delegate { owner, asset, op })
+    }
     /// --edge: a valid step down a chain of 63-byte labels under the deepest NFT ID whose
     /// controller can sign (creating the next one fails with MemoIdTooLong past 253 bytes), the
-    /// SubIds issued to their controller, or to their own Asset or Vault (locked for good)
+    /// SubIds issued to their controller, or to their own Asset or Vault (refused by memo-home)
     fn gen_directed(&mut self) -> Option<Act> {
         let deepest = self.names_of(Some(NFT)).into_iter()
             .filter(|n| self.reg(n).is_some_and(|r| self.signable(&self.discover(&r.asset).1)))
@@ -1835,18 +2025,19 @@ impl<'a> Fz<'a> {
         let label = ["l", "m", "n", "k"].iter().map(|c| c.repeat(63))
             .find(|l| self.reg(&format!("{}.{}", l, deepest)).is_none_or(|r| r.kind == RECORD))?;
         let name = format!("{}.{}", label, deepest);
+        let hcfg = holder.map(|h| self.cfg_for(&h));
         if self.reg(&name).is_none() {
-            return Some(Act::CreateSubid { payer, ctrl, signs: true, parent: deepest, parent_asset, holder, label, target: None });
+            return Some(Act::CreateSubid { payer, ctrl, signs: true, parent: deepest, parent_asset, holder, hcfg, label, target: None });
         }
         let index = self.reg(&deepest)?.nft;
         let asset = self.asset_addr(&name);
         let r = self.rng.gen::<f64>();
         let new_owner = if r < 0.6 { ctrl } else if r < 0.8 { asset } else { self.vault(&asset) };
-        Some(Act::IssueSubid { payer, ctrl, signs: true, parent: deepest, parent_asset, holder, name, index, new_owner, uri: URI.into(),
+        Some(Act::IssueSubid { payer, ctrl, signs: true, parent: deepest, parent_asset, holder, hcfg, name, index, new_owner, uri: URI.into(),
                                memo: MemoV::Ok, cu_last: false })
     }
     fn gen(&mut self) -> Act {
-        const W: [u32; 12] = [6, 14, 7, 9, 10, 4, 10, 5, 5, 10, 7, 3];
+        const W: [u32; 13] = [6, 14, 7, 9, 10, 4, 10, 5, 5, 10, 7, 3, 4];
         if self.edge && self.chance(0.1) {
             if let Some(a) = self.gen_directed() {
                 return a;
@@ -1867,7 +2058,8 @@ impl<'a> Fz<'a> {
                 8 => self.gen_update_uri(),
                 9 => self.gen_transfer(),
                 10 => self.gen_withdraw(),
-                _ => self.gen_prefund(),
+                11 => self.gen_prefund(),
+                _ => self.gen_delegate(),
             };
             if let Some(a) = act {
                 return a;
@@ -2060,8 +2252,13 @@ impl<'a> Fz<'a> {
                 Target::Address(a) => Some(*a),
                 Target::Asset(a) => ctrl(a),
             }),
-            Act::Transfer { signer, asset, .. } => (*signer, self.m.assets.get(asset).map(|a| a.owner)),
+            // the owner, or the holder of the TransferDelegate (the model is still the state before the step)
+            Act::Transfer { signer, asset, .. } => (*signer, match self.m.del.get(asset) {
+                Some(Some(d)) if d == signer => Some(*d),
+                _ => self.m.assets.get(asset).map(|a| a.owner),
+            }),
             Act::Withdraw { owner, holder, .. } => (*owner, self.m.assets.get(holder).map(|a| a.owner)),
+            Act::Delegate { owner, asset, .. } => (*owner, self.m.assets.get(asset).map(|a| a.owner)),
             Act::Register { .. } | Act::Prefund { .. } => return None,
         })
     }
@@ -2143,7 +2340,7 @@ impl<'a> Fz<'a> {
                                 model.as_ref().map(|m| &m.0), chain.and_then(|a| MReg::parse(&a.data)), chain.map(|a| a.lamports),
                                 chain.map(|a| a.data.len()), first_diff), related));
                 if adopt {
-                    self.adopt_lamports(k, chain, 160 + n.len());
+                    self.adopt_lamports(k, chain, REG_BASE + n.len());
                     match chain.and_then(|a| MReg::parse(&a.data).map(|r| (r, a.data.clone()))) {
                         Some(e) => self.m.regs.insert(*k, e),
                         None => self.m.regs.remove(k),
@@ -2210,14 +2407,14 @@ impl<'a> Fz<'a> {
             let (pa, _) = self.prim_addr(t);
             let chain = ch.get(&pa).map(|x| (x.owner, x.lamports, x.data.clone()));
             let model = match self.m.prims.get(&pa) {
-                Some(m) => Some((self.id, self.lamports_of(&pa, 106), m.bytes())),
+                Some(m) => Some((self.id, self.lamports_of(&pa, PRIM_LEN), m.bytes())),
                 None => self.m.funded.get(&pa).map(|l| (system_program(), *l, vec![])),
             };
             if chain != model {
                 p.push((format!("Primary ID of {}: model {:?} chain {:?}", self.short_t(t), self.m.prims.get(&pa),
                                 chain.as_ref().and_then(|c| MPrim::parse(&c.2))), vec![pa, t.key()]));
                 if adopt {
-                    self.adopt_lamports(&pa, ch.get(&pa), 106);
+                    self.adopt_lamports(&pa, ch.get(&pa), PRIM_LEN);
                     match chain.and_then(|c| MPrim::parse(&c.2)) {
                         Some(m) => self.m.prims.insert(pa, m),
                         None => self.m.prims.remove(&pa),
@@ -2307,6 +2504,11 @@ impl<'a> Fz<'a> {
             }
             if r.target.is_none() != (r.set_by == Pubkey::default()) {
                 bad.push(format!("target {:?} with target_set_by {}", r.target, r.set_by));
+            }
+            // the fixed-size encoding fills the account; without a target bytes 90..188 are zero
+            let d = &ch[k].data;
+            if d.len() != REG_BASE + r.memo_id.len() || (r.target.is_none() && d[90..188].iter().any(|b| *b != 0)) {
+                bad.push(format!("not its canonical encoding (len {})", d.len()));
             }
             match (r.parent == Pubkey::default(), regs.get(&r.parent)) {
                 (true, _) => {
@@ -2401,14 +2603,39 @@ impl<'a> Fz<'a> {
                 hist_set.insert((*rk, *t));
             }
         }
-        self.verified_seen += chain_set.len();
-        self.verified_max = self.verified_max.max(chain_set.len());
-        if chain_set == hist_set {
-            return vec![];
+        // from accounts read by address only (F32): each controller re-derived through the holder
+        // the record names; never a pair the rule does not verify
+        let by_addr = |a: &Pubkey, h: &Pubkey| -> Option<Pubkey> {
+            let o = *assets.get(a)?;
+            if *h != Pubkey::default() && o == self.vault(h) { assets.get(h).copied() } else { Some(o) }
+        };
+        let mut addr_set: BTreeSet<(Pubkey, Target)> = BTreeSet::new();
+        for t in &self.m.targets {
+            let Some(pr) = ch.get(&self.prim_addr(t).0).and_then(|a| MPrim::parse(&a.data)) else { continue };
+            let Some(r) = regs.get(&pr.registry) else { continue };
+            let deciding = match r.kind {
+                NFT => r.asset,
+                _ => match regs.get(&r.parent) { Some(p) => p.asset, None => continue },
+            };
+            let t_ctrl = match t { Target::Address(a) => Some(*a), Target::Asset(a) => by_addr(a, &pr.set_holder) };
+            if r.target == Some(*t) && by_addr(&deciding, &r.holder) == Some(r.set_by) && t_ctrl == Some(pr.set_by) {
+                addr_set.insert((pr.registry, *t));
+            }
         }
+        self.verified_seen += chain_set.len();
+        self.addr_seen += addr_set.len();
+        self.verified_max = self.verified_max.max(chain_set.len());
         let show = |s: &BTreeSet<(Pubkey, Target)>| s.iter().map(|(r, t)| format!("{}<->{}", self.short(r), self.short_t(t))).collect::<Vec<_>>();
-        let keys: Vec<Pubkey> = chain_set.symmetric_difference(&hist_set).flat_map(|(r, t)| [*r, t.key()]).collect();
-        vec![(format!("verified pairs: chain {:?} history {:?}", show(&chain_set), show(&hist_set)), keys)]
+        let mut p = vec![];
+        if !addr_set.is_subset(&chain_set) {
+            let keys: Vec<Pubkey> = addr_set.difference(&chain_set).flat_map(|(r, t)| [*r, t.key()]).collect();
+            p.push((format!("verified by address only but not by the rule: {:?}", show(&addr_set.difference(&chain_set).copied().collect())), keys));
+        }
+        if chain_set != hist_set {
+            let keys: Vec<Pubkey> = chain_set.symmetric_difference(&hist_set).flat_map(|(r, t)| [*r, t.key()]).collect();
+            p.push((format!("verified pairs: chain {:?} history {:?}", show(&chain_set), show(&hist_set)), keys));
+        }
+        p
     }
 
     // ---------------- setup ----------------
@@ -2502,7 +2729,8 @@ impl<'a> Fz<'a> {
 
     fn summary(&self) {
         println!("\n== fuzz-memo-id: {} steps, {} mismatched, {} skipped ==", self.step, self.mismatches, self.skipped);
-        println!("verified pairs: {} observed over all steps, at most {} at once", self.verified_seen, self.verified_max);
+        println!("verified pairs: {} observed over all steps, at most {} at once; {} of them verified from accounts read by address only",
+                 self.verified_seen, self.verified_max, self.addr_seen);
         println!("final state: {} Registries ({} NFT, {} Record), {} Assets, {} Primary IDs, {} SubId Index entries, {} names checked",
                  self.m.regs.len(), self.names_of(Some(NFT)).len(), self.names_of(Some(RECORD)).len(), self.m.assets.len(), self.m.prims.len(),
                  self.m.idx.len(), self.m.names.len());

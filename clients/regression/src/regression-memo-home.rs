@@ -8,7 +8,7 @@
 //! addresses), the Core paths around memo-home (including the Collection-address update
 //! authority), mining with the share split (and memo-mint's Revision 5 character minimum on the
 //! caller's memo), Vault outflows for any token with the Vault State nonce, listing protection,
-//! Vault burns, withdraw_asset, advance_nonce, signer checks and the app CPI path. 198 cases.
+//! Vault burns, withdraw_asset, signer checks and the app CPI path. 201 cases.
 //! Every case asserts the exact outcome.
 //!
 //! Run through scripts/run-regression-tests.sh, or against a running local validator:
@@ -828,6 +828,16 @@ fn main() {
         e.reject("H08", "create_collection with another account as the Program Authority", vec![ix], w, &[&app],
             Expect::Custom(0, ANCHOR_CONSTRAINT_SEEDS), &[], &[]);
         e.record("H08a", "  ... and no Config was created", e.data(&h.config(&col8)).is_none(), "");
+        // The Burn Guard is pinned to its address constant; another account is already rejected
+        // by its type (a wallet: wrong owner; another memo-home account: wrong discriminator)
+        let mut ix = h.create_collection_at(&wp, &ap, &col8, &s, "x", COLLECTION_URI, 0, None, None);
+        ix.accounts[4] = AccountMeta::new_readonly(wp, false);
+        e.reject("H08d", "create_collection with a wallet as the Burn Guard", vec![ix], w, &[&app],
+            Expect::Custom(0, ANCHOR_OWNED_BY_WRONG_PROGRAM), &[], &[]);
+        let mut ix = h.create_collection_at(&wp, &ap, &col8, &s, "x", COLLECTION_URI, 0, None, None);
+        ix.accounts[4] = AccountMeta::new_readonly(h.config(&col), false);
+        e.reject("H08e", "create_collection with another memo-home account (a Collection Config) as the Burn Guard", vec![ix], w, &[&app],
+            Expect::Custom(0, ANCHOR_DISCRIMINATOR_MISMATCH), &[], &[]);
 
         // I-1: anyone can create a Core Collection naming the Program Authority, but it has no
         // Config, so memo-home never creates Assets in it, and memo-home cannot adopt it
@@ -1365,6 +1375,26 @@ fn main() {
             h.burn(&dp, &wp, &col, &r6, 1000)], &d, &[w]);
         e.record("H55", "first Vault burn when the Vault already holds the rent: the payer pays nothing, the Vault pays the stats rent",
             out.ok() && sol(&wp) == w0 && v0 - sol(&v6) == stats_rent, &format!("{} payer {} vault {} -> {}", out.brief(), w0 - sol(&wp), v0, sol(&v6)));
+
+        // First burn with a Vault that holds some XNT, but less than the stats rent plus its own
+        // rent-exempt minimum: the payer tops up only the difference
+        let (ix, r6b) = h.create_asset(&wp, &ap, &col, "room6b", &dp, "Room #6b");
+        e.must("create Room #6b for D", &[ix], w, &[&app]);
+        let v6b = h.vault(&r6b);
+        let v6b_ta = h.vault_ata(&r6b);
+        let min_rent = e.c.get_minimum_balance_for_rent_exemption(0).unwrap();
+        let held = min_rent + 1_000;
+        e.must("fund Room #6b's Vault with 1 MEMO and the rent-exempt minimum + 1,000 lamports", &[
+            e.create_ata_ix(&v6b, &e.mint),
+            spl_token_2022::instruction::transfer_checked(&t22(), &e.ata(&wp), &e.mint, &v6b_ta, &wp, &[], UNIT, 6).unwrap(),
+            sys_ix::transfer(&wp, &v6b, held),
+        ], w, &[]);
+        let (w0, v0) = (sol(&wp), sol(&v6b));
+        let out = e.exec(&[app_burn_memo(1000, b"memo-home regression: first burn with a partly funded vault"), cu(400_000),
+            h.burn(&dp, &wp, &col, &r6b, 1000)], &d, &[w]);
+        e.record("H55b", "first Vault burn when the Vault holds less than stats rent + its rent minimum: the payer tops up exactly the difference, the Vault ends at its rent minimum",
+            out.ok() && v0 == held && w0 - sol(&wp) == stats_rent + min_rent - held && sol(&v6b) == min_rent,
+            &format!("{} payer {} (expected {}) vault {} -> {}", out.brief(), w0 - sol(&wp), stats_rent + min_rent - held, v0, sol(&v6b)));
     }
 
     // ---------------- withdraw_asset ----------------
@@ -1392,6 +1422,15 @@ fn main() {
         let (ix, nested) = h.create_asset(&wp, &ap, &col, "room2", &dp, "Room #2");
         e.must("create a memo-home Asset for D", &[ix], w, &[&app]);
         e.must("D sends it into the Vault of Room #1", &[core_transfer(&nested, Some(&col), &dp, &dp, &vault)], &d, &[]);
+        let nested_vault = h.vault(&nested);
+        e.reject("H63b", "withdraw_asset to the inner Asset itself (it could never sign as its own owner)",
+            vec![h.withdraw_asset(&dp, &dp, &col, &room, &nested, &col, &nested)], &d, &[], Expect::Custom(0, INVALID_DESTINATION), &[], &[]);
+        e.reject("H63c", "withdraw_asset to the inner Asset's own Vault (locked for good)",
+            vec![h.withdraw_asset(&dp, &dp, &col, &room, &nested, &col, &nested_vault)], &d, &[], Expect::Custom(0, INVALID_DESTINATION), &[], &[]);
+        e.reject("H63d", "withdraw_asset to the outer Asset's own address",
+            vec![h.withdraw_asset(&dp, &dp, &col, &room, &nested, &col, &room)], &d, &[], Expect::Custom(0, INVALID_DESTINATION), &[], &[]);
+        e.reject("H63e", "withdraw_asset to Core's address",
+            vec![h.withdraw_asset(&dp, &dp, &col, &room, &nested, &col, &CORE)], &d, &[], Expect::Custom(0, INVALID_DESTINATION), &[], &[]);
         e.reject("H63", "withdraw_asset with the wrong inner Collection account",
             vec![h.withdraw_asset(&dp, &dp, &col, &room, &nested, &CORE, &dp)], &d, &[], Expect::Custom(0, WRONG_COLLECTION), &[], &[]);
         let out = e.exec(&[h.withdraw_asset(&dp, &dp, &col, &room, &nested, &col, &dp)], &d, &[]);
@@ -1731,28 +1770,6 @@ fn main() {
         e.reject("H70", "withdraw for a Core Asset outside memo-home Collections (it has no Vault State)",
             vec![h.withdraw_with(&xp, &h.config(&col), &plain.pubkey(), &h.vault_ata(&plain.pubkey()), &e.ata(&xp), &e.mint, &t22(), 1)],
             &x, &[], Expect::Custom(0, ANCHOR_ACCOUNT_NOT_INITIALIZED), &[], &[]);
-    }
-
-    // ---------------- advance_nonce (0.2.0) ----------------
-    {
-        let advance = |authority: &Pubkey, col: &Pubkey, asset: &Pubkey| h.ix("advance_nonce", vec![], vec![
-            AccountMeta::new_readonly(*authority, true),
-            AccountMeta::new_readonly(h.config(col), false),
-            AccountMeta::new_readonly(*asset, false),
-            AccountMeta::new(h.vault_state(asset), false),
-        ]);
-        let n0 = h.nonce(&room).unwrap_or(u64::MAX);
-        let out = e.exec(&[advance(&ap, &col, &room)], &app, &[]);
-        let ev = event(&out, "NonceAdvanced");
-        let ev_ok = ev.as_ref().map(|v| v[0..32] == room.to_bytes() && v[32..40] == (n0 + 1).to_le_bytes()).unwrap_or(false);
-        e.record("H140", "advance_nonce by the Collection's Authority: nonce +1, event NonceAdvanced",
-            out.ok() && h.nonce(&room) == Some(n0 + 1) && ev_ok, &format!("{} nonce {} -> {:?} event {}", out.brief(), n0, h.nonce(&room), ev_ok));
-        println!("     CU advance_nonce: memo-home {}", consumed(&out, &prog));
-        e.reject("H141", "advance_nonce signed by someone other than the Authority", vec![advance(&xp, &col, &room)], &x, &[],
-            Expect::Custom(0, UNAUTHORIZED), &[], &[]);
-        e.reject("H142", "advance_nonce for an Asset of another Collection", vec![advance(&ap, &col, &other)], &app, &[],
-            Expect::Custom(0, WRONG_COLLECTION), &[], &[]);
-        e.record("H142b", "  ... neither changed the nonce", h.nonce(&room) == Some(n0 + 1), "");
     }
 
     e.finish();
